@@ -223,6 +223,30 @@ class SekaiSyncCore:
         if not query:
             return None
         return resolve_event_alias(self.store_root, query, regions=regions)
+
+    def worldlink(
+        self,
+        query: Optional[str] = None,
+        regions: Optional[list[str]] = None,
+        list_all: bool = False,
+    ) -> Optional[dict]:
+        from sekaisync.worldlink import build_wl_map, resolve_wl
+
+        if list_all:
+            return build_wl_map(self.store_root, regions=regions)
+        if not query:
+            return None
+        return resolve_wl(self.store_root, query, regions=regions)
+
+    def activity(
+        self,
+        query: str,
+        regions: Optional[list[str]] = None,
+    ) -> Optional[dict]:
+        """Resolve a shorthand to a numbered activity (WL first, then box)."""
+        from sekaisync.eventalias import resolve_activity
+
+        return resolve_activity(self.store_root, query, regions=regions)
     def event_check(
         self,
         regions: Optional[list[str]] = None,

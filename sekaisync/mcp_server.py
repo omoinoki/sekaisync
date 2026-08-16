@@ -176,6 +176,28 @@ TOOLS = [
             "required": ["query"],
         },
     },    {
+        "name": "sekaisync_worldlink",
+        "description": "Resolve World Link shorthand such as vbs wl2, vs wl, finale, round2, wl3第2组 or wl2g7 to the corresponding world_bloom event with cross-region official names.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "regions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["query"],
+        },
+    },    {
+        "name": "sekaisync_activity",
+        "description": "Unified activity resolution: World Link shorthand first (wl2g7, vbs wl2, finale, wl3第2组), then character box shorthand (khn3, 豆三箱). Returns kind=wl / kind=box / kind=unresolved (mixed or unnumbered events).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "regions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["query"],
+        },
+    },    {
         "name": "sekaisync_query",
         "description": "Unified local query across master metadata and crawled story text.",
         "inputSchema": {
@@ -330,6 +352,30 @@ class McpServer:
                             if item.strip()
                         ]
                     result = self.core.event_alias(
+                        arguments.get("query", ""),
+                        regions=raw_regions,
+                    )
+                elif name == "sekaisync_worldlink":
+                    raw_regions = arguments.get("regions")
+                    if isinstance(raw_regions, str):
+                        raw_regions = [
+                            item.strip()
+                            for item in raw_regions.split(",")
+                            if item.strip()
+                        ]
+                    result = self.core.worldlink(
+                        arguments.get("query", ""),
+                        regions=raw_regions,
+                    )
+                elif name == "sekaisync_activity":
+                    raw_regions = arguments.get("regions")
+                    if isinstance(raw_regions, str):
+                        raw_regions = [
+                            item.strip()
+                            for item in raw_regions.split(",")
+                            if item.strip()
+                        ]
+                    result = self.core.activity(
                         arguments.get("query", ""),
                         regions=raw_regions,
                     )

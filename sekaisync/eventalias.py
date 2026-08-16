@@ -31,8 +31,17 @@ _REGION_FOLDER = {
 # from box-event mapping because they do not own "X 箱" events.
 HUMAN_UNITS = {"light_sound", "idol", "street", "theme_park", "school_refusal"}
 
-# Event types that never produce a character box event.
-NON_BOX_EVENT_TYPES = {"cheerful_carnival", "world_bloom"}
+# Event types that never produce a character box event.  Cheerful carnivals
+# are *not* excluded: single-unit carnivals with a dedicated new song (e.g.
+# Event 27 "Unnamed Harmony" for saki) are counted by the community as box
+# events, while song-less festival carnivals fall out through the song check.
+NON_BOX_EVENT_TYPES = {"world_bloom"}
+
+# Events whose dedicated song is absent from the master DB even though the
+# community counts them as box events.  Event 74 "カーテンコールに惜別を" was
+# pulled by the developer after the song writer's arrest, so its eventMusics
+# row no longer exists in the public master data.
+NO_SONG_EVENT_EXCEPTIONS = {74}
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,10 @@ CHARACTER_ALIASES: dict[str, CharacterInfo] = {
 
 # Character IDs in the order used for --list.
 CHARACTER_ORDER = tuple(info.id for info in CHARACTER_ALIASES.values())
+
+# IDs of the 20 human characters; virtual singers (21+) can be a banner but
+# never own a box event.
+HUMAN_UNIT_MEMBERS = frozenset(CHARACTER_ORDER)
 
 
 def _normalize_alias_keys() -> dict[str, CharacterInfo]:
@@ -177,20 +190,34 @@ class BoxEvent:
 
 
 def _build_jp_box_map(store_root: Path) -> dict[int, list[BoxEvent]]:
-    """Rebuild the community box-event sequence from the JP master DB."""
+    """Rebuild the community box-event sequence from the JP master DB.
+
+    The owner of an event is the banner character from eventStories.json
+    (the character on the event visual), provided that character actually has
+    a rarity-4 card in the event and their unit holds the majority of the
+    rarity-4 cards, and the event has a dedicated song.  The banner fallback
+    keeps Event 97 (Light Up the Fire) attributed to an even though its banner
+    is khn, because khn has no card there; conversely it re-attributes Event
+    162 (Find the dream view) from hnm to shiho, matching community counting.
+    """
     src = _region_source_root(store_root, "jp")
     events = _load_json(src / "events.json")
     event_cards = _load_json(src / "eventCards.json")
     cards = _load_json(src / "cards.json")
     game_character_units = _load_json(src / "gameCharacterUnits.json")
     event_musics = _load_json(src / "eventMusics.json")
+    event_stories = _load_json(src / "eventStories.json")
 
     cards_by_id = {card["id"]: card for card in cards}
     default_unit_by_char: dict[int, str] = {}
+    char_by_unit_id: dict[int, int] = {}
     for row in game_character_units:
         unit = row.get("unit")
-        if unit and unit != "piapro":
-            default_unit_by_char.setdefault(row["gameCharacterId"], unit)
+        char_id = row.get("gameCharacterId")
+        if unit and unit != "piapro" and char_id is not None:
+            default_unit_by_char.setdefault(char_id, unit)
+        if row.get("id") is not None and char_id is not None:
+            char_by_unit_id.setdefault(row["id"], char_id)
 
     events_by_id = {event["id"]: event for event in events}
     event_cards_by_event: dict[int, list[dict]] = {}
@@ -200,6 +227,17 @@ def _build_jp_box_map(store_root: Path) -> dict[int, list[BoxEvent]]:
     music_by_event: dict[int, set[int]] = {}
     for row in event_musics:
         music_by_event.setdefault(row["eventId"], set()).add(row["musicId"])
+
+    # Banner character per event, from the event story visual unit.
+    banner_char_by_event: dict[int, int] = {}
+    for story in event_stories:
+        event_id = story.get("eventId")
+        unit_id = story.get("bannerGameCharacterUnitId")
+        if event_id is None or unit_id is None:
+            continue
+        char_id = char_by_unit_id.get(unit_id)
+        if char_id is not None:
+            banner_char_by_event.setdefault(event_id, char_id)
 
     def card_unit(card: dict) -> Optional[str]:
         support = card.get("supportUnit")
@@ -220,19 +258,34 @@ def _build_jp_box_map(store_root: Path) -> dict[int, list[BoxEvent]]:
         if not r4_rows:
             continue
         r4_rows.sort(key=lambda row: row["id"])
-        units = {card_unit(cards_by_id[row["cardId"]]) for row in r4_rows if row["cardId"] in cards_by_id}
-        human_units = units & HUMAN_UNITS
-        if len(human_units) != 1:
+        if not (music_by_event.get(event_id) or event_id in NO_SONG_EVENT_EXCEPTIONS):
             continue
-        if not music_by_event.get(event_id):
-            continue
-        first_card = cards_by_id[r4_rows[0]["cardId"]]
+        card_ids = [row["cardId"] for row in r4_rows]
+        banner = banner_char_by_event.get(event_id)
+
+        owner: Optional[int] = None
+        if (
+            banner is not None
+            and banner in HUMAN_UNIT_MEMBERS
+            and any(cards_by_id[cid].get("characterId") == banner for cid in card_ids)
+        ):
+            banner_unit = default_unit_by_char.get(banner)
+            units = [card_unit(cards_by_id[cid]) for cid in card_ids if cid in cards_by_id]
+            if banner_unit and units.count(banner_unit) / len(units) > 0.5:
+                owner = banner
+
+        if owner is None:
+            units = {card_unit(cards_by_id[cid]) for cid in card_ids if cid in cards_by_id}
+            if len(units & HUMAN_UNITS) != 1:
+                continue
+            owner = cards_by_id[card_ids[0]].get("characterId")
+
         candidates.append(
             BoxEvent(
                 event_id=event_id,
-                owner_id=first_card["characterId"],
-                card_ids=tuple(row["cardId"] for row in r4_rows),
-                music_ids=tuple(sorted(music_by_event[event_id])),
+                owner_id=owner,
+                card_ids=tuple(card_ids),
+                music_ids=tuple(sorted(music_by_event.get(event_id, set()))),
             )
         )
 
@@ -345,9 +398,13 @@ def build_event_alias_map(
         }
 
     return {
-        "method": "community_box_event_v1",
+        "method": "community_box_event_v2",
         "source": "jp_master_db_reconstruction",
-        "excludes": ["cheerful_carnival", "world_bloom", "mixed_unit_events", "events_without_new_song"],
+        "excludes": [
+            "world_bloom",
+            "events_without_dedicated_song",
+            "mixed_unit_events_where_banner_unit_is_not_majority",
+        ],
         "characters": characters,
         "regions": selected,
     }
@@ -381,6 +438,42 @@ def resolve_event_alias(
         "mapping": mapping,
         "confidence": "high",
         "method": alias_map["method"],
+    }
+
+
+def resolve_activity(
+    store_root: Path,
+    query: str,
+    regions: Optional[list[str]] = None,
+) -> Optional[dict[str, Any]]:
+    """Unified activity resolution: World Link first, then character box.
+
+    Dispatch order follows the community numbering rules:
+
+    1. If the query looks like a World Link reference (``wl2g7``, ``vbs wl2``,
+       ``vs wl``, ``finale``, ``round2``, ``wl3第2组``, ...), resolve through
+       the World Link mapping and return its unique ``wl{round}g{index}`` code.
+    2. Otherwise resolve as a character box shorthand (``khn3`` / ``豆三箱``).
+    3. If neither produces a numbered activity, the query refers to a mixed
+       unit event or an unnumbered event; the caller can treat the result as
+       ``kind == "unresolved"``.
+    """
+    from sekaisync.worldlink import parse_wl_query, resolve_wl
+
+    if parse_wl_query(query) is not None:
+        result = resolve_wl(store_root, query, regions=regions)
+        if result is not None:
+            result["kind"] = "wl"
+            return result
+    result = resolve_event_alias(store_root, query, regions=regions)
+    if result is not None:
+        result["kind"] = "box"
+        return result
+    return {
+        "query": query,
+        "kind": "unresolved",
+        "reason": "no World Link or character box numbering; mixed-unit or unnumbered event",
+        "confidence": "high",
     }
 
 

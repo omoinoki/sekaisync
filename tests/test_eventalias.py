@@ -7,9 +7,11 @@ from pathlib import Path
 
 from sekaisync.cli import main as cli_main
 from sekaisync.eventalias import (
+    _build_jp_box_map,
     build_event_alias_map,
     numeral_text_to_int,
     parse_query,
+    resolve_activity,
     resolve_event_alias,
 )
 
@@ -331,6 +333,223 @@ class EventAliasMapTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["mapping"]["jp"]["event_id"], 8)
         self.assertEqual(result["character"]["id"], 9)
+
+
+class NewOwnerRuleTest(unittest.TestCase):
+    """Regression tests for the banner-first owner rule (community_box_event_v2).
+
+    Mirrors real JP master cases:
+    - Event 162: banner shiho beats first-card hnm.
+    - Event  97: banner khn has no r4 card, falls back to first card an.
+    - Event  27: cheerful carnival with a dedicated song counts as a box event.
+    - Event  18: cheerful carnival without a dedicated song does not.
+    - Event  74: no song in master data (pulled event), kept via exception.
+    - Event  41: banner unit not a majority of r4 cards -> mixed event, excluded.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        jp = self.root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+        jp.mkdir(parents=True, exist_ok=True)
+        self.jp = jp
+        self._write("events.json", [
+            {"id": 1, "eventType": "marathon", "name": "雨上がりの一番星", "startAt": 1000},
+            {"id": 18, "eventType": "cheerful_carnival", "name": "君と歌う、桜舞う世界で", "startAt": 2000},
+            {"id": 27, "eventType": "cheerful_carnival", "name": "Unnamed Harmony", "startAt": 3000},
+            {"id": 41, "eventType": "marathon", "name": "バディ・ファニー・スペンドタイム♪", "startAt": 4000},
+            {"id": 74, "eventType": "marathon", "name": "カーテンコールに惜別を", "startAt": 5000},
+            {"id": 97, "eventType": "marathon", "name": "Light Up the Fire", "startAt": 6000},
+            {"id": 162, "eventType": "marathon", "name": "Find the dream view", "startAt": 7000},
+        ])
+        # Cards keyed by id; characterId is the human character (21+ VS).
+        self._write("cards.json", [
+            {"id": 101, "characterId": 2, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "saki"},
+            {"id": 244, "characterId": 2, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "saki2"},
+            {"id": 245, "characterId": 22, "cardRarityType": "rarity_4", "supportUnit": "light_sound", "prefix": "rin"},
+            {"id": 246, "characterId": 4, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "shiho"},
+            {"id": 212, "characterId": 10, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "an"},
+            {"id": 213, "characterId": 12, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "toya"},
+            {"id": 214, "characterId": 22, "cardRarityType": "rarity_4", "supportUnit": "street", "prefix": "rin"},
+            {"id": 522, "characterId": 16, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "rui"},
+            {"id": 523, "characterId": 13, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "tks"},
+            {"id": 524, "characterId": 15, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "nene"},
+            {"id": 1144, "characterId": 3, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "hnm"},
+            {"id": 1145, "characterId": 24, "cardRarityType": "rarity_4", "supportUnit": "light_sound", "prefix": "luka"},
+            {"id": 1146, "characterId": 4, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "shiho2"},
+            {"id": 141, "characterId": 9, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "khn"},
+            {"id": 142, "characterId": 10, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "an2"},
+            {"id": 143, "characterId": 1, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "ick"},
+            {"id": 144, "characterId": 3, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "hnm2"},
+            {"id": 1018, "characterId": 1, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "ick2"},
+            {"id": 1019, "characterId": 20, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "mzk"},
+            {"id": 1020, "characterId": 22, "cardRarityType": "rarity_4", "supportUnit": "light_sound", "prefix": "rin2"},
+        ])
+        self._write("eventCards.json", [
+            {"id": 1, "eventId": 1, "cardId": 101},
+            {"id": 2, "eventId": 18, "cardId": 1018},
+            {"id": 3, "eventId": 18, "cardId": 1019},
+            {"id": 4, "eventId": 18, "cardId": 1020},
+            {"id": 5, "eventId": 27, "cardId": 244},
+            {"id": 6, "eventId": 27, "cardId": 245},
+            {"id": 7, "eventId": 27, "cardId": 246},
+            {"id": 8, "eventId": 41, "cardId": 141},
+            {"id": 9, "eventId": 41, "cardId": 142},
+            {"id": 10, "eventId": 41, "cardId": 143},
+            {"id": 11, "eventId": 41, "cardId": 144},
+            {"id": 12, "eventId": 74, "cardId": 522},
+            {"id": 13, "eventId": 74, "cardId": 523},
+            {"id": 14, "eventId": 74, "cardId": 524},
+            {"id": 15, "eventId": 97, "cardId": 212},
+            {"id": 16, "eventId": 97, "cardId": 213},
+            {"id": 17, "eventId": 97, "cardId": 214},
+            {"id": 18, "eventId": 162, "cardId": 1144},
+            {"id": 19, "eventId": 162, "cardId": 1145},
+            {"id": 20, "eventId": 162, "cardId": 1146},
+        ])
+        self._write("eventMusics.json", [
+            {"eventId": 1, "musicId": 11, "seq": 1},
+            {"eventId": 27, "musicId": 130, "seq": 1},
+            {"eventId": 41, "musicId": 141, "seq": 1},
+            {"eventId": 97, "musicId": 126, "seq": 1},
+            {"eventId": 162, "musicId": 605, "seq": 1},
+        ])
+        self._write("musics.json", [
+            {"id": 11, "title": "needLe"},
+            {"id": 130, "title": "フロムトーキョー"},
+            {"id": 141, "title": "x"},
+            {"id": 126, "title": "y"},
+            {"id": 605, "title": "z"},
+        ])
+        self._write("gameCharacterUnits.json", [
+            {"id": 1, "gameCharacterId": 1, "unit": "light_sound"},
+            {"id": 2, "gameCharacterId": 2, "unit": "light_sound"},
+            {"id": 3, "gameCharacterId": 3, "unit": "light_sound"},
+            {"id": 4, "gameCharacterId": 4, "unit": "light_sound"},
+            {"id": 5, "gameCharacterId": 9, "unit": "street"},
+            {"id": 6, "gameCharacterId": 10, "unit": "street"},
+            {"id": 7, "gameCharacterId": 12, "unit": "street"},
+            {"id": 8, "gameCharacterId": 13, "unit": "theme_park"},
+            {"id": 9, "gameCharacterId": 15, "unit": "theme_park"},
+            {"id": 10, "gameCharacterId": 16, "unit": "theme_park"},
+            {"id": 11, "gameCharacterId": 20, "unit": "school_refusal"},
+        ])
+        self._write("eventStories.json", [
+            {"eventId": 18, "bannerGameCharacterUnitId": 1},
+            {"eventId": 27, "bannerGameCharacterUnitId": 2},
+            {"eventId": 41, "bannerGameCharacterUnitId": 5},
+            {"eventId": 74, "bannerGameCharacterUnitId": 10},
+            {"eventId": 97, "bannerGameCharacterUnitId": 5},
+            {"eventId": 162, "bannerGameCharacterUnitId": 4},
+        ])
+
+    def _write(self, name, data):
+        (self.jp / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _owners(self):
+        box_map = _build_jp_box_map(self.root)
+        return {b.event_id: owner for owner, boxes in box_map.items() for b in boxes}
+
+    def test_banner_beats_first_card(self):
+        # Event 162: banner shiho owns it even though the first r4 card is hnm.
+        self.assertEqual(self._owners().get(162), 4)
+
+    def test_banner_without_card_falls_back_to_first_card(self):
+        # Event 97: banner khn has no r4 card, so the first card owner an wins.
+        self.assertEqual(self._owners().get(97), 10)
+
+    def test_cheerful_with_song_counts_as_box(self):
+        # Event 27: single-unit cheerful carnival with a dedicated song.
+        self.assertEqual(self._owners().get(27), 2)
+
+    def test_cheerful_without_song_is_excluded(self):
+        # Event 18: cheerful carnival without a dedicated song stays excluded.
+        self.assertNotIn(18, self._owners())
+
+    def test_pulled_event_without_song_kept_via_exception(self):
+        # Event 74: song data was removed from master after the event was pulled.
+        self.assertEqual(self._owners().get(74), 16)
+
+    def test_mixed_event_without_banner_majority_excluded(self):
+        # Event 41: banner khn has a card but street holds only 2 of 4 r4 cards.
+        self.assertNotIn(41, self._owners())
+
+    def test_plain_box_event_unchanged(self):
+        self.assertEqual(self._owners().get(1), 2)
+
+
+class ActivityTest(unittest.TestCase):
+    """Unified dispatch: World Link first, then box, else unresolved."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        jp = self.root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+        jp.mkdir(parents=True, exist_ok=True)
+        # Self-contained fixture with one box event (E1, khn) and one WL
+        # (E112, VBS) so the dispatch order can be asserted cleanly.
+        _write_json(jp, "events.json", [
+            {"id": 1, "eventType": "marathon", "name": "雨上がりの一番星", "startAt": 1000},
+            {"id": 112, "eventType": "world_bloom", "unit": "street", "name": "水底に影を探して", "startAt": 2000},
+            {"id": 41, "eventType": "marathon", "unit": "none", "name": "バディ・ファニー・スペンドタイム♪", "startAt": 3000},
+        ])
+        _write_json(jp, "cards.json", [
+            {"id": 1, "characterId": 9, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "khn"},
+            {"id": 2, "characterId": 10, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "an"},
+            {"id": 3, "characterId": 11, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "akt"},
+            {"id": 4, "characterId": 12, "cardRarityType": "rarity_4", "supportUnit": "none", "prefix": "toya"},
+        ])
+        _write_json(jp, "eventCards.json", [
+            {"id": 1, "eventId": 1, "cardId": 1},
+            {"id": 2, "eventId": 1, "cardId": 2},
+            {"id": 3, "eventId": 112, "cardId": 1},
+            {"id": 4, "eventId": 112, "cardId": 2},
+            {"id": 5, "eventId": 112, "cardId": 3},
+            {"id": 6, "eventId": 112, "cardId": 4},
+        ])
+        _write_json(jp, "eventMusics.json", [{"eventId": 1, "musicId": 11, "seq": 1}])
+        _write_json(jp, "musics.json", [{"id": 11, "title": "needLe"}])
+        _write_json(jp, "gameCharacterUnits.json", [
+            {"id": 1, "gameCharacterId": 9, "unit": "street"},
+            {"id": 2, "gameCharacterId": 10, "unit": "street"},
+            {"id": 3, "gameCharacterId": 11, "unit": "street"},
+            {"id": 4, "gameCharacterId": 12, "unit": "street"},
+        ])
+        _write_json(jp, "eventStories.json", [
+            {"eventId": 1, "bannerGameCharacterUnitId": 1},
+            {"eventId": 112, "bannerGameCharacterUnitId": 1},
+        ])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_wl_query_dispatches_to_worldlink(self):
+        result = resolve_activity(self.root, "vbs wl1", regions=["jp"])
+        self.assertEqual(result["kind"], "wl")
+        self.assertEqual(result["code"], "wl1g1")
+        self.assertEqual(result["event_id"], 112)
+
+    def test_box_query_dispatches_to_eventalias(self):
+        result = resolve_activity(self.root, "khn1", regions=["jp"])
+        self.assertEqual(result["kind"], "box")
+        self.assertEqual(result["character"]["id"], 9)
+        self.assertEqual(result["mapping"]["jp"]["event_id"], 1)
+
+    def test_natural_language_wl(self):
+        result = resolve_activity(self.root, "第一轮第一组", regions=["jp"])
+        self.assertEqual(result["kind"], "wl")
+        self.assertEqual(result["code"], "wl1g1")
+
+    def test_unresolved_mixed_event(self):
+        result = resolve_activity(self.root, "バディ・ファニー・スペンドタイム", regions=["jp"])
+        self.assertEqual(result["kind"], "unresolved")
+
+    def test_unknown_query(self):
+        result = resolve_activity(self.root, "notanevent", regions=["jp"])
+        self.assertEqual(result["kind"], "unresolved")
 
 
 if __name__ == "__main__":

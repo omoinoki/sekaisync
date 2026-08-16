@@ -717,23 +717,16 @@ def cmd_terms_list(args: argparse.Namespace) -> int:
 
 
 def rebuild_indexes_after_event_check(config: SekaiSyncConfig) -> None:
-    """Refresh registry/glossary/factpacks after incremental event data imports."""
-    from sekaisync.factpacks import build_fact_packs, save_fact_packs
-    from sekaisync.glossary import merge_glossary, save_glossary
-    from sekaisync.registry import build_registry, data_files_for_region, save_registry
+    """Refresh registry/glossary/factpacks after incremental event data imports.
+
+    Delegates to the same index pipeline used by ``sync`` so the incremental
+    event check and a full sync always produce identical indexes.
+    """
+    from sekaisync.fetcher import rebuild_indexes
+    from sekaisync.registry import data_files_for_region
 
     regions = tuple(r for r in config.regions if r == "demo" or data_files_for_region(config.store_root, r))
-    entities = build_registry(config.store_root, regions)
-    save_registry(entities, registry_path(config.store_root))
-    seed = []
-    seed_path = seed_glossary_path(config.store_root)
-    if seed_path.exists():
-        seed = json.loads(seed_path.read_text(encoding="utf-8"))
-    terms = merge_glossary(entities, seed)
-    save_glossary(terms, glossary_path(config.store_root))
-    for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
-        packs = build_fact_packs(entities, language=language)
-        save_fact_packs(packs, factpack_path(config.store_root, language))
+    rebuild_indexes(config, regions)
 
 
 def auto_event_check(
@@ -809,6 +802,50 @@ def cmd_event_alias(args: argparse.Namespace) -> int:
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+def cmd_activity(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    from sekaisync.eventalias import resolve_activity
+
+    regions = [
+        item.strip()
+        for item in args.regions.split(",")
+        if item.strip()
+    ]
+    result = resolve_activity(config.store_root, args.query, regions=regions)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_wl(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    from sekaisync.worldlink import build_wl_map, resolve_wl
+
+    regions = [
+        item.strip()
+        for item in args.regions.split(",")
+        if item.strip()
+    ]
+    if args.list:
+        result = build_wl_map(config.store_root, regions=regions)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    result = resolve_wl(config.store_root, args.query, regions=regions)
+    if result is None:
+        print(
+            json.dumps(
+                {
+                    "query": args.query,
+                    "error": "No World Link match; expected forms such as vbs wl2, vs wl, finale, wl3第2组, wl2g7, wl3(=round3)",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_terms_status(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     path = terms_path(config.store_root)
@@ -1182,6 +1219,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the local store root (default: ./store)",
     )
     p_alias.set_defaults(func=cmd_event_alias)
+    p_activity = sub.add_parser(
+        "activity",
+        help="Unified activity resolution: World Link shorthand first, then character box shorthand",
+    )
+    p_activity.add_argument("--query", required=True, help="Shorthand to resolve (wl2g7, vbs wl2, finale, wl3第2组, khn3, 豆三箱, ...)")
+    p_activity.add_argument("--regions", default=",".join(DEFAULT_REGION_ORDER), help="Comma-separated region keys")
+    p_activity.add_argument(
+        "--store",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Override the local store root (default: ./store)",
+    )
+    p_activity.set_defaults(func=cmd_activity)
+    p_wl = sub.add_parser(
+        "wl",
+        help="Resolve World Link shorthand such as vbs wl2 / finale / wl3第2组",
+    )
+    p_wl.add_argument("--query", default=None, help="Shorthand to resolve (vbs wl2, vs wl, group3, finale, wl1, ...)")
+    p_wl.add_argument("--list", action="store_true", help="Print the full World Link mapping with rounds and groups")
+    p_wl.add_argument("--regions", default=",".join(DEFAULT_REGION_ORDER), help="Comma-separated region keys")
+    p_wl.add_argument(
+        "--store",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Override the local store root (default: ./store)",
+    )
+    p_wl.set_defaults(func=cmd_wl)
     p_mcp = sub.add_parser("serve-mcp", help="Run MCP stdio server")
     p_mcp.set_defaults(func=cmd_serve_mcp)
 

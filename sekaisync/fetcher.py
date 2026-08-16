@@ -172,6 +172,27 @@ def write_freshness(
     return path
 
 
+def rebuild_indexes(config: SekaiSyncConfig, regions: Iterable[str]) -> dict:
+    """Rebuild registry / glossary / factpacks from the local master source tree.
+
+    Shared by ``sync`` (full baseline) and the incremental new-event check, so
+    both paths produce indexes from the same source data with the same
+    semantics.  Returns entity/term counts for callers that report them.
+    """
+    entities = build_registry(config.store_root, regions)
+    save_registry(entities, registry_path(config.store_root))
+    seed = []
+    seed_path = seed_glossary_path(config.store_root)
+    if seed_path.exists():
+        seed = json.loads(seed_path.read_text(encoding="utf-8"))
+    terms = merge_glossary(entities, seed)
+    save_glossary(terms, glossary_path(config.store_root))
+    for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
+        packs = build_fact_packs(entities, language=language)
+        save_fact_packs(packs, factpack_path(config.store_root, language))
+    return {"entities": len(entities), "terms": len(terms)}
+
+
 def sync(
     config: SekaiSyncConfig,
     regions: Iterable[str],
@@ -194,28 +215,14 @@ def sync(
         if region_key == "demo" or data_files_for_region(config.store_root, region_key):
             all_regions.append(region_key)
 
-    entities = build_registry(config.store_root, all_regions)
-    registry_file = registry_path(config.store_root)
-    save_registry(entities, registry_file)
-
-    seed_path = seed_glossary_path(config.store_root)
-    seed = []
-    if seed_path.exists():
-        seed = json.loads(seed_path.read_text(encoding="utf-8"))
-    terms = merge_glossary(entities, seed)
-    glossary_file = glossary_path(config.store_root)
-    save_glossary(terms, glossary_file)
-
-    for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
-        packs = build_fact_packs(entities, language=language)
-        save_fact_packs(packs, factpack_path(config.store_root, language))
+    index_stats = rebuild_indexes(config, all_regions)
 
     write_freshness(config, all_regions)
     return {
         "regions": all_regions,
-        "entities": len(entities),
-        "terms": len(terms),
+        "entities": index_stats["entities"],
+        "terms": index_stats["terms"],
         "coverage": build_region_coverage(all_regions),
-        "registry": str(registry_file),
-        "glossary": str(glossary_file),
+        "registry": str(registry_path(config.store_root)),
+        "glossary": str(glossary_path(config.store_root)),
     }

@@ -176,6 +176,31 @@ OPENAPI = {
                 },
             }
         },
+        "/api/v1/worldlink": {
+            "get": {
+                "operationId": "worldlink",
+                "parameters": [
+                    {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
+                    {"name": "regions", "in": "query", "schema": {"type": "string"}},
+                ],
+                "responses": {
+                    "200": {"description": "World Link shorthand resolved to world_bloom event"},
+                    "404": {"description": "No matching World Link alias or ordinal"},
+                },
+            }
+        },
+        "/api/v1/activity": {
+            "get": {
+                "operationId": "activity",
+                "parameters": [
+                    {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
+                    {"name": "regions", "in": "query", "schema": {"type": "string"}},
+                ],
+                "responses": {
+                    "200": {"description": "Shorthand resolved to a numbered activity (wl or box) or kind=unresolved"},
+                },
+            }
+        },
         "/api/v1/query": {
             "get": {
                 "operationId": "query",
@@ -336,6 +361,33 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             if result is None:
                 self._send_json(404, {"error": "No matching event alias or ordinal"})
                 return
+            self._send_json(200, result)
+            return
+        if parsed.path == "/api/v1/worldlink":
+            regions = [
+                item.strip()
+                for item in query.get("regions", [""])[0].split(",")
+                if item.strip()
+            ] or None
+            result = self.core.worldlink(
+                query.get("query", [""])[0],
+                regions=regions,
+            )
+            if result is None:
+                self._send_json(404, {"error": "No matching World Link alias or ordinal"})
+                return
+            self._send_json(200, result)
+            return
+        if parsed.path == "/api/v1/activity":
+            regions = [
+                item.strip()
+                for item in query.get("regions", [""])[0].split(",")
+                if item.strip()
+            ] or None
+            result = self.core.activity(
+                query.get("query", [""])[0],
+                regions=regions,
+            )
             self._send_json(200, result)
             return
         if parsed.path == "/api/v1/term_lookup":
@@ -502,9 +554,12 @@ def serve_http(
         {"core": core, "sites": profile},
     )
     server = ThreadingHTTPServer((host, port), handler)
-    print(f"SekaiSync HTTP server listening on http://{host}:{port}")
-    print(f"OpenAPI: http://{host}:{port}/openapi.json")
-    print(f"MCP Streamable HTTP: http://{host}:{port}/mcp")
+    # When port is 0 the OS assigns a dynamic port; report the bound one so
+    # consumers (e.g. the dsh plugin spawning --port 0) can discover it.
+    actual_port = server.server_address[1]
+    print(f"SekaiSync HTTP server listening on http://{host}:{actual_port}")
+    print(f"OpenAPI: http://{host}:{actual_port}/openapi.json")
+    print(f"MCP Streamable HTTP: http://{host}:{actual_port}/mcp")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
