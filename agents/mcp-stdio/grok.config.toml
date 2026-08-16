@@ -1,0 +1,8 @@
+# SekaiSync block for ~/.grok/config.toml or .grok/config.toml.
+[mcp_servers.sekaisync]
+command = 'C:\path\to\python.exe'
+args = ["-m", "sekaisync", "serve-mcp"]
+cwd = 'C:\path\to\sekaisync'
+env = { PYTHONPYCACHEPREFIX = 'C:\path\to\sekaisync\build\pycache' }
+startup_timeout_sec = 30
+tool_timeout_sec = 6000

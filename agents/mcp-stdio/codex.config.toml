@@ -1,0 +1,10 @@
+# Merge into ~/.codex/config.toml (global) or .codex/config.toml (project).
+# The ChatGPT desktop app, Codex CLI, and IDE extension share this Codex host
+# configuration. The old standalone Codex app was folded into the ChatGPT
+# desktop app on 2026-07-09, so one block covers all three surfaces.
+[mcp_servers.sekaisync]
+command = 'C:\path\to\python.exe'
+args = ["-m", "sekaisync", "serve-mcp"]
+cwd = 'C:\path\to\sekaisync'
+env = { PYTHONPYCACHEPREFIX = 'C:\path\to\sekaisync\build\pycache' }
+default_tools_approval_mode = "auto"

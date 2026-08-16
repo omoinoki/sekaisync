@@ -1,0 +1,14 @@
+---
+description: Use SekaiSync as the Project Sekai fact layer.
+alwaysApply: true
+---
+
+Before answering Project Sekai questions, use the SekaiSync MCP tools.
+
+1. Check `sekaisync_freshness`.
+2. Resolve proper nouns with `sekaisync_resolve_name`.
+3. Look up facts with `sekaisync_lookup`.
+4. Use `sekaisync_fact_pack` for generation context.
+5. Verify drafts with `sekaisync_verify_claims`.
+
+Never translate official localized names from memory. Never assume the JP schedule applies to Global, TW/HK/MAC, KR, or CN. If the local store has no match, say the fact is outside SekaiSync coverage.

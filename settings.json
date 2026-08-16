@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "sites": [
+    {
+      "id": "altsource_sv",
+      "backend": "sekai_viewer",
+      "name": "Self-hosted Sekai Viewer instance (example)",
+      "enabled": true,
+      "master_base": "",
+      "asset_base": "",
+      "asset_buckets": {
+        "jp": "",
+        "en": "",
+        "tc": "",
+        "kr": "",
+        "cn": ""
+      },
+      "i18n_base": ""
+    },
+    {
+      "id": "altsource_ms",
+      "backend": "moesekai",
+      "name": "Self-hosted Moesekai mirror (example)",
+      "enabled": true,
+      "site_base": "",
+      "sitemap_url": "",
+      "story_detail_base": "",
+      "metadata_bases": [],
+      "asset_bases": [],
+      "translation_base": "",
+      "news_base": "",
+      "locale_servers": {
+        "zh-cn": "cn",
+        "zh-tw": "tw",
+        "ja-jp": "jp",
+        "en-us": "en",
+        "ko-kr": "kr"
+      },
+      "locale_languages": {
+        "zh-cn": "zh_hans",
+        "zh-tw": "zh_hant",
+        "ja-jp": "ja",
+        "en-us": "en",
+        "ko-kr": "ko"
+      },
+      "fallback_to_viewer_cdn": true
+    }
+  ]
+}

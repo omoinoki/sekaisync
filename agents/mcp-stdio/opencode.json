@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "sekaisync": {
+      "type": "local",
+      "command": ["C:\\path\\to\\python.exe", "-m", "sekaisync", "serve-mcp"],
+      "enabled": true,
+      "environment": {
+        "PYTHONPYCACHEPREFIX": "C:\\path\\to\\sekaisync\\build\\pycache"
+      }
+    }
+  }
+}

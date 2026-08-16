@@ -1,0 +1,1 @@
+"""SekaiSync tests."""

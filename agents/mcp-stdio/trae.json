@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sekaisync": {
+      "command": "C:\\path\\to\\python.exe",
+      "args": ["-m", "sekaisync", "serve-mcp"],
+      "env": {
+        "PYTHONPYCACHEPREFIX": "C:\\path\\to\\sekaisync\\build\\pycache"
+      }
+    }
+  }
+}

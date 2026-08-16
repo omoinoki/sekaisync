@@ -1,0 +1,108 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SekaiSync Local API",
+    "version": "0.2.0"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8787"
+    }
+  ],
+  "paths": {
+    "/api/v1/lookup": {
+      "get": {
+        "operationId": "lookup",
+        "summary": "Look up Project Sekai entities",
+        "parameters": [
+          {"name": "query", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "type", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "region", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "language", "in": "query", "required": false, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Entity matches"
+          }
+        }
+      }
+    },
+    "/api/v1/fact_pack": {
+      "get": {
+        "operationId": "factPack",
+        "summary": "Return a compact fact pack for an entity",
+        "parameters": [
+          {"name": "entity_id", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "language", "in": "query", "required": false, "schema": {"type": "string", "default": "en"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Compact fact pack"
+          }
+        }
+      }
+    },
+    "/api/v1/freshness": {
+      "get": {
+        "operationId": "freshness",
+        "summary": "Show local data freshness",
+        "responses": {
+          "200": {
+            "description": "Freshness and region coverage"
+          }
+        }
+      }
+    },
+    "/api/v1/verify_claims": {
+      "post": {
+        "operationId": "verifyClaims",
+        "summary": "Verify claims against local registry",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "claims": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "claim": {"type": "string"},
+                        "expected": {"type": "string"}
+                      },
+                      "required": ["claim"]
+                    }
+                  }
+                },
+                "required": ["claims"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification results"
+          }
+        }
+      }
+    },
+    "/api/v1/web_lookup": {
+      "get": {
+        "operationId": "webLookup",
+        "summary": "Search the local crawled text index",
+        "parameters": [
+          {"name": "query", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "source", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "language", "in": "query", "required": false, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Crawled web text matches"
+          }
+        }
+      }
+    }
+  }
+}

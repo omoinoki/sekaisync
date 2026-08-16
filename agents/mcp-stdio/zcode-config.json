@@ -1,0 +1,15 @@
+{
+  "mcp": {
+    "servers": {
+      "sekaisync": {
+        "type": "stdio",
+        "command": "C:\\path\\to\\python.exe",
+        "args": ["-m", "sekaisync", "serve-mcp"],
+        "cwd": "C:\\path\\to\\sekaisync",
+        "env": {
+          "PYTHONPYCACHEPREFIX": "C:\\path\\to\\sekaisync\\build\\pycache"
+        }
+      }
+    }
+  }
+}
