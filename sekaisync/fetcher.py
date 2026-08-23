@@ -14,6 +14,7 @@ from sekaisync.layout import (
     factpack_path,
     freshness_path,
     glossary_path,
+    region_master_dir,
     registry_path,
     region_source_dir,
     seed_glossary_path,
@@ -124,6 +125,46 @@ def fetch_region(
     return fetch_region_from_tarball(region_key, config)
 
 
+def _region_versions(config: SekaiSyncConfig, regions: Iterable[str]) -> dict[str, dict]:
+    """Client/data/asset version numbers from each region's versions.json.
+
+    Sekai Viewer's home page shows these (e.g. ``6.7.0`` / ``6.7.0.40``);
+    surfacing them in freshness lets agents state which game version the
+    local facts correspond to.  A missing file yields an empty entry so the
+    report stays complete.
+    """
+    out: dict[str, dict] = {}
+    for region in regions:
+        if region == "demo":
+            out[region] = {}
+            continue
+        # versions.json lives inside the per-region source tree (e.g. under a
+        # sekai-master-db-*-diff-main/ subdirectory), mirroring how
+        # data_files_for_region discovers tables.
+        matches = sorted(region_master_dir(config.store_root, region).glob("**/versions.json"))
+        if not matches:
+            out[region] = {}
+            continue
+        path = matches[0]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            out[region] = {}
+            continue
+        out[region] = {
+            key: data[key]
+            for key in (
+                "appVersion",
+                "dataVersion",
+                "assetVersion",
+                "multiPlayVersion",
+                "appVersionStatus",
+            )
+            if data.get(key)
+        }
+    return out
+
+
 def write_freshness(
     config: SekaiSyncConfig,
     regions: Iterable[str],
@@ -159,6 +200,7 @@ def write_freshness(
             news_available=news_available,
             master_available=master_available,
         ),
+        "versions": _region_versions(config, regions),
         "sources": build_source_manifest(config.sites),
         "web": web_status or {
             "enabled": False,

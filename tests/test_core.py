@@ -27,6 +27,19 @@ class CoreTest(unittest.TestCase):
             alias_map = core.event_alias(list_all=True, regions=["jp"])
             self.assertEqual(len(alias_map["characters"]), 20)
 
+    def test_data_gaps_include_overseas_character_missions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            create_demo_store(store_root)
+            core = SekaiSyncCore(store_root)
+            gaps = core.data_gaps()
+            domains = {gap["domain"] for gap in gaps}
+            self.assertIn("home_line", domains)
+            self.assertIn("overseas_character_missions", domains)
+            cn_gap = next(g for g in gaps if g["domain"] == "overseas_character_missions")
+            self.assertEqual(cn_gap["scope"], "cn")
+            self.assertEqual(cn_gap["severity"], "missing")
+
     def test_demo_store_lookup_and_resolve(self):
         with tempfile.TemporaryDirectory() as tmp:
             store_root = Path(tmp) / "store"

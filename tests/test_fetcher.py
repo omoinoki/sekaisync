@@ -7,8 +7,13 @@ from pathlib import Path
 from unittest import mock
 
 from sekaisync.config import SekaiSyncConfig
-from sekaisync.fetcher import fetch_region_from_local, fetch_region_from_tarball
-from sekaisync.layout import region_source_dir
+from sekaisync.fetcher import (
+    _region_versions,
+    fetch_region_from_local,
+    fetch_region_from_tarball,
+    write_freshness,
+)
+from sekaisync.layout import freshness_path, region_source_dir
 
 
 class FetcherSafetyTest(unittest.TestCase):
@@ -65,6 +70,54 @@ class FetcherSafetyTest(unittest.TestCase):
             json.loads((source_dir / "events.json").read_text(encoding="utf-8"))[0]["name"],
             "new",
         )
+
+
+class FreshnessVersionsTest(unittest.TestCase):
+    def test_region_versions_reads_versions_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "store"
+            source = root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "versions.json").write_text(
+                json.dumps(
+                    {
+                        "appVersion": "6.7.0",
+                        "dataVersion": "6.7.0.40",
+                        "assetVersion": "6.7.0.40",
+                        "multiPlayVersion": "kaito",
+                        "appVersionStatus": "available",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            config = SekaiSyncConfig(store_root=root, regions=("jp",))
+            versions = _region_versions(config, ("jp",))
+            self.assertEqual(versions["jp"]["appVersion"], "6.7.0")
+            self.assertEqual(versions["jp"]["dataVersion"], "6.7.0.40")
+            self.assertEqual(versions["jp"]["multiPlayVersion"], "kaito")
+
+    def test_region_versions_missing_file_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "store"
+            config = SekaiSyncConfig(store_root=root, regions=("jp",))
+            versions = _region_versions(config, ("jp",))
+            self.assertEqual(versions["jp"], {})
+
+    def test_freshness_includes_versions_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "store"
+            source = root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "versions.json").write_text(
+                json.dumps({"appVersion": "6.7.0"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            config = SekaiSyncConfig(store_root=root, regions=("jp",))
+            write_freshness(config, ("jp",))
+            data = json.loads(freshness_path(root).read_text(encoding="utf-8"))
+            self.assertIn("versions", data)
+            self.assertEqual(data["versions"]["jp"]["appVersion"], "6.7.0")
 
 
 if __name__ == "__main__":

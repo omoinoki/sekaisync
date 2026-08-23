@@ -494,6 +494,13 @@ class SekaiSyncCore:
                 "description": "Fact layer 100% but text layer ~66% (JP 81%); gaps are source limitations",
                 "agent_guidance": "Not all stories have community-translated text available.",
             },
+            {
+                "domain": "overseas_character_missions",
+                "scope": "cn",
+                "severity": "missing",
+                "description": "characterMissions table absent in the CN master repo (present in jp/en/tc/kr); CN character mission facts are not covered",
+                "agent_guidance": "Character mission details for CN are not available from the local master data.",
+            },
         ]
 
     def query(
