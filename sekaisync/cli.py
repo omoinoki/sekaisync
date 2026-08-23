@@ -23,7 +23,12 @@ from sekaisync.layout import (
 )
 from sekaisync.event_detection import check_events, list_events
 from sekaisync.core import SekaiSyncCore
-from sekaisync.crawler import crawl_altsource_ms, crawl_altsource_sv, require_tos_consent
+from sekaisync.crawler import (
+    crawl_altsource_ms,
+    crawl_altsource_sv,
+    probe_instance_health,
+    require_tos_consent,
+)
 from sekaisync.sources import (
     BACKEND_MOESEKAI,
     BACKEND_SEKAI_VIEWER,
@@ -302,9 +307,21 @@ def cmd_crawl(args: argparse.Namespace) -> int:
             if pages_path.exists():
                 pages_path.unlink()
     summaries = []
+    skipped_instances = []
     for instance_id in instances:
         site = config.site_for(instance_id)
         backend = site.backend if site is not None else config.instance_backend(instance_id)
+        settings = config.instance_settings(instance_id)
+        # P1: instance health probe — a dead instance is skipped so the rest of
+        # the crawl keeps going, and the user sees which instance was skipped.
+        if not probe_instance_health(instance_id, backend, settings=settings):
+            skipped_instances.append(instance_id)
+            print(
+                f"[crawl] skipping {instance_id}: instance probe failed "
+                f"(endpoint unreachable); continuing with the remaining instances",
+                file=sys.stderr,
+            )
+            continue
         if backend == BACKEND_MOESEKAI:
             summaries.append(
                 crawl_altsource_ms(
@@ -318,7 +335,7 @@ def cmd_crawl(args: argparse.Namespace) -> int:
                     workers=args.workers,
                     resume=not args.no_resume,
                     include_overlay=not args.no_overlay,
-                    settings=config.instance_settings(instance_id),
+                    settings=settings,
                     instance=instance_id,
                 )
             )
@@ -336,7 +353,7 @@ def cmd_crawl(args: argparse.Namespace) -> int:
                     workers=args.workers,
                     resume=not args.no_resume,
                     include_i18n=not args.no_i18n,
-                    settings=config.instance_settings(instance_id),
+                    settings=settings,
                     instance=instance_id,
                 )
             )
@@ -359,6 +376,7 @@ def cmd_crawl(args: argparse.Namespace) -> int:
                 "store": str(config.store_root.resolve()),
                 "web": web_status,
                 "crawl": summaries,
+                "skipped_instances": skipped_instances,
                 "postprocess": postprocess,
             },
             ensure_ascii=False,
@@ -632,6 +650,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             existing=existing,
             max_terms_per_page=args.max_terms,
             translation_memory=memory,
+            cache_dir=config.store_root / "cache",
         )
         llm_model = "local"
     else:
@@ -682,6 +701,8 @@ def cmd_terms_lookup(args: argparse.Namespace) -> int:
         source_language=args.language,
         languages=languages,
         limit=args.limit,
+        tag=getattr(args, "tag", None),
+        sort=getattr(args, "sort", "score"),
     )
     print(
         json.dumps(
@@ -703,7 +724,14 @@ def cmd_terms_list(args: argparse.Namespace) -> int:
     terms = load_terms(path)
     if args.kind:
         terms = [term for term in terms if term.kind == args.kind]
-    terms.sort(key=lambda term: term.canonical)
+    tag_filter = getattr(args, "tag", None)
+    if tag_filter:
+        terms = [term for term in terms if tag_filter in (term.tags or [])]
+    sort_key = getattr(args, "sort", "canonical")
+    if sort_key == "weight":
+        terms.sort(key=lambda term: term.weight, reverse=True)
+    else:
+        terms.sort(key=lambda term: term.canonical)
     print(
         json.dumps(
             [term_to_dict(term) for term in terms[: args.limit]],
@@ -714,6 +742,87 @@ def cmd_terms_list(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def cmd_terms_export(args: argparse.Namespace) -> int:
+    """Deterministic, auditable term export (JSON / CSV), no LLM calls.
+
+    JSON format: a dict of ``{canonical_term: {language: [names], meta}}`` so
+    downstream tools can consume it directly.  CSV format: one row per
+    language name (wide enough to re-import into a spreadsheet).
+    """
+    config = config_from_args(args)
+    path = terms_path(config.store_root)
+    terms = load_terms(path)
+    languages = [item.strip() for item in args.languages.split(",") if item.strip()]
+
+    # Deterministic ordering: canonical, then trust, then weight.
+    terms.sort(
+        key=lambda term: (
+            term.canonical or "",
+            term.trust or "",
+            term.weight,
+        )
+    )
+    records = []
+    for term in terms:
+        names = {k: v for k, v in (term.names or {}).items() if v}
+        filtered_names = {k: names[k] for k in languages if k in names}
+        if args.tags:
+            allowed = set(args.tags.split(","))
+            if not (set(term.tags or []) & allowed):
+                continue
+        records.append(
+            {
+                "canonical": term.canonical,
+                "source_language": term.source_language,
+                "kind": term.kind,
+                "tags": sorted(term.tags or []),
+                "official": bool(term.official),
+                "trust": term.trust,
+                "weight": round(term.weight, 4),
+                "occurrences": term.occurrences or len(term.evidence),
+                "names": filtered_names,
+            }
+        )
+
+    out_path = args.output
+    if args.format == "csv":
+        import csv
+        import io
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["canonical", "source_language", "kind", "tag", "official", "trust", "weight", "occurrences", "language", "name"])
+        for record in records:
+            tags = record["tags"] or [""]
+            for tag in tags:
+                for lang, name in (record["names"] or {}).items():
+                    writer.writerow(
+                        [
+                            record["canonical"],
+                            record["source_language"],
+                            record["kind"],
+                            tag,
+                            int(record["official"]),
+                            record["trust"],
+                            record["weight"],
+                            record["occurrences"],
+                            lang,
+                            name,
+                        ]
+                    )
+        output_text = buffer.getvalue()
+    else:
+        output_text = json.dumps({"terms": records}, ensure_ascii=False, indent=2)
+
+    if out_path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(output_text, encoding="utf-8")
+        print(json.dumps({"exported": len(records), "path": str(out_path)}, ensure_ascii=False))
+    else:
+        print(output_text)
+    return 0
 
 
 def rebuild_indexes_after_event_check(config: SekaiSyncConfig) -> None:
@@ -859,6 +968,78 @@ def cmd_terms_status(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def cmd_terms_penetrate(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    core = SekaiSyncCore(config.store_root)
+    languages = [s.strip() for s in args.languages.split(",") if s.strip()]
+    result = core.term_penetrate(args.query, story_key=args.story_key, languages=languages)
+    if result is None:
+        print(json.dumps({"query": args.query, "error": "No matching term"}, ensure_ascii=False, indent=2))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_terms_zhfirst(args: argparse.Namespace) -> int:
+    """简中主位管线：从 zh_hans 正文提取内容词，排除主角/代词/说话人，
+    并做同点位四语对齐。输出 ZhFirstTerm 列表。"""
+    config = config_from_args(args)
+    from sekaisync.layout import glossary_path
+    from sekaisync.termindex import load_pages, load_glossary
+    from sekaisync.zhfirst import extract_terms_zhfirst
+
+    pages = load_pages(config.store_root)
+    glossary = load_glossary(glossary_path(config.store_root))
+    targets = [s.strip() for s in args.languages.split(",") if s.strip() and s.strip() != "zh_hans"]
+    llm = None
+    if getattr(args, "llm_config", None):
+        from sekaisync.llm_client import LLMClient, load_llm_config
+        llm = LLMClient(load_llm_config(args.llm_config))
+    result = extract_terms_zhfirst(
+        pages,
+        targets,
+        glossary,
+        min_freq=args.min_freq,
+        cache_dir=config.store_root / "cache",
+        do_align=getattr(args, "align", False),
+        llm=llm,
+    )
+    # Cache output for merge-zhfirst
+    cache_file = config.store_root / "cache" / "zhfirst_terms.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps([t.to_dict() for t in result], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    limit = args.limit or len(result)
+    out = [t.to_dict() for t in result[:limit]]
+    print(json.dumps({"count": len(result), "cached": str(cache_file), "terms": out}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_terms_merge_zhfirst(args: argparse.Namespace) -> int:
+    """将 zh-first 管线产出合并进 terms.json，补齐 ja-first 管线漏掉的简中本位词。"""
+    config = config_from_args(args)
+    core = SekaiSyncCore(config.store_root)
+    result = core.merge_zhfirst_terms()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_tag_clouds(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    core = SekaiSyncCore(config.store_root)
+    result = core.tag_clouds()
+    # Summary only by default; --full dumps ranked term lists
+    if not getattr(args, "full", False):
+        result = {
+            "released": {"count": result["released"]["count"], "story_keys": result["released"]["story_keys"], "top": result["released"]["cloud"]["all"][:20]},
+            "unreleased": {"count": result["unreleased"]["count"], "story_keys": result["unreleased"]["story_keys"], "note": result["unreleased"]["note"], "top": result["unreleased"]["cloud"]["all"][:20]},
+        }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1171,15 +1352,68 @@ def build_parser() -> argparse.ArgumentParser:
     p_terms_lookup.add_argument("--language", default=None)
     p_terms_lookup.add_argument("--languages", default="ja,zh_hans,en,zh_tw,ko")
     p_terms_lookup.add_argument("--limit", type=int, default=8)
+    p_terms_lookup.add_argument("--tag", default=None, help="Filter by tag (person/location/organization/event/product/other)")
+    p_terms_lookup.add_argument("--sort", default="score", choices=["score", "weight"], help="Sort order")
     p_terms_lookup.set_defaults(func=cmd_terms_lookup)
 
     p_terms_list = terms_sub.add_parser("list", help="List extracted terms")
     p_terms_list.add_argument("--kind", default=None)
+    p_terms_list.add_argument("--tag", default=None, help="Filter by tag (person/location/organization/event/product/other)")
+    p_terms_list.add_argument("--sort", default="canonical", choices=["canonical", "weight"], help="Sort order")
     p_terms_list.add_argument("--limit", type=int, default=100)
     p_terms_list.set_defaults(func=cmd_terms_list)
 
     p_terms_status = terms_sub.add_parser("status", help="Show term index status")
     p_terms_status.set_defaults(func=cmd_terms_status)
+
+    p_terms_penetrate = terms_sub.add_parser("penetrate", help="Cross-language per-line penetration for a term at a story position")
+    p_terms_penetrate.add_argument("--query", required=True, help="Term to penetrate (any language)")
+    p_terms_penetrate.add_argument("--story-key", default=None, help="Story key like event:174:1; auto-picks most frequent if omitted")
+    p_terms_penetrate.add_argument("--languages", default="ja,zh_hans,en,zh_tw,ko", help="Comma-separated target languages")
+    p_terms_penetrate.set_defaults(func=cmd_terms_penetrate)
+
+    p_terms_zhfirst = terms_sub.add_parser(
+        "zhfirst",
+        help="简中主位提取：排除主角/代词/说话人，同点位对齐四语",
+    )
+    p_terms_zhfirst.add_argument("--languages", default="ja,en,zh_tw,ko", help="Target languages for alignment")
+    p_terms_zhfirst.add_argument("--min-freq", type=int, default=2, help="Minimum word frequency for discovery")
+    p_terms_zhfirst.add_argument("--limit", type=int, default=0, help="Max terms to print (0=all)")
+    p_terms_zhfirst.add_argument("--align", action="store_true", help="Run cross-language alignment (slow, ~20 min)")
+    p_terms_zhfirst.add_argument("--llm-config", type=Path, default=None, help="LLM config path for semantic filtering of fragments")
+    p_terms_zhfirst.set_defaults(func=cmd_terms_zhfirst)
+
+    p_terms_merge = terms_sub.add_parser(
+        "merge-zhfirst",
+        help="Merge zh-first pipeline output (from cache) into terms.json",
+    )
+    p_terms_merge.set_defaults(func=cmd_terms_merge_zhfirst)
+
+    p_terms_export = terms_sub.add_parser(
+        "export",
+        help="Deterministically export the term index as JSON or CSV (no LLM)",
+    )
+    p_terms_export.add_argument(
+        "--output", type=Path, default=None, help="Output file path (default: stdout)"
+    )
+    p_terms_export.add_argument(
+        "--format", choices=["json", "csv"], default="json", help="Export format"
+    )
+    p_terms_export.add_argument(
+        "--languages",
+        default="ja,zh_hans,zh_tw,en,ko",
+        help="Comma-separated language keys to include in names",
+    )
+    p_terms_export.add_argument(
+        "--tags",
+        default=None,
+        help="Comma-separated tag filter (person/location/organization/event/product/other)",
+    )
+    p_terms_export.set_defaults(func=cmd_terms_export)
+
+    p_tag_clouds = sub.add_parser("tag-clouds", help="Tag clouds split by released(multi-lang) vs unreleased(ja-only)")
+    p_tag_clouds.add_argument("--full", action="store_true", help="Dump full ranked lists per language")
+    p_tag_clouds.set_defaults(func=cmd_tag_clouds)
 
     p_events = sub.add_parser("events", help="Detect, classify and archive new events without starting the crawler")
     events_sub = p_events.add_subparsers(dest="events_command", required=True)

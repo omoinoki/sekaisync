@@ -238,9 +238,15 @@ def _classify_events(
     events: Iterable[dict[str, Any]],
     box_event_ids: Optional[set[str]] = None,
 ) -> dict[str, dict[str, Any]]:
-    """Classify events as box / world_bloom / other using local master data."""
+    """Classify events as box / world_bloom / other using local master data.
+
+    Placeholder test events (no cards / music / story in the master data,
+    e.g. JP E166 / E186) are flagged ``placeholder=True`` so callers can
+    exclude them from real activity sequence numbering.
+    """
     if box_event_ids is None:
         box_event_ids = _jp_box_event_ids(store_root)
+    placeholders = _jp_placeholder_event_ids(store_root)
     classified: dict[str, dict[str, Any]] = {}
     for event in events:
         event_id = str(event.get("id"))
@@ -262,8 +268,80 @@ def _classify_events(
             "category": category,
             "label": label,
             "unit": event.get("unit"),
+            "placeholder": event_id in placeholders,
         }
     return classified
+
+
+def _jp_placeholder_event_ids(store_root: Path) -> set[str]:
+    """Events with no cards/music/stories in JP master — never launched.
+    JP ``events.json`` contains test placeholder entries that the official
+    master never promoted to a real event (they have no ``eventCards`` /
+    ``eventMusics`` / ``eventStories`` rows).  They are excluded from the
+    real activity sequence count, which aligns SekaiSync's numbering with
+    the fan-translation community's counting.
+    """
+    ids: set[str] = set()
+    events_path = _local_table_path(store_root, "jp", "events")
+    if events_path is None:
+        return ids
+    try:
+        records = json.loads(events_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ids
+    if not isinstance(records, list):
+        return ids
+
+    def load_ids(table: str) -> set[str]:
+        path = _local_table_path(store_root, "jp", table)
+        if path is None:
+            return set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return set()
+        if not isinstance(data, list):
+            return set()
+        return {str(item.get("eventId") or item.get("id") or "") for item in data if isinstance(item, dict)}
+
+    card_ids = load_ids("eventCards")
+    music_ids = load_ids("eventMusics")
+    story_ids = load_ids("eventStories")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        event_id = str(record.get("id") or "")
+        if event_id and event_id not in card_ids and event_id not in music_ids and event_id not in story_ids:
+            ids.add(event_id)
+    return ids
+
+
+def _sequence_numbered(
+    entries: list[dict[str, Any]],
+    placeholders: set[str],
+) -> list[dict[str, Any]]:
+    """Attach ``sequence_no`` = real activity position, skipping placeholders.
+
+    The official master id is not a dense sequence (JP contains test
+    placeholder entries that never launched, e.g. E166 / E186).  Rebuilding
+    the position from the events ordered by start time, excluding
+    placeholders, aligns with the fan-translation community's counting.
+    """
+    real = sorted(
+        (entry for entry in entries if str(entry.get("event_id")) not in placeholders),
+        key=lambda entry: (
+            str(entry.get("start_at") or ""),
+            int(entry.get("event_id") or 0),
+        ),
+    )
+    position = {str(entry["event_id"]): index for index, entry in enumerate(real, start=1)}
+    numbered = []
+    for entry in entries:
+        item = dict(entry)
+        item["sequence_no"] = position.get(str(entry.get("event_id")))
+        item["placeholder"] = str(entry.get("event_id")) in placeholders
+        numbered.append(item)
+    return numbered
 
 
 def _load_archive(store_root: Path) -> dict[str, Any]:
@@ -434,7 +512,7 @@ def check_events(
             archive["regions"][region] = {
                 "last_checked_at": now,
                 "last_event_count": len(remote),
-                "events": all_entries,
+                "events": _sequence_numbered(all_entries, _jp_placeholder_event_ids(store_root)),
             }
         else:
             region_result["status"] = "up_to_date"
@@ -456,7 +534,7 @@ def check_events(
             archive["regions"][region] = {
                 "last_checked_at": now,
                 "last_event_count": len(remote),
-                "events": all_entries,
+                "events": _sequence_numbered(all_entries, _jp_placeholder_event_ids(store_root)),
             }
 
     # Any executed check (auto, forced, or explicit events check) satisfies the

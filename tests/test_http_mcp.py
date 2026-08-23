@@ -170,5 +170,70 @@ class HttpMcpTest(unittest.TestCase):
         self.assertIn('"sites": []', body)
 
 
+    def test_core_refresh_reloads_indexes(self):
+        from sekaisync.layout import registry_path
+        from sekaisync.registry import save_registry
+
+        before = self.core.refresh()
+        self.assertIn("registry", before)
+        self.assertIn("terms", before)
+
+        # Simulate an external sync: append a registry entity.
+        from sekaisync.models import Entity
+
+        extra = Entity(
+            id="simulated_new_entity",
+            type="character",
+            region="demo",
+            regions=["demo"],
+            names={"ja": "テスト追加"},
+            facts={},
+            source="demo",
+            demo=True,
+            trust="D",
+        )
+        save_registry(
+            [*self.core.registry, extra],
+            registry_path(self.core.store_root),
+        )
+        after = self.core.refresh()
+        self.assertGreater(after["registry"], before["registry"])
+
+    def test_refresh_mcp_tool(self):
+        result = handle_mcp_message(
+            self.core,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "sekaisync_refresh", "arguments": {}},
+            },
+        )
+        self.assertIn("result", result)
+        content = result["result"]["content"][0]["text"]
+        self.assertIn("registry", content)
+        self.assertIn("terms", content)
+
+    def test_refresh_http_endpoint(self):
+        import io
+        from unittest.mock import patch
+
+        request = SekaiSyncHandler.__new__(SekaiSyncHandler)
+        request.core = self.core
+        request.rfile = io.BytesIO(b"")
+        request.wfile = io.BytesIO()
+        request.headers = {}
+        captured = {}
+        request.send_response = lambda status: captured.__setitem__("status", status)
+        request.send_header = lambda *args: None
+        request.end_headers = lambda: None
+        with patch.object(SekaiSyncHandler, "log_message", lambda *args: None):
+            request.path = "/api/v1/refresh"
+            request.do_POST()
+        self.assertEqual(captured["status"], 200)
+        body = request.wfile.getvalue().decode("utf-8")
+        self.assertIn('"refreshed": true', body)
+
+
 if __name__ == "__main__":
     unittest.main()

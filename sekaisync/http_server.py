@@ -23,6 +23,12 @@ OPENAPI = {
                 "responses": {"200": {"description": "Store, master, web and freshness status"}},
             }
         },
+        "/api/v1/refresh": {
+            "post": {
+                "operationId": "refresh",
+                "responses": {"200": {"description": "Reload cached indexes from disk"}},
+            }
+        },
         "/api/v1/sites": {
             "get": {
                 "operationId": "sites",
@@ -98,8 +104,10 @@ OPENAPI = {
                     {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
                     {"name": "source", "in": "query", "schema": {"type": "string"}},
                     {"name": "language", "in": "query", "schema": {"type": "string"}},
+                    {"name": "kind", "in": "query", "schema": {"type": "string"}},
                     {"name": "include_text", "in": "query", "schema": {"type": "boolean"}},
                     {"name": "include_overlay", "in": "query", "schema": {"type": "boolean"}},
+                    {"name": "max_text_chars", "in": "query", "schema": {"type": "integer"}},
                 ],
                 "responses": {"200": {"description": "Crawled web text matches"}},
             }
@@ -137,8 +145,33 @@ OPENAPI = {
                     {"name": "language", "in": "query", "schema": {"type": "string"}},
                     {"name": "languages", "in": "query", "schema": {"type": "string"}},
                     {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                    {"name": "tag", "in": "query", "schema": {"type": "string"}},
+                    {"name": "sort", "in": "query", "schema": {"type": "string"}},
                 ],
                 "responses": {"200": {"description": "Extracted terms and their cross-language names"}},
+            }
+        },
+        "/api/v1/term_penetrate": {
+            "get": {
+                "operationId": "termPenetrate",
+                "parameters": [
+                    {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
+                    {"name": "story_key", "in": "query", "schema": {"type": "string"}},
+                    {"name": "languages", "in": "query", "schema": {"type": "string"}},
+                ],
+                "responses": {"200": {"description": "Cross-language per-line penetration for a term at a story position"}},
+            }
+        },
+        "/api/v1/tag_clouds": {
+            "get": {
+                "operationId": "tagClouds",
+                "responses": {"200": {"description": "Tag clouds split by released(multi-lang) vs unreleased(ja-only)"}},
+            }
+        },
+        "/api/v1/data_gaps": {
+            "get": {
+                "operationId": "dataGaps",
+                "responses": {"200": {"description": "Known data source limitations visible to agents"}},
             }
         },
         "/api/v1/events/check": {
@@ -405,6 +438,8 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                 source_language=query.get("language", [None])[0],
                 languages=languages,
                 limit=limit,
+                tag=query.get("tag", [None])[0],
+                sort=query.get("sort", ["score"])[0],
             )
             self._send_json(
                 200,
@@ -413,6 +448,28 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                     "results": results,
                 },
             )
+            return
+        if parsed.path == "/api/v1/term_penetrate":
+            languages = [
+                item.strip()
+                for item in query.get("languages", ["ja,zh_hans,en,zh_tw,ko"])[0].split(",")
+                if item.strip()
+            ]
+            result = self.core.term_penetrate(
+                query.get("query", [""])[0],
+                story_key=query.get("story_key", [None])[0] or None,
+                languages=languages,
+            )
+            if result is None:
+                self._send_json(404, {"error": f"No matching term: {query.get('query', [''])[0]}"})
+                return
+            self._send_json(200, result)
+            return
+        if parsed.path == "/api/v1/tag_clouds":
+            self._send_json(200, self.core.tag_clouds())
+            return
+        if parsed.path == "/api/v1/data_gaps":
+            self._send_json(200, {"gaps": self.core.data_gaps()})
             return
         if parsed.path == "/api/v1/fact_pack":
             entity_id = query.get("entity_id", [""])[0]
@@ -459,6 +516,10 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                 limit = int(query.get("limit", ["8"])[0])
             except ValueError:
                 limit = 8
+            try:
+                max_text_chars = int(query.get("max_text_chars", ["0"])[0])
+            except ValueError:
+                max_text_chars = 0
             results = self.core.web_lookup(
                 query.get("query", [""])[0],
                 source=query.get("source", [None])[0],
@@ -466,6 +527,8 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                 limit=limit,
                 include_text=include_text,
                 include_overlay=include_overlay,
+                kind=query.get("kind", [None])[0],
+                max_text_chars=max_text_chars,
             )
             self._send_json(200, {"query": query.get("query", [""])[0], "results": results})
             return
@@ -518,6 +581,10 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self._send_mcp_json(response)
+            return
+        if parsed.path == "/api/v1/refresh":
+            counts = self.core.refresh()
+            self._send_json(200, {"refreshed": True, "counts": counts})
             return
         if parsed.path != "/api/v1/verify_claims":
             self._send_json(404, {"error": "Not found"})

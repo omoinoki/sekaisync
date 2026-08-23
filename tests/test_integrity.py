@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sekaisync.integrity import run_integrity_check
+from sekaisync.integrity import cross_instance_reconciliation, run_integrity_check
 from sekaisync.models import WebPage
 from sekaisync.webindex import save_web_pages
 
@@ -174,6 +174,35 @@ class IntegrityTest(unittest.TestCase):
             result = run_integrity_check(store_root, limit=10)
             self.assertEqual(result["layers"]["web"]["canonical_missing"], 0)
             self.assertGreaterEqual(result["layers"]["web"]["canonical_not_applicable"], 1)
+
+
+    def test_cross_instance_reconciliation_detects_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            self._write_pages(store_root)
+            result = cross_instance_reconciliation(store_root, limit=10)
+
+            # event 2 is identical across both instances (no drift);
+            # event 1 has a conflicting rewritten copy on altsource_sv.
+            self.assertEqual(result["summary"]["drift_keys"], 1)
+            drift = [g for g in result["groups"] if g["drift"]]
+            self.assertEqual(len(drift), 1)
+            self.assertIn("altsource_ms", drift[0]["instances"])
+            self.assertIn("altsource_sv", drift[0]["instances"])
+            self.assertGreaterEqual(
+                result["summary"]["drift_by_instance"]["altsource_sv"]["drift_pages"], 2
+            )
+
+    def test_integrity_report_includes_cross_instance_layer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            self._write_pages(store_root)
+            result = run_integrity_check(store_root, limit=10)
+            self.assertIn("cross_instance", result["layers"])
+            self.assertIn(
+                "cross_instance_drift", result["summary"]
+            )
+            self.assertGreaterEqual(result["summary"]["cross_instance_drift"], 1)
 
 
 if __name__ == "__main__":

@@ -69,6 +69,9 @@ def mark_untranslated_pages(
             page["untranslated"] = True
             page["untranslated_placeholder"] = placeholder
             page["original_text_hash"] = original_hash
+            # P0 fix: keep original text alongside placeholder so the
+            # replacement is reversible (restore via original_text field).
+            page["original_text"] = other_text
             page["text"] = placeholder
             page["text_hash"] = sha256_hex(placeholder)
             page["hash"] = hashlib.sha1(placeholder.encode("utf-8")).hexdigest()[:16]

@@ -56,7 +56,9 @@ class CoreTest(unittest.TestCase):
             verified = core.verify_claims(
                 [{"claim": "Hoshino Ichika", "expected": "星乃一歌"}]
             )
-            self.assertEqual(verified[0]["status"], "verified")
+            self.assertEqual(verified[0]["status"], "matched")
+            self.assertIn("evidence", verified[0])
+            self.assertIn("method", verified[0])
 
     def test_unified_query_combines_metadata_and_web_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,7 +141,7 @@ class CoreTest(unittest.TestCase):
             )
             self.assertEqual(results[0]["names"]["en"], "Hoshino Ichika")
             self.assertTrue(results[0]["official"])
-            self.assertEqual(core.term_status()["terms"], 5)
+            self.assertEqual(core.term_status()["terms"], 4)
 
     def test_core_is_ready_with_terms_only(self):
         with tempfile.TemporaryDirectory() as tmp:

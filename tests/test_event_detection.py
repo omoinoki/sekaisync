@@ -220,6 +220,48 @@ class EventDetectionTest(unittest.TestCase):
         with mock.patch("sekaisync.cli.check_events", return_value={}) as fake:
             auto_event_check(enabled, ["jp"], force=True)
             self.assertFalse(fake.call_args.kwargs["daily_limit"])
+
+
+class SequenceNumberTest(unittest.TestCase):
+    def test_sequence_numbered_skips_placeholders(self):
+        from sekaisync.event_detection import _sequence_numbered
+
+        entries = [
+            {"event_id": 165, "start_at": "1000"},
+            {"event_id": 166, "start_at": "1100"},  # placeholder, never launched
+            {"event_id": 167, "start_at": "1200"},
+            {"event_id": 168, "start_at": "1300"},
+        ]
+        numbered = _sequence_numbered(entries, {"166"})
+        by_id = {str(item["event_id"]): item for item in numbered}
+        # Placeholder keeps no position; real events renumber densely.
+        self.assertEqual(by_id["165"]["sequence_no"], 1)
+        self.assertEqual(by_id["166"]["sequence_no"], None)
+        self.assertTrue(by_id["166"]["placeholder"])
+        self.assertEqual(by_id["167"]["sequence_no"], 2)
+        self.assertEqual(by_id["168"]["sequence_no"], 3)
+        self.assertFalse(by_id["167"]["placeholder"])
+
+    def test_placeholder_detection_from_master_files(self):
+        from sekaisync.event_detection import _jp_placeholder_event_ids
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "store"
+            jp = root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+            jp.mkdir(parents=True, exist_ok=True)
+            # E166 has no cards/music/stories; E167 has all three.
+            _write(jp, "events.json", [
+                {"id": 166, "eventType": "marathon", "name": "Placeholder"},
+                {"id": 167, "eventType": "marathon", "name": "Real"},
+            ])
+            _write(jp, "eventCards.json", [{"eventId": 167, "cardId": 1}])
+            _write(jp, "eventMusics.json", [{"eventId": 167, "musicId": 1}])
+            _write(jp, "eventStories.json", [{"eventId": 167, "id": 1}])
+            placeholders = _jp_placeholder_event_ids(root)
+            self.assertIn("166", placeholders)
+            self.assertNotIn("167", placeholders)
+
+
 if __name__ == "__main__":
     unittest.main()
 

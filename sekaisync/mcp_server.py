@@ -42,7 +42,7 @@ TOOLS = [
     },
     {
         "name": "sekaisync_term_lookup",
-        "description": "Look up an extracted Project Sekai term and its cross-language names.",
+        "description": "Look up an extracted Project Sekai term and its cross-language names. Tags: person/location/organization/event(product fictional)/product/other. Sort by score or weight.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -50,6 +50,21 @@ TOOLS = [
                 "language": {"type": "string"},
                 "languages": {"type": "array", "items": {"type": "string"}},
                 "limit": {"type": "integer", "default": 8},
+                "tag": {"type": "string"},
+                "sort": {"type": "string", "default": "score"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "sekaisync_term_penetrate",
+        "description": "Cross-language per-line penetration for a term at a story position (event:174:1 etc.). Returns per-language term/sentence/trust for the same narrative line.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "story_key": {"type": "string"},
+                "languages": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["query"],
         },
@@ -69,6 +84,21 @@ TOOLS = [
     {
         "name": "sekaisync_freshness",
         "description": "Return local data freshness and region coverage.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sekaisync_refresh",
+        "description": "Reload cached registry/glossary/factpacks/terms from disk after an external sync or index rebuild.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sekaisync_tag_clouds",
+        "description": "Return tag clouds split by released(multi-lang, supports penetrate) vs unreleased(ja-only, pending).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sekaisync_data_gaps",
+        "description": "Return known data source limitations (home_line gaps, overseas MySekai missing, etc.) so agents can honestly say 'not covered'.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -281,6 +311,21 @@ class McpServer:
                         source_language=arguments.get("language"),
                         languages=raw_languages,
                         limit=int(arguments.get("limit", 8)),
+                        tag=arguments.get("tag"),
+                        sort=str(arguments.get("sort", "score")),
+                    )
+                elif name == "sekaisync_term_penetrate":
+                    raw_languages = arguments.get("languages")
+                    if isinstance(raw_languages, str):
+                        raw_languages = [
+                            item.strip()
+                            for item in raw_languages.split(",")
+                            if item.strip()
+                        ]
+                    result = self.core.term_penetrate(
+                        arguments.get("query", ""),
+                        story_key=arguments.get("story_key"),
+                        languages=raw_languages,
                     )
                 elif name == "sekaisync_fact_pack":
                     result = self.core.fact_pack(
@@ -289,6 +334,10 @@ class McpServer:
                     )
                 elif name == "sekaisync_freshness":
                     result = self.core.freshness()
+                elif name == "sekaisync_refresh":
+                    result = self.core.refresh()
+                elif name == "sekaisync_data_gaps":
+                    result = {"gaps": self.core.data_gaps()}
                 elif name == "sekaisync_progress":
                     raw_regions = arguments.get("regions")
                     if isinstance(raw_regions, str):
@@ -303,6 +352,8 @@ class McpServer:
                         regions=regions,
                         live=bool(arguments.get("live", False)),
                     )
+                elif name == "sekaisync_tag_clouds":
+                    result = self.core.tag_clouds()
                 elif name == "sekaisync_trust":
                     result = self.core.trust_summary()
                 elif name == "sekaisync_integrity":

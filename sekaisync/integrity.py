@@ -98,7 +98,10 @@ def verify_web_integrity(store_root: Path, limit: int = 20) -> dict[str, Any]:
                     str(page.get("scenario_id_mismatch")),
                 )
             )
-        if canonical and not hard_flagged and not bool(page.get("untranslated", False)):
+        # P0 fix: flagged pages now JOIN canonical groups so their conflicts
+        # are visible to agents (previously silently excluded). We tag them
+        # so the report can distinguish clean vs flagged entries.
+        if canonical and not bool(page.get("untranslated", False)):
             groups[canonical].append(page)
         elif not canonical:
             kind = str(page.get("kind", "")).lower()
@@ -167,6 +170,83 @@ def verify_web_integrity(store_root: Path, limit: int = 20) -> dict[str, Any]:
     }
 
 
+def cross_instance_reconciliation(store_root: Path, limit: int = 20) -> dict[str, Any]:
+    """Audit the same canonical content across registered instances.
+
+    Compares ``text_hash`` / ``source_last_modified`` per canonical key across
+    the instance sources that provide the page.  Content drift between
+    instances is a conflict (the "last line of defense" against an agent
+    quoting stale or divergent text).  This does not re-verify hash integrity;
+    it cross-checks instances against each other.
+    """
+    pages = flatten_web_pages(store_root)
+    by_canonical: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for page in pages:
+        canonical = str(page.get("canonical_key") or "")
+        if canonical and not bool(page.get("untranslated", False)):
+            by_canonical[canonical].append(page)
+
+    groups: list[dict[str, Any]] = []
+    drift_instances: dict[str, dict[str, Any]] = {}
+    total_drift = 0
+    for canonical, items in sorted(by_canonical.items()):
+        if len(items) <= 1:
+            continue
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in items:
+            by_source[str(item.get("source") or "")].append(item)
+        if len(by_source) <= 1:
+            continue
+        hashes = {
+            str(item.get("text_hash")) or sha256_hex(str(item.get("text", "")))
+            for item in items
+        }
+        entry = {
+            "canonical_key": canonical,
+            "drift": len(hashes) > 1,
+            "instances": {
+                source: {
+                    "pages": len(inst),
+                    "text_hashes": sorted(
+                        {
+                            str(item.get("text_hash"))
+                            or sha256_hex(str(item.get("text", "")))
+                            for item in inst
+                        }
+                    ),
+                    "last_modified": max(
+                        (str(item.get("source_last_modified") or "") for item in inst),
+                        default="",
+                    ),
+                }
+                for source, inst in sorted(by_source.items())
+            },
+        }
+        if len(hashes) > 1:
+            total_drift += 1
+            for source, inst in by_source.items():
+                key = str(source)
+                bucket = drift_instances.setdefault(
+                    key,
+                    {"drift_pages": 0, "latest": "", "stale": ""},
+                )
+                bucket["drift_pages"] += len(inst)
+        groups.append(entry)
+
+    summary = {
+        "multi_instance_keys": sum(
+            1 for entry in groups if len(entry["instances"]) > 1
+        ),
+        "drift_keys": total_drift,
+        "drift_by_instance": drift_instances,
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "groups": groups[:limit],
+    }
+
+
 def _verify_unique_layer(
     name: str,
     items: list[Any],
@@ -195,6 +275,7 @@ def _verify_unique_layer(
 
 def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
     web = verify_web_integrity(store_root, limit=limit)
+    reconciliation = cross_instance_reconciliation(store_root, limit=limit)
     registry = _verify_unique_layer(
         "registry",
         load_registry(registry_path(store_root)),
@@ -223,6 +304,7 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
             "registry": registry,
             "glossary": glossary,
             "terms": terms,
+            "cross_instance": reconciliation,
         },
         "summary": {
             "duplicate_ids": registry["duplicate_ids"]
@@ -230,6 +312,7 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
             + terms["duplicate_ids"],
             "mirror_duplicates": web["mirror_duplicates"],
             "conflicts": web["conflict_groups"],
+            "cross_instance_drift": reconciliation["summary"]["drift_keys"],
             "hash_mismatches": web["hash_mismatches"],
             "asset_mismatches": web["asset_mismatches"],
             "content_language_mismatches": web["content_language_mismatches"],

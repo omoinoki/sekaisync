@@ -1,11 +1,14 @@
+import http.client
 import json
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import sekaisync.crawler as crawler_mod
+from sekaisync.sources import BACKEND_MOESEKAI, BACKEND_SEKAI_VIEWER
 from sekaisync.crawler import (
     _cache_bust_url,
     _crawl_altsource_ms_special_stories,
@@ -1405,6 +1408,193 @@ class SourceSettingsFlexibilityTest(unittest.TestCase):
             "jp", "event_story/x/scenario/event_1_01.json", fake_fetch, language="ja"
         )
         self.assertTrue(any("storage.sekai.best" in call for call in calls))
+
+
+class RateLimitBackoffTest(unittest.TestCase):
+    """429 responses retry with Retry-After; other HTTP errors are final."""
+
+    def _http_error(self, code: int, headers: Optional[dict] = None) -> urllib.error.HTTPError:
+        message = http.client.HTTPMessage()
+        for key, value in (headers or {}).items():
+            message[key] = value
+        return urllib.error.HTTPError("http://example.test", code, "err", message, None)
+
+    def test_429_with_retry_after_sleeps_and_succeeds(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> str:
+            calls.append(url)
+            if len(calls) == 1:
+                raise self._http_error(429, {"Retry-After": "0.01"})
+            return "ok"
+
+        with patch("sekaisync.crawler.time.sleep") as mock_sleep:
+            result = crawler_mod._fetch_http_with_retry(flaky, "u", attempts=3)
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(calls), 2)
+        mock_sleep.assert_called_once()
+        self.assertLessEqual(mock_sleep.call_args[0][0], 60.0)
+
+    def test_429_without_retry_after_uses_linear_backoff(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> str:
+            calls.append(url)
+            raise self._http_error(429)
+
+        with patch("sekaisync.crawler.time.sleep") as mock_sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                crawler_mod._fetch_http_with_retry(flaky, "u", attempts=3, base_delay=0.1)
+        self.assertEqual(len(calls), 3)
+        # attempt 0 -> base*1, attempt 1 -> base*2
+        sleeps = [call.args[0] for call in mock_sleep.call_args_list]
+        self.assertEqual(sleeps, [0.1, 0.2])
+
+    def test_429_exhausts_attempts_and_raises(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> str:
+            calls.append(url)
+            raise self._http_error(429)
+
+        with patch("sekaisync.crawler.time.sleep"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                crawler_mod._fetch_http_with_retry(flaky, "u", attempts=2)
+        self.assertEqual(ctx.exception.code, 429)
+        self.assertEqual(len(calls), 2)
+
+    def test_404_is_not_retried(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> str:
+            calls.append(url)
+            raise self._http_error(404)
+
+        with patch("sekaisync.crawler.time.sleep") as mock_sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                crawler_mod._fetch_http_with_retry(flaky, "u", attempts=3)
+        self.assertEqual(len(calls), 1)
+        mock_sleep.assert_not_called()
+
+    def test_network_error_still_retried_with_linear_backoff(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> str:
+            calls.append(url)
+            raise TimeoutError("timed out")
+
+        with patch("sekaisync.crawler.time.sleep") as mock_sleep:
+            with self.assertRaises(TimeoutError):
+                crawler_mod._fetch_http_with_retry(flaky, "u", attempts=3, base_delay=0.2)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[0] for call in mock_sleep.call_args_list], [0.2, 0.4])
+
+    def test_retry_after_is_capped_by_max(self):
+        def flaky(url: str) -> str:
+            raise self._http_error(429, {"Retry-After": "3600"})
+
+        with patch("sekaisync.crawler.time.sleep") as mock_sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                crawler_mod._fetch_http_with_retry(
+                    flaky, "u", attempts=2, max_retry_after=5.0
+                )
+        self.assertEqual(mock_sleep.call_args[0][0], 5.0)
+
+    def test_retry_meta_variant_respects_429(self):
+        calls: list[str] = []
+
+        def flaky(url: str) -> tuple[str, dict]:
+            calls.append(url)
+            if len(calls) == 1:
+                raise self._http_error(429, {"Retry-After": "0.01"})
+            return "ok", {"etag": "x"}
+
+        with patch("sekaisync.crawler.time.sleep"):
+            text, meta = crawler_mod._fetch_http_with_retry_meta(flaky, "u", attempts=3)
+        self.assertEqual(text, "ok")
+        self.assertEqual(meta, {"etag": "x"})
+
+
+class _FakeResponse:
+    """Minimal context-manager response for urlopen mocks."""
+
+    def __init__(self, status: int = 200):
+        self.status = status
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *args) -> None:
+        return None
+
+
+class InstanceHealthProbeTest(unittest.TestCase):
+    def test_ms_probe_healthy_when_site_base_responds(self):
+        calls: list[str] = []
+
+        def fake_open(request, timeout):
+            calls.append(request.full_url)
+            return _FakeResponse(200)
+
+        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
+            ok = crawler_mod.probe_instance_health(
+                "altsource_ms",
+                BACKEND_MOESEKAI,
+                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            )
+        self.assertTrue(ok)
+        self.assertEqual(calls, ["https://pjsk.moe"])
+
+    def test_ms_probe_unhealthy_on_http_error(self):
+        def fake_open(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 503, "Unavailable", None, None
+            )
+
+        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
+            ok = crawler_mod.probe_instance_health(
+                "altsource_ms",
+                BACKEND_MOESEKAI,
+                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            )
+        self.assertFalse(ok)
+
+    def test_sv_probe_hits_versions_json(self):
+        calls: list[str] = []
+
+        def fake_open(request, timeout):
+            calls.append(request.full_url)
+            return _FakeResponse(200)
+
+        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
+            ok = crawler_mod.probe_instance_health(
+                "altsource_sv",
+                BACKEND_SEKAI_VIEWER,
+                settings=ViewerSettings(master_base="https://sekai-world.github.io"),
+            )
+        self.assertTrue(ok)
+        self.assertEqual(
+            calls,
+            ["https://sekai-world.github.io/sekai-master-db-diff/versions.json"],
+        )
+
+    def test_unconfigured_instance_counts_healthy(self):
+        ok = crawler_mod.probe_instance_health(
+            "altsource_ms", BACKEND_MOESEKAI, settings=MoesekaiSettings()
+        )
+        self.assertTrue(ok)
+
+    def test_network_error_counts_unhealthy(self):
+        def fake_open(request, timeout):
+            raise TimeoutError("timed out")
+
+        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
+            ok = crawler_mod.probe_instance_health(
+                "altsource_ms",
+                BACKEND_MOESEKAI,
+                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            )
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

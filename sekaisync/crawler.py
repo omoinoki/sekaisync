@@ -280,18 +280,43 @@ def fetch_http_text(url: str, timeout: int = 30) -> str:
     return fetch_http_text_with_headers(url, timeout=timeout)[0]
 
 
+def _retry_after_seconds(exc: BaseException) -> float:
+    """Extract a wait time from a 429 response's ``Retry-After`` header.
+
+    ``urllib`` raises ``HTTPError`` carrying the response headers; any other
+    error carries no rate-limit signal and falls back to the linear backoff.
+    """
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+        value = exc.headers.get("Retry-After") if exc.headers else None
+        if value:
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                # RFC 9110 also allows an HTTP-date; a date is always "soon
+                # enough" that the caller's own backoff cap still applies.
+                pass
+    return 0.0
+
+
 def _fetch_http_with_retry(
     fetcher: Callable[[str], str],
     url: str,
     attempts: int = 3,
     base_delay: float = 0.3,
+    max_retry_after: float = 60.0,
 ) -> str:
     last_error: Optional[Exception] = None
     for attempt in range(attempts):
         try:
             return fetcher(url)
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                # Non-rate-limit HTTP errors (404/500/...) are final; retrying
+                # them would only slow the crawl without changing the outcome.
+                raise
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(min(_retry_after_seconds(exc) or (base_delay * (attempt + 1)), max_retry_after))
         except _NETWORK_ERRORS as exc:
             last_error = exc
             if attempt + 1 < attempts:
@@ -305,6 +330,7 @@ def _fetch_http_with_retry_meta(
     url: str,
     attempts: int = 3,
     base_delay: float = 0.3,
+    max_retry_after: float = 60.0,
 ) -> tuple[str, dict[str, str]]:
     last_error: Optional[Exception] = None
     for attempt in range(attempts):
@@ -314,8 +340,12 @@ def _fetch_http_with_retry_meta(
                 text, meta = result
                 return text, dict(meta)
             return result, {}
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                raise
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(min(_retry_after_seconds(exc) or (base_delay * (attempt + 1)), max_retry_after))
         except _NETWORK_ERRORS as exc:
             last_error = exc
             if attempt + 1 < attempts:
@@ -364,6 +394,52 @@ def write_consent(store_root: Path, source: str, accepted: bool = True) -> Path:
     }
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def probe_instance_health(
+    instance_id: str,
+    backend: str,
+    settings: Optional[Any] = None,
+    timeout: float = 10.0,
+) -> bool:
+    """Lightweight reachability probe for one crawl instance.
+
+    Returns False when the instance endpoint is unreachable or answers with
+    an HTTP error, so a crawl loop can skip the instance and continue with
+    the next one instead of aborting the whole run.  ``settings`` is the
+    per-instance settings object (``MoesekaiSettings`` / ``ViewerSettings``);
+    an unconfigured instance cannot be probed and counts as healthy — the
+    crawl itself reports the missing endpoint.
+    """
+    try:
+        if backend == BACKEND_MOESEKAI:
+            base = getattr(settings, "site_base", "") if settings is not None else ""
+            if not base:
+                return True
+            request = urllib.request.Request(
+                base, headers={"User-Agent": USER_AGENT, "Accept": "*/*"}
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.status == 200
+        if backend == BACKEND_SEKAI_VIEWER:
+            base = getattr(settings, "master_base", "") if settings is not None else ""
+            if not base:
+                return True
+            url = f"{str(base).rstrip('/')}/sekai-master-db-diff/versions.json"
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.status == 200
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+    ):
+        return False
+    return True
 
 
 def parse_sitemap_urls(xml_text: str) -> list[str]:

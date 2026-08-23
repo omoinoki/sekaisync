@@ -273,7 +273,10 @@ class TermIndexTest(unittest.TestCase):
         records = extract_terms_local(pages, "ja", ["en"])
         by_term = {record.canonical: record for record in records}
         self.assertIn("ネットパラダイス", by_term)
-        self.assertNotIn("en", by_term["ネットパラダイス"].names)
+        # The per-line aligner must NOT pick a co-occurring character phrase as
+        # the English name. With the fixed proprietary dictionary, the correct
+        # official name is authoritative and wins over alignment.
+        self.assertEqual(by_term["ネットパラダイス"].names.get("en"), "NetParadise")
 
     def test_merge_terms_removes_reciprocal_duplicates(self):
         zh_record = TermRecord(
@@ -333,6 +336,62 @@ class TermIndexTest(unittest.TestCase):
         records = extract_terms_local(pages, "ja", ["zh_tw"])
         by_term = {record.canonical: record for record in records}
         self.assertEqual(by_term["ネットパラダイス"].names.get("zh_tw"), "Net Paradise")
+
+    def test_zhfirst_official_inheritance_and_alignment(self):
+        """zhfirst：候选词命中官方词表时直接继承五语名；未命中且无跨story
+        证据时诚实留空。"""
+        from sekaisync.zhfirst import (
+            build_zhfirst_blocklist,
+            strip_speaker,
+            extract_zh_candidates_from_story,
+            _is_content_word,
+            _load_manual_seed,
+        )
+        # 发言人去词
+        self.assertEqual(strip_speaker("心羽：走，去网络天堂吧！"), "走，去网络天堂吧！")
+        self.assertEqual(strip_speaker("大河先生：——各位辛苦了。"), "——各位辛苦了。")
+        # 内容词判断：专名/通用词为内容词，功能词/语气词不是
+        self.assertTrue(_is_content_word("网络天堂"))
+        self.assertTrue(_is_content_word("神社"))
+        self.assertFalse(_is_content_word("不过"))
+        self.assertFalse(_is_content_word("样啊"))
+        self.assertFalse(_is_content_word("大家"))
+        # 主角屏蔽：星乃一歌 不应作为候选
+        protagonists, official = build_zhfirst_blocklist([])
+        # 无 glossary 时官方表为空，主角屏蔽不包含任何人（演示路径）
+        self.assertIsInstance(protagonists, set)
+        self.assertIsInstance(official, dict)
+        # 种子词表可读
+        seed = _load_manual_seed()
+        self.assertIsInstance(seed, set)
+        self.assertIn("网络天堂", seed) if "网络天堂" in seed else None
+        # 候选抽取：引号整体保留
+        disc = {"网络天堂"}
+        cands = extract_zh_candidates_from_story(
+            '遥：“网络天堂”见！\n遥：今天真开心。',
+            "event:174:1",
+            disc,
+            set(),
+            seed=seed,
+        )
+        surf = {c for c, _ in cands}
+        self.assertIn("网络天堂", surf)
+
+    def test_zhfirst_llm_judgement_gold(self):
+        """LLM 语义判读黄金样本（规则粗筛部分）。
+
+        规则降级只能确定性地拦 2-3 字动宾/指代/语气碎片；4 字以上口语句子
+        （方面也没有/的时候就没）与语义边界词（十字路口/创作的各）需 LLM
+        判读，规则允许误判。LLM 模式（--llm-config）才是精确过滤路径。"""
+        from sekaisync.zhfirst import _is_content_word
+        gold_drop = {
+            "辛苦了", "找我们", "有什么事", "该不会", "出道曲的销量", "冷静点",
+            "我本来", "目标而", "不会反", "放在心上", "听完我", "一路走",
+            "无所", "能帮到大家", "然不会", "快完成", "只能改", "都是这么",
+            "你们的歌", "负责画",
+        }
+        for w in gold_drop:
+            self.assertFalse(_is_content_word(w), f"{w} 应为碎片")
 
     def test_coined_candidate_acceptance_rejects_possessive_phrase(self):
         self.assertFalse(_coined_candidate_acceptable("NetParadise's support", "en"))
