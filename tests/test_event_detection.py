@@ -261,6 +261,48 @@ class SequenceNumberTest(unittest.TestCase):
             self.assertIn("166", placeholders)
             self.assertNotIn("167", placeholders)
 
+    def test_list_events_lazily_backfills_sequence_no(self):
+        """Archives written before sequence_no landed self-heal on read."""
+        from sekaisync.event_detection import save_archive
+        from sekaisync.layout import events_archive_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "store"
+            jp = root / "raw" / "jp" / "source" / "sekai-master-db-diff-main"
+            jp.mkdir(parents=True, exist_ok=True)
+            _write(jp, "events.json", [
+                {"id": 1, "eventType": "marathon", "name": "One", "startAt": 1000},
+                {"id": 2, "eventType": "marathon", "name": "Two", "startAt": 2000},
+            ])
+            _write(jp, "eventCards.json", [{"eventId": 1, "cardId": 10}])
+            _write(jp, "eventMusics.json", [{"eventId": 1, "musicId": 20}])
+            _write(jp, "eventStories.json", [{"eventId": 1, "id": 30}])
+
+            # Old-format archive: no sequence_no / placeholder fields.
+            save_archive(
+                root,
+                {
+                    "version": 1,
+                    "regions": {
+                        "jp": {
+                            "events": [
+                                {"event_id": 1, "name": "One", "start_at": 1000},
+                                {"event_id": 2, "name": "Two", "start_at": 2000},
+                            ]
+                        }
+                    },
+                },
+            )
+
+            result = list_events(root, regions=["jp"])
+            events = result["regions"]["jp"]
+            by_id = {e["event_id"]: e for e in events}
+            # Event 2 is a placeholder (no cards/music/story); event 1 is real.
+            self.assertEqual(by_id[1]["sequence_no"], 1)
+            self.assertTrue(by_id[2]["placeholder"])
+            self.assertIsNone(by_id[2]["sequence_no"])
+            self.assertEqual(result["total"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

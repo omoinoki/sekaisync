@@ -558,6 +558,14 @@ def list_events(
     for region in selected:
         region_data = archive.get("regions", {}).get(region, {})
         events = region_data.get("events", [])
+        # Lazy self-heal: archives written before sequence_no landed lack the
+        # field.  Compute it on read so old stores answer without a forced
+        # ``events check`` rerun.  Only recompute when any entry is missing it.
+        if events and not any(
+            entry.get("sequence_no") is not None or entry.get("placeholder") is not None
+            for entry in events
+        ):
+            events = _sequence_numbered(events, _jp_placeholder_event_ids(store_root))
         if limit is not None:
             events = events[-limit:]
         out[region] = events
