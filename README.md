@@ -1,5 +1,9 @@
 # SekaiSync 🎵
 
+<p align="center">
+  <img src="sekaisync.png" alt="SekaiSync overview" width="720"/>
+</p>
+
 > A local knowledge base and AI Agent context (MCP) service for *Project SEKAI* fandom.
 
 English | [中文](README.zh-CN.md)
@@ -95,6 +99,19 @@ To ensure accurate output from AI Agents, SekaiSync strictly defines its data st
 | **Multimedia Assets / Runtime Data** | ❌ Excluded | Does NOT store images, audio, Live2D assets, chart files, or real-time player data. |
 
 > 📌 **Anti-Hallucination Design**: When queried information is outside the current `store/` coverage, SekaiSync explicitly returns `not covered`, instructing the Agent to honestly respond that the information is unknown rather than inventing facts.
+
+---
+
+## 🔬 Experimental: Game-Text Noun Extraction
+
+SekaiSync includes an **experimental** terminology pipeline that cuts proper nouns and content words directly out of story text (JP/CN/EN/TC/KR), then aligns them across the five languages:
+
+- **Zero-dependency tokenizer**: language-block splitting + bidirectional maximum matching (Bi-MM) with unsupervised word discovery (frequency × PMI cohesion × boundary entropy), inspired by CJK segmentation research (arXiv:2407.19400, 1905.01964).
+- **zh-first extraction**: simplified-Chinese-priority pipeline (`sekaisync terms zhfirst`) that filters the 26 playable protagonists, speaker labels and function words, then inherits official five-language names when a term hits the glossary.
+- **Cross-language penetration**: same-position alignment (`sekaisync terms penetrate`) and released/unreleased tag clouds (`sekaisync tag-clouds`).
+- **Honest gating**: statistical alignment is only adopted with ≥2-story evidence (containment ≥ 0.30); low-confidence terms stay language-local instead of producing wrong translations.
+
+> ⚠️ **Status: experimental.** Recall on a 487-word manual gold set is ~81%, and fragment filtering still relies on LLM judgement (`--llm-config`) for 4-character colloquial fragments that rule-based filters miss. Do not treat extracted terms as an authoritative lexicon yet — verify against the official glossary when accuracy matters.
 
 ---
 

@@ -1,5 +1,9 @@
 # SekaiSync 🎵
 
+<p align="center">
+  <img src="sekaisync.png" alt="SekaiSync 总览" width="720"/>
+</p>
+
 > 面向《世界计划》(Project SEKAI) 粉丝的本地知识库与 AI Agent 上下文（MCP）服务。
 
 [English](README.md) | 中文
@@ -95,6 +99,19 @@ python -m sekaisync serve-http --host 127.0.0.1 --port 8787
 | **多媒体资产 / 运行时数据** | ❌ 不包含 | 不存储图片、音频、Live2D、谱面文件或实时玩家数据 |
 
 > 📌 **抗幻觉设计**：当查询的信息超出当前 `store/` 覆盖范围时，SekaiSync 会明确返回 `not covered`，指示 Agent 如实回答「未知」而非编造事实。
+
+---
+
+## 🔬 试验性：游戏文本名词切削机制
+
+SekaiSync 包含一套**试验性**的术语管道，从剧情正文（日/简中/繁中/英/韩）中直接切削专有名词与内容词，并在五语言之间对齐：
+
+- **零依赖分词器**：语言块切分 + 双向最大匹配（Bi-MM）+ 无监督词语发现（词频 × PMI 内聚度 × 边界熵），参考中日韩分词研究（arXiv:2407.19400、1905.01964）。
+- **简中优先提取**：`sekaisync terms zhfirst` 管道，屏蔽 26 名可玩主角、发言人标签与功能词，命中 glossary 时直接继承官方五语名称。
+- **跨语言穿透**：同点位对齐（`sekaisync terms penetrate`）与已发布/未发布词云（`sekaisync tag-clouds`）。
+- **诚实门控**：统计对齐仅在 ≥2 个故事有证据时采纳（containment ≥ 0.30）；低置信词保持单语言本地，不产出错误译名。
+
+> ⚠️ **状态：试验性。** 487 词人工黄金集上的召回约 81%，且 4 字口语碎片的过滤仍依赖 LLM 语义判断（`--llm-config`），规则法存在漏判。请勿将提取结果视为权威词表——准确性敏感的场景请对照官方 glossary 核实。
 
 ---
 
