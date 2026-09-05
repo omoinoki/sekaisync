@@ -10,6 +10,12 @@ from sekaisync import __version__
 from sekaisync.config import SiteSettings, load_site_profile
 from sekaisync.core import SekaiSyncCore
 from sekaisync.mcp_server import PROTOCOL_VERSION, McpServer
+from sekaisync.tools import (
+    HTTP_GET_ROUTES,
+    HTTP_POST_ROUTES,
+    ToolSpec,
+    coerce_args,
+)
 
 
 OPENAPI = {
@@ -274,6 +280,9 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
     core: SekaiSyncCore
     sites: tuple[SiteSettings, ...] = ()
 
+    def _sites_provider(self):
+        return self.sites
+
     def _send_mcp_json(self, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         accept = self.headers.get("Accept", "")
@@ -311,6 +320,33 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _run_tool(self, spec: ToolSpec, get_raw, raw_query: str = "") -> Any:
+        kwargs = coerce_args(spec, {}, endpoint="http", get_raw=get_raw)
+        if spec.core_method is None:
+            if spec.name == "sites":
+                return {"sites": [site.to_dict() for site in self.sites]}
+            raise ValueError(f"Endpoint {spec.http_path} has no handler")
+        result = getattr(self.core, spec.core_method)(**kwargs)
+        if spec.http_not_found is not None and result is None:
+            message = spec.http_not_found
+            try:
+                message = spec.http_not_found.format(**kwargs)
+            except (KeyError, IndexError):
+                pass
+            self._send_json(404, {"error": message})
+            return None
+        if spec.wrap == "query_results":
+            return {"query": raw_query, "results": result}
+        if spec.wrap == "results":
+            return {"results": result}
+        if spec.wrap == "browse_results":
+            return {"results": result}
+        if spec.wrap == "gaps":
+            return {"gaps": result}
+        if spec.wrap == "refresh":
+            return {"refreshed": True, "counts": result}
+        return result
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
@@ -320,250 +356,17 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         if parsed.path == "/openapi.json":
             self._send_json(200, OPENAPI)
             return
-        if parsed.path == "/api/v1/status":
-            self._send_json(200, self.core.status())
+        spec = HTTP_GET_ROUTES.get(parsed.path)
+        if spec is None:
+            self._send_json(404, {"error": "Not found"})
             return
-        if parsed.path == "/api/v1/sites":
-            self._send_json(
-                200,
-                {"sites": [site.to_dict() for site in self.sites]},
-            )
-            return
-        if parsed.path == "/api/v1/lookup":
-            try:
-                limit = int(query.get("limit", ["8"])[0])
-            except ValueError:
-                limit = 8
-            results = self.core.lookup(
-                query.get("query", [""])[0],
-                type=query.get("type", [None])[0],
-                region=query.get("region", [None])[0],
-                language=query.get("language", [None])[0],
-                limit=limit,
-            )
-            self._send_json(200, {"query": query.get("query", [""])[0], "results": results})
-            return
-        if parsed.path == "/api/v1/resolve":
-            target_language = query.get("target_language", ["zh_tw"])[0]
-            source_language = query.get("source_language", [None])[0]
-            kind = query.get("kind", [None])[0]
-            results = self.core.resolve_name(
-                query.get("query", [""])[0],
-                target_language=target_language,
-                source_language=source_language,
-                kind=kind,
-            )
-            self._send_json(200, {"query": query.get("query", [""])[0], "results": results})
-            return
-        if parsed.path == "/api/v1/events/check":
-            regions = [
-                item.strip()
-                for item in query.get("regions", [""])[0].split(",")
-                if item.strip()
-            ] or None
-            try:
-                timeout = int(query.get("timeout", ["30"])[0])
-            except ValueError:
-                timeout = 30
-            result = self.core.event_check(regions=regions, timeout=timeout)
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/events/archive":
-            regions = [
-                item.strip()
-                for item in query.get("regions", [""])[0].split(",")
-                if item.strip()
-            ] or None
-            try:
-                limit = int(query.get("limit", [""])[0])
-            except ValueError:
-                limit = None
-            result = self.core.event_archive(regions=regions, limit=limit)
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/event_alias":
-            regions = [
-                item.strip()
-                for item in query.get("regions", [""])[0].split(",")
-                if item.strip()
-            ] or None
-            result = self.core.event_alias(
-                query.get("query", [""])[0],
-                regions=regions,
-            )
-            if result is None:
-                self._send_json(404, {"error": "No matching event alias or ordinal"})
-                return
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/worldlink":
-            regions = [
-                item.strip()
-                for item in query.get("regions", [""])[0].split(",")
-                if item.strip()
-            ] or None
-            result = self.core.worldlink(
-                query.get("query", [""])[0],
-                regions=regions,
-            )
-            if result is None:
-                self._send_json(404, {"error": "No matching World Link alias or ordinal"})
-                return
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/activity":
-            regions = [
-                item.strip()
-                for item in query.get("regions", [""])[0].split(",")
-                if item.strip()
-            ] or None
-            result = self.core.activity(
-                query.get("query", [""])[0],
-                regions=regions,
-            )
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/term_lookup":
-            try:
-                limit = int(query.get("limit", ["8"])[0])
-            except ValueError:
-                limit = 8
-            languages = [
-                item.strip()
-                for item in query.get("languages", ["ja,zh_hans,en,zh_tw,ko"])[0].split(",")
-                if item.strip()
-            ]
-            results = self.core.term_lookup(
-                query.get("query", [""])[0],
-                source_language=query.get("language", [None])[0],
-                languages=languages,
-                limit=limit,
-                tag=query.get("tag", [None])[0],
-                sort=query.get("sort", ["score"])[0],
-            )
-            self._send_json(
-                200,
-                {
-                    "query": query.get("query", [""])[0],
-                    "results": results,
-                },
-            )
-            return
-        if parsed.path == "/api/v1/term_penetrate":
-            languages = [
-                item.strip()
-                for item in query.get("languages", ["ja,zh_hans,en,zh_tw,ko"])[0].split(",")
-                if item.strip()
-            ]
-            result = self.core.term_penetrate(
-                query.get("query", [""])[0],
-                story_key=query.get("story_key", [None])[0] or None,
-                languages=languages,
-            )
-            if result is None:
-                self._send_json(404, {"error": f"No matching term: {query.get('query', [''])[0]}"})
-                return
-            self._send_json(200, result)
-            return
-        if parsed.path == "/api/v1/tag_clouds":
-            self._send_json(200, self.core.tag_clouds())
-            return
-        if parsed.path == "/api/v1/data_gaps":
-            self._send_json(200, {"gaps": self.core.data_gaps()})
-            return
-        if parsed.path == "/api/v1/fact_pack":
-            entity_id = query.get("entity_id", [""])[0]
-            pack = self.core.fact_pack(entity_id, language=query.get("language", ["en"])[0])
-            if pack is None:
-                self._send_json(404, {"error": f"Entity not found: {entity_id}"})
-                return
-            self._send_json(200, pack)
-            return
-        if parsed.path == "/api/v1/freshness":
-            self._send_json(200, self.core.freshness())
-            return
-        if parsed.path == "/api/v1/progress":
-            raw_regions = query.get("regions", [None])[0]
-            regions = (
-                [item.strip() for item in raw_regions.split(",") if item.strip()]
-                if raw_regions
-                else None
-            )
-            live = query.get("live", ["false"])[0].lower() in {"1", "true", "yes"}
-            self._send_json(200, self.core.progress(regions=regions, live=live))
-            return
-        if parsed.path == "/api/v1/trust":
-            self._send_json(200, self.core.trust_summary())
-            return
-        if parsed.path == "/api/v1/integrity":
-            try:
-                limit = int(query.get("limit", ["20"])[0])
-            except ValueError:
-                limit = 20
-            self._send_json(200, self.core.integrity(limit=limit))
-            return
-        if parsed.path == "/api/v1/news":
-            try:
-                limit = int(query.get("limit", ["100"])[0])
-            except ValueError:
-                limit = 100
-            self._send_json(200, self.core.news(limit=limit))
-            return
-        if parsed.path == "/api/v1/web_lookup":
-            include_text = query.get("include_text", ["false"])[0].lower() in {"1", "true", "yes"}
-            include_overlay = query.get("include_overlay", ["false"])[0].lower() in {"1", "true", "yes"}
-            try:
-                limit = int(query.get("limit", ["8"])[0])
-            except ValueError:
-                limit = 8
-            try:
-                max_text_chars = int(query.get("max_text_chars", ["0"])[0])
-            except ValueError:
-                max_text_chars = 0
-            results = self.core.web_lookup(
-                query.get("query", [""])[0],
-                source=query.get("source", [None])[0],
-                language=query.get("language", [None])[0],
-                limit=limit,
-                include_text=include_text,
-                include_overlay=include_overlay,
-                kind=query.get("kind", [None])[0],
-                max_text_chars=max_text_chars,
-            )
-            self._send_json(200, {"query": query.get("query", [""])[0], "results": results})
-            return
-        if parsed.path == "/api/v1/web_browse":
-            try:
-                limit = int(query.get("limit", ["50"])[0])
-            except ValueError:
-                limit = 50
-            include_text = query.get("include_text", ["false"])[0].lower() in {"1", "true", "yes"}
-            results = self.core.web_browse(
-                source=query.get("source", [None])[0],
-                language=query.get("language", [None])[0],
-                kind=query.get("kind", [None])[0],
-                limit=limit,
-                include_text=include_text,
-            )
-            self._send_json(200, {"results": results})
-            return
-        if parsed.path == "/api/v1/query":
-            try:
-                limit = int(query.get("limit", ["8"])[0])
-            except ValueError:
-                limit = 8
-            include_overlay = query.get("include_overlay", ["false"])[0].lower() in {"1", "true", "yes"}
-            results = self.core.query(
-                query.get("query", [""])[0],
-                type=query.get("type", [None])[0],
-                region=query.get("region", [None])[0],
-                language=query.get("language", [None])[0],
-                limit=limit,
-                include_overlay=include_overlay,
-            )
-            self._send_json(200, results)
-            return
-        self._send_json(404, {"error": "Not found"})
+        payload = self._run_tool(
+            spec,
+            get_raw=lambda name: query.get(name, [None])[0],
+            raw_query=query.get("query", [""])[0],
+        )
+        if payload is not None:
+            self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -574,7 +377,7 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError):
                 self._send_json(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
                 return
-            response = handle_mcp_message(self.core, message)
+            response = handle_mcp_message(self.core, message, sites_provider=self._sites_provider)
             if response is None:
                 self.send_response(202)
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -582,28 +385,35 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
                 return
             self._send_mcp_json(response)
             return
-        if parsed.path == "/api/v1/refresh":
-            counts = self.core.refresh()
-            self._send_json(200, {"refreshed": True, "counts": counts})
-            return
-        if parsed.path != "/api/v1/verify_claims":
+        spec = HTTP_POST_ROUTES.get(parsed.path)
+        if spec is None:
             self._send_json(404, {"error": "Not found"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
-            claims = body.get("claims", [])
+            if length <= 0:
+                body = {}
+            else:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(body, dict):
+                raise ValueError
         except (ValueError, json.JSONDecodeError):
             self._send_json(400, {"error": "Invalid JSON body"})
             return
-        self._send_json(200, {"results": self.core.verify_claims(claims)})
+        payload = self._run_tool(spec, get_raw=lambda name: body.get(name))
+        if payload is not None:
+            self._send_json(200, payload)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
 
 
-def handle_mcp_message(core: SekaiSyncCore, message: dict) -> dict | None:
-    return McpServer(core).handle(message)
+def handle_mcp_message(
+    core: SekaiSyncCore,
+    message: dict,
+    sites_provider=None,
+) -> dict | None:
+    return McpServer(core, sites_provider=sites_provider).handle(message)
 
 
 def serve_http(

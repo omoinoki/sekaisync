@@ -1,249 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import Any, Callable, Iterable, Optional
 
 from sekaisync import __version__
 from sekaisync.core import SekaiSyncCore
-
+from sekaisync.tools import MCP_NAME_TO_SPEC, ToolSpec, coerce_args, mcp_tools_list
 
 PROTOCOL_VERSION = "2024-11-05"
-
-TOOLS = [
-    {
-        "name": "sekaisync_lookup",
-        "description": "Look up Project Sekai entities in the local registry.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "type": {"type": "string"},
-                "region": {"type": "string"},
-                "language": {"type": "string"},
-                "limit": {"type": "integer", "default": 8},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sekaisync_resolve_name",
-        "description": "Resolve a proper noun to an official localized name.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "target_language": {"type": "string", "default": "zh_tw"},
-                "source_language": {"type": "string"},
-                "kind": {"type": "string"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sekaisync_term_lookup",
-        "description": "Look up an extracted Project Sekai term and its cross-language names. Tags: person/location/organization/event(product fictional)/product/other. Sort by score or weight.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "language": {"type": "string"},
-                "languages": {"type": "array", "items": {"type": "string"}},
-                "limit": {"type": "integer", "default": 8},
-                "tag": {"type": "string"},
-                "sort": {"type": "string", "default": "score"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sekaisync_term_penetrate",
-        "description": "Cross-language per-line penetration for a term at a story position (event:174:1 etc.). Returns per-language term/sentence/trust for the same narrative line.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "story_key": {"type": "string"},
-                "languages": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sekaisync_fact_pack",
-        "description": "Return a compact fact pack for one entity ID.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string"},
-                "language": {"type": "string", "default": "en"},
-            },
-            "required": ["entity_id"],
-        },
-    },
-    {
-        "name": "sekaisync_freshness",
-        "description": "Return local data freshness and region coverage.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "sekaisync_refresh",
-        "description": "Reload cached registry/glossary/factpacks/terms from disk after an external sync or index rebuild.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "sekaisync_tag_clouds",
-        "description": "Return tag clouds split by released(multi-lang, supports penetrate) vs unreleased(ja-only, pending).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "sekaisync_data_gaps",
-        "description": "Return known data source limitations (home_line gaps, overseas MySekai missing, etc.) so agents can honestly say 'not covered'.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "sekaisync_progress",
-        "description": "Return per-region fact/text completeness as integer percentages.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "regions": {"type": "string"},
-                "live": {"type": "boolean", "default": False},
-            },
-        },
-    },
-    {
-        "name": "sekaisync_trust",
-        "description": "Return trust-level (A/B/C/D) distribution across registry, glossary, terms and web pages.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "sekaisync_integrity",
-        "description": "Return knowledge base integrity issues: duplicates, canonical conflicts, hash mismatches and source fidelity metadata.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "default": 20}
-            },
-        },
-    },
-    {
-        "name": "sekaisync_news",
-        "description": "Return locally synced official news and announcements by language.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "default": 100}
-            },
-        },
-    },
-    {
-        "name": "sekaisync_verify_claims",
-        "description": "Verify claims against the local registry.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "claims": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "claim": {"type": "string"},
-                            "expected": {"type": "string"},
-                        },
-                        "required": ["claim"],
-                    },
-                }
-            },
-            "required": ["claims"],
-        },
-    },
-    {
-        "name": "sekaisync_web_lookup",
-        "description": "Search the locally crawled text index from Sekai Viewer / altsource.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "source": {"type": "string"},
-                "language": {"type": "string"},
-                "limit": {"type": "integer", "default": 8},
-                "include_overlay": {"type": "boolean", "default": False},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sekaisync_event_check",
-        "description": "Detect new Project Sekai events, fetch their base master data, classify as box / WL / other, archive, and grow the crawl denominator. Never starts the web crawler.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "regions": {"type": "array", "items": {"type": "string"}},
-                "timeout": {"type": "integer", "default": 30},
-            },
-        },
-    },
-    {
-        "name": "sekaisync_event_archive",
-        "description": "List archived event classifications (box / WL / other) by region.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "regions": {"type": "array", "items": {"type": "string"}},
-                "limit": {"type": "integer"},
-            },
-        },
-    },    {
-        "name": "sekaisync_event_alias",
-        "description": "Resolve community event shorthand such as khn3 or 豆三箱 to a character box event with cross-region official names.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "regions": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-    },    {
-        "name": "sekaisync_worldlink",
-        "description": "Resolve World Link shorthand such as vbs wl2, vs wl, finale, round2, wl3第2组 or wl2g7 to the corresponding world_bloom event with cross-region official names.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "regions": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-    },    {
-        "name": "sekaisync_activity",
-        "description": "Unified activity resolution: World Link shorthand first (wl2g7, vbs wl2, finale, wl3第2组), then character box shorthand (khn3, 豆三箱). Returns kind=wl / kind=box / kind=unresolved (mixed or unnumbered events).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "regions": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-    },    {
-        "name": "sekaisync_query",
-        "description": "Unified local query across master metadata and crawled story text.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "type": {"type": "string"},
-                "region": {"type": "string"},
-                "language": {"type": "string"},
-                "limit": {"type": "integer", "default": 8},
-                "include_overlay": {"type": "boolean", "default": False},
-            },
-            "required": ["query"],
-        },
-    },
-]
 
 
 def _text_result(data: Any) -> dict:
@@ -258,8 +23,27 @@ def _text_result(data: Any) -> dict:
 
 
 class McpServer:
-    def __init__(self, core: SekaiSyncCore):
+    def __init__(
+        self,
+        core: SekaiSyncCore,
+        sites_provider: Optional[Callable[[], Iterable[Any]]] = None,
+    ):
         self.core = core
+        self.sites_provider = sites_provider
+
+    def _dispatch_tool(self, spec: ToolSpec, arguments: dict) -> Any:
+        if spec.core_method is None:
+            if spec.name == "sites":
+                sites = tuple(self.sites_provider() or ())
+                return {"sites": [site.to_dict() for site in sites]}
+            raise ValueError(f"Tool {spec.mcp_name} has no handler")
+        kwargs = coerce_args(
+            spec,
+            arguments,
+            endpoint="mcp",
+            get_raw=lambda name: arguments.get(name),
+        )
+        return getattr(self.core, spec.core_method)(**kwargs)
 
     def handle(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -278,180 +62,32 @@ class McpServer:
                 },
             }
         if method == "tools/list":
-            return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"tools": mcp_tools_list(_all_tool_specs())},
+            }
         if method == "tools/call":
             name = params.get("name", "")
             arguments = params.get("arguments") or {}
+            spec = MCP_NAME_TO_SPEC.get(name)
+            if spec is None:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32601, "message": f"Unknown tool: {name}"},
+                }
             try:
-                if name == "sekaisync_lookup":
-                    result = self.core.lookup(
-                        arguments.get("query", ""),
-                        type=arguments.get("type"),
-                        region=arguments.get("region"),
-                        language=arguments.get("language"),
-                        limit=int(arguments.get("limit", 8)),
-                    )
-                elif name == "sekaisync_resolve_name":
-                    result = self.core.resolve_name(
-                        arguments.get("query", ""),
-                        target_language=arguments.get("target_language", "zh_tw"),
-                        source_language=arguments.get("source_language"),
-                        kind=arguments.get("kind"),
-                    )
-                elif name == "sekaisync_term_lookup":
-                    raw_languages = arguments.get("languages") or []
-                    if isinstance(raw_languages, str):
-                        raw_languages = [
-                            item.strip()
-                            for item in raw_languages.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.term_lookup(
-                        arguments.get("query", ""),
-                        source_language=arguments.get("language"),
-                        languages=raw_languages,
-                        limit=int(arguments.get("limit", 8)),
-                        tag=arguments.get("tag"),
-                        sort=str(arguments.get("sort", "score")),
-                    )
-                elif name == "sekaisync_term_penetrate":
-                    raw_languages = arguments.get("languages")
-                    if isinstance(raw_languages, str):
-                        raw_languages = [
-                            item.strip()
-                            for item in raw_languages.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.term_penetrate(
-                        arguments.get("query", ""),
-                        story_key=arguments.get("story_key"),
-                        languages=raw_languages,
-                    )
-                elif name == "sekaisync_fact_pack":
-                    result = self.core.fact_pack(
-                        arguments.get("entity_id", ""),
-                        language=arguments.get("language", "en"),
-                    )
-                elif name == "sekaisync_freshness":
-                    result = self.core.freshness()
-                elif name == "sekaisync_refresh":
-                    result = self.core.refresh()
-                elif name == "sekaisync_data_gaps":
-                    result = {"gaps": self.core.data_gaps()}
-                elif name == "sekaisync_progress":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    else:
-                        regions = None
-                    result = self.core.progress(
-                        regions=regions,
-                        live=bool(arguments.get("live", False)),
-                    )
-                elif name == "sekaisync_tag_clouds":
-                    result = self.core.tag_clouds()
-                elif name == "sekaisync_trust":
-                    result = self.core.trust_summary()
-                elif name == "sekaisync_integrity":
-                    result = self.core.integrity(limit=int(arguments.get("limit", 20)))
-                elif name == "sekaisync_news":
-                    result = self.core.news(limit=int(arguments.get("limit", 100)))
-                elif name == "sekaisync_verify_claims":
-                    result = self.core.verify_claims(arguments.get("claims", []))
-                elif name == "sekaisync_web_lookup":
-                    result = self.core.web_lookup(
-                        arguments.get("query", ""),
-                        source=arguments.get("source"),
-                        language=arguments.get("language"),
-                        limit=int(arguments.get("limit", 8)),
-                        include_overlay=bool(arguments.get("include_overlay", False)),
-                    )
-                elif name == "sekaisync_event_check":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        raw_regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.event_check(
-                        regions=raw_regions,
-                        timeout=int(arguments.get("timeout", 30)),
-                    )
-                elif name == "sekaisync_event_archive":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        raw_regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.event_archive(
-                        regions=raw_regions,
-                        limit=int(arguments.get("limit", 0)) or None,
-                    )
-                elif name == "sekaisync_event_alias":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        raw_regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.event_alias(
-                        arguments.get("query", ""),
-                        regions=raw_regions,
-                    )
-                elif name == "sekaisync_worldlink":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        raw_regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.worldlink(
-                        arguments.get("query", ""),
-                        regions=raw_regions,
-                    )
-                elif name == "sekaisync_activity":
-                    raw_regions = arguments.get("regions")
-                    if isinstance(raw_regions, str):
-                        raw_regions = [
-                            item.strip()
-                            for item in raw_regions.split(",")
-                            if item.strip()
-                        ]
-                    result = self.core.activity(
-                        arguments.get("query", ""),
-                        regions=raw_regions,
-                    )
-                elif name == "sekaisync_query":
-                    result = self.core.query(
-                        arguments.get("query", ""),
-                        type=arguments.get("type"),
-                        region=arguments.get("region"),
-                        language=arguments.get("language"),
-                        limit=int(arguments.get("limit", 8)),
-                        include_overlay=bool(arguments.get("include_overlay", False)),
-                    )
-                else:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {"code": -32601, "message": f"Unknown tool: {name}"},
-                    }
-                return {"jsonrpc": "2.0", "id": request_id, "result": _text_result(result)}
+                result = self._dispatch_tool(spec, arguments)
             except Exception as exc:  # noqa: BLE001
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "error": {"code": -32000, "message": str(exc)},
                 }
+            if spec.wrap == "gaps":
+                result = {"gaps": result}
+            return {"jsonrpc": "2.0", "id": request_id, "result": _text_result(result)}
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -474,8 +110,11 @@ class McpServer:
         return 0
 
 
+def _all_tool_specs():
+    from sekaisync.tools import TOOLS
+
+    return TOOLS
+
+
 def run_mcp_server(core: SekaiSyncCore) -> int:
     return McpServer(core).run()
-
-
-
