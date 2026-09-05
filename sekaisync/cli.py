@@ -582,6 +582,7 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     seeded = seed_from_glossary(config.store_root)
     merged = merge_terms([*existing, *seeded])
     dbstore.save_terms_records(config.store_root, merged, replace_evidence=True)
+    path = dbstore.db_file(config.store_root)
     print(
         json.dumps(
             {

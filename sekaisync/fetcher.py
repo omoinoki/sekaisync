@@ -4,6 +4,7 @@ import json
 import shutil
 import tarfile
 import tempfile
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,7 +57,11 @@ def _staging_dir(source_dir: Path) -> Path:
 
 
 def _commit_staging(staging: Path, target: Path) -> None:
-    """Replace ``target`` with ``staging``, restoring the old data on failure."""
+    """Replace ``target`` with ``staging``, restoring the old data on failure.
+
+    Windows intermittently denies directory renames right after writes
+    (antivirus/indexer holds handles briefly), so renames retry a few times.
+    """
     backup = target.parent / f".{target.name}.bak"
     if backup.exists():
         shutil.rmtree(backup, ignore_errors=True)
@@ -65,7 +70,14 @@ def _commit_staging(staging: Path, target: Path) -> None:
         target.rename(backup)
         moved_old = True
     try:
-        staging.rename(target)
+        for attempt in range(5):
+            try:
+                staging.rename(target)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(1.0 + attempt)
     except Exception:
         if moved_old and backup.exists():
             backup.rename(target)
@@ -266,6 +278,6 @@ def sync(
         "entities": index_stats["entities"],
         "terms": index_stats["terms"],
         "coverage": build_region_coverage(all_regions),
-        "registry": str(registry_path(config.store_root)),
-        "glossary": str(glossary_path(config.store_root)),
+        "registry_db": str(dbstore.db_file(config.store_root)),
+        "glossary_db": str(dbstore.db_file(config.store_root)),
     }

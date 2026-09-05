@@ -61,14 +61,15 @@ CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, region TEXT NOT NULL DEFAULT '',
     regions_json TEXT NOT NULL DEFAULT '[]', names_json TEXT NOT NULL DEFAULT '{}',
     facts_json TEXT NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT '',
-    version TEXT, demo INTEGER NOT NULL DEFAULT 0, trust TEXT NOT NULL DEFAULT ''
+    version TEXT, demo INTEGER NOT NULL DEFAULT 0, trust TEXT NOT NULL DEFAULT '',
+    seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
 CREATE TABLE IF NOT EXISTS glossary_terms (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', canonical TEXT NOT NULL,
     names_json TEXT NOT NULL DEFAULT '{}', official INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL DEFAULT '', demo INTEGER NOT NULL DEFAULT 0,
-    trust TEXT NOT NULL DEFAULT ''
+    trust TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS terms (
     id TEXT PRIMARY KEY, canonical TEXT NOT NULL, source_language TEXT NOT NULL,
@@ -133,6 +134,7 @@ def connect(store_root: Path):
     store directories (tests use TemporaryDirectory aggressively).
     Aggregate SQL runs in milliseconds; the per-call open cost is negligible.
     """
+    store_root = Path(store_root)
     path = db_path(store_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60.0)
@@ -192,8 +194,13 @@ def ensure_store(store_root: Path) -> None:
 # ── legacy JSON import ────────────────────────────────────────────
 
 def legacy_domain_files(store_root: Path) -> dict[str, list[Path]]:
-    """Legacy JSON files per domain, searching kb/ then legacy/kb/."""
-    candidates = [store_root / "kb", store_root / "legacy" / "kb"]
+    """Legacy JSON files per domain.
+
+    Only ``kb/`` is searched: a shelved archive under ``legacy/`` is inert
+    by design — fresh stores must build from the original sites, never
+    from the shelved carriers.
+    """
+    candidates = [store_root / "kb"]
     domains = {
         "registry": "registry.json",
         "glossary": "glossary.json",
@@ -460,13 +467,13 @@ def save_entities(store_root: Path, entities: Iterable[Entity]) -> int:
             (
                 e.id, e.type, e.region or "", json.dumps(e.regions, ensure_ascii=False),
                 json.dumps(e.names, ensure_ascii=False), json.dumps(e.facts, ensure_ascii=False),
-                e.source or "", e.version, 1 if e.demo else 0, e.trust or "",
+                e.source or "", e.version, 1 if e.demo else 0, e.trust or "", seq,
             )
-            for e in entities
+            for seq, e in enumerate(entities, start=1)
         ]
         conn.execute("DELETE FROM entities")
         conn.executemany(
-            "INSERT OR REPLACE INTO entities VALUES(?,?,?,?,?,?,?,?,?,?)", rows
+        "INSERT OR REPLACE INTO entities VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows
         )
         conn.commit()
         return len(rows)
@@ -503,14 +510,14 @@ def save_glossary_terms(store_root: Path, terms: Iterable[GlossaryTerm]) -> int:
     with connect(store_root) as conn:
         rows = [
             (
-                t.id, t.kind, t.canonical, json.dumps(t.names, ensure_ascii=False),
-                1 if t.official else 0, t.source or "", 1 if t.demo else 0, t.trust or "",
+                g.id, g.kind, g.canonical, json.dumps(g.names, ensure_ascii=False),
+                1 if g.official else 0, g.source or "", 1 if g.demo else 0, g.trust or "", seq,
             )
-            for t in terms
+            for seq, g in enumerate(terms, start=1)
         ]
         conn.execute("DELETE FROM glossary_terms")
         conn.executemany(
-            "INSERT OR REPLACE INTO glossary_terms VALUES(?,?,?,?,?,?,?,?)", rows
+        "INSERT OR REPLACE INTO glossary_terms VALUES(?,?,?,?,?,?,?,?,?)", rows
         )
         conn.commit()
         return len(rows)
@@ -628,6 +635,66 @@ def load_terms_records(store_root: Path, include_sentences: bool = False) -> lis
         return out
 
 
+def evidence_for_ids(
+    store_root: Path, term_ids: list[str], include_sentences: bool = True
+) -> dict[str, list[dict]]:
+    """Evidence bodies for selected term ids (server result enrichment)."""
+    ensure_store(store_root)
+    wanted = [tid for tid in term_ids if tid]
+    if not wanted:
+        return {}
+    sentence_col = "sentence" if include_sentences else "'' AS sentence"
+    out: dict[str, list[dict]] = {}
+    with connect(store_root) as conn:
+        for chunk_start in range(0, len(wanted), 500):
+            chunk = wanted[chunk_start:chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                f"SELECT term_id, story_key, language, term, {sentence_col}, extra_json "
+                f"FROM term_evidence WHERE term_id IN ({placeholders}) ORDER BY term_id, idx",
+                chunk,
+            ):
+                entry = {"story_key": row[1], "language": row[2]}
+                if row[3]:
+                    entry["term"] = row[3]
+                if row[4]:
+                    entry["sentence"] = row[4]
+                extra = json.loads(row[5] or "{}")
+                entry.update(extra)
+                out.setdefault(row[0], []).append(entry)
+    return out
+
+
+def attach_evidence(store_root: Path, records: list[Any], include_sentences: bool = True) -> None:
+    """Fill full evidence bodies (with sentences) for the given records only."""
+    ensure_store(store_root)
+    wanted = [r.id for r in records if r.id]
+    if not wanted:
+        return
+    sentence_col = "sentence" if include_sentences else "'' AS sentence"
+    with connect(store_root) as conn:
+        evidence: dict[str, list[dict]] = {}
+        for chunk_start in range(0, len(wanted), 500):
+            chunk = wanted[chunk_start:chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                f"SELECT term_id, story_key, language, term, {sentence_col}, extra_json "
+                f"FROM term_evidence WHERE term_id IN ({placeholders}) ORDER BY term_id, idx",
+                chunk,
+            ):
+                entry = {"story_key": row[1], "language": row[2]}
+                if row[3]:
+                    entry["term"] = row[3]
+                if row[4]:
+                    entry["sentence"] = row[4]
+                extra = json.loads(row[5] or "{}")
+                entry.update(extra)
+                evidence.setdefault(row[0], []).append(entry)
+    for rec in records:
+        if rec.id in evidence:
+            rec.evidence = evidence[rec.id]
+
+
 def term_status_from_db(store_root: Path) -> dict[str, Any]:
     """term_status() shape via SQL; delegates top_by_tag to the Python impl."""
     from collections import Counter
@@ -690,8 +757,13 @@ _LEGACY_DOMAIN_FILES = {
 
 
 def legacy_domain_files(store_root: Path) -> dict[str, list[Path]]:
-    """Legacy JSON files per domain, searching kb/ then legacy/kb/."""
-    candidates = [store_root / "kb", store_root / "legacy" / "kb"]
+    """Legacy JSON files per domain.
+
+    Only ``kb/`` is searched: a shelved archive under ``legacy/`` is inert
+    by design — fresh stores must build from the original sites, never
+    from the shelved carriers.
+    """
+    candidates = [store_root / "kb"]
     out: dict[str, list[Path]] = {}
     for name, filename in _LEGACY_DOMAIN_FILES.items():
         for base in candidates:
@@ -720,6 +792,7 @@ def _meta_set(conn, key: str, value: str) -> None:
 
 def pending_legacy_domains(store_root: Path) -> list[str]:
     """Domains whose legacy files exist but were never imported into the DB."""
+    _ensure_initialized(store_root)
     sources = legacy_domain_files(store_root)
     pending = []
     with connect(store_root) as conn:
@@ -769,6 +842,7 @@ def import_legacy_domains(store_root: Path, domains: list[str]) -> dict[str, int
 
 def import_legacy(store_root: Path) -> dict[str, int]:
     """Import every pending legacy domain into the DB."""
+    store_root = Path(store_root)
     return import_legacy_domains(store_root, pending_legacy_domains(store_root))
 
 

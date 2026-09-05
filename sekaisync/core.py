@@ -324,7 +324,7 @@ class SekaiSyncCore:
         tag: Optional[str] = None,
         sort: str = "score",
     ) -> list[dict]:
-        return lookup_terms(
+        results = lookup_terms(
             self.terms,
             query,
             source_language=source_language,
@@ -333,6 +333,13 @@ class SekaiSyncCore:
             tag=tag,
             sort=sort,
         )
+        # Server terms are loaded light (no sentence bodies); enrich just the
+        # returned hits so evidence sentences stay in the query output.
+        evidence = dbstore.evidence_for_ids(self.store_root, [r.get("id", "") for r in results])
+        for r in results:
+            if r.get("id") in evidence:
+                r["evidence"] = evidence[r["id"]]
+        return results
 
     def term_penetrate(
         self,
