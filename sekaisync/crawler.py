@@ -467,10 +467,26 @@ def fetch_altsource_sv_master(
     table: str,
     fetcher: Callable[[str], str],
 ) -> list[dict[str, Any]]:
+    """Fetch one master table. Table-sized JSONs (several MB) fail
+    intermittently from GitHub Pages; retry with backoff and make the
+    final failure visible instead of silently emptying a whole stage."""
     table = table.removesuffix(".json")
-    try:
-        data = json.loads(fetcher(altsource_sv_master_json_url(region, table)))
-    except _NETWORK_ERRORS:
+    url = altsource_sv_master_json_url(region, table)
+    last_error: Optional[Exception] = None
+    data: Any = None
+    for attempt in range(4):
+        try:
+            data = json.loads(fetcher(url))
+            last_error = None
+            break
+        except _NETWORK_ERRORS as exc:
+            last_error = exc
+            time.sleep(2.0 * (attempt + 1))
+    if last_error is not None or data is None:
+        print(
+            f"[altsource_sv] master table {table} ({region}) failed after retries: {last_error}",
+            file=sys.stderr,
+        )
         return []
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
