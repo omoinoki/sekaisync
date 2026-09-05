@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from sekaisync.filecache import cached_json
 from sekaisync.layout import web_category_dir, web_index_path, web_pages_path, web_root
 from sekaisync.models import WebPage
 from sekaisync.normalize import best_match, normalize_name
@@ -537,9 +538,31 @@ def _index_record(page: dict[str, Any]) -> dict[str, Any]:
     }
     record["text_length"] = len(str(page.get("text") or ""))
     return record
+def _read_pages_json_uncached(pages_path: Path) -> list[dict[str, Any]]:
+    return json.loads(pages_path.read_text(encoding="utf-8"))
+
+def _read_all_pages_uncached(store_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Read every pages.json straight from disk for write paths.
+
+    Index rebuilds mutate the parsed page dicts in place, so they must
+    never share objects with the read cache.
+    """
+    root = web_root(store_root)
+    if not root.exists():
+        return {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for source_dir in sorted(root.iterdir()):
+        if not source_dir.is_dir():
+            continue
+        pages_path = source_dir / "pages.json"
+        if not pages_path.exists():
+            continue
+        result[source_dir.name] = _read_pages_json_uncached(pages_path)
+    return result
+
 def write_web_index(store_root: Path) -> Path:
     index_path = web_index_path(store_root)
-    all_pages = load_web_pages(store_root)
+    all_pages = _read_all_pages_uncached(store_root)
     merged = [_index_record(item) for items in all_pages.values() for item in items]
     index = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -600,7 +623,19 @@ def save_web_pages(
         return write_web_index(store_root)
     return pages_path
 
+def _read_pages_json(pages_path: Path) -> list[dict[str, Any]]:
+    return cached_json(
+        pages_path,
+        lambda p: json.loads(p.read_text(encoding="utf-8")),
+        scope="web_pages",
+    )
+
 def load_web_pages(store_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Cached per-source pages. Treat the returned lists as read-only.
+
+    Write paths that mutate page dicts (index rebuilds) must read from
+    disk directly instead of going through this cache.
+    """
     root = web_root(store_root)
     if not root.exists():
         return {}
@@ -611,7 +646,7 @@ def load_web_pages(store_root: Path) -> dict[str, list[dict[str, Any]]]:
         pages_path = source_dir / "pages.json"
         if not pages_path.exists():
             continue
-        result[source_dir.name] = json.loads(pages_path.read_text(encoding="utf-8"))
+        result[source_dir.name] = _read_pages_json(pages_path)
     return result
 
 
@@ -656,17 +691,26 @@ def load_existing_page_ids(
 
 
 def load_web_index(store_root: Path) -> list[dict[str, Any]]:
+    """Cached merged index with normalized flags and canonical keys.
+
+    The returned page dicts are shared between callers and must be
+    treated as read-only.
+    """
     path = web_index_path(store_root)
     if not path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    pages = data.get("pages", [])
-    for page in pages:
-        if not isinstance(page, dict):
-            continue
-        normalize_mismatch_flags(page)
-        page["canonical_key"] = canonical_key_for_page(page)
-    return pages
+
+    def _load(p: Path) -> list[dict[str, Any]]:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        pages = data.get("pages", [])
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            normalize_mismatch_flags(page)
+            page["canonical_key"] = canonical_key_for_page(page)
+        return pages
+
+    return cached_json(path, _load, scope="web_index")
 
 
 def flatten_web_pages(store_root: Path) -> list[dict[str, Any]]:
@@ -681,7 +725,7 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
     """Regenerate per-source pages, category files and the merged index."""
     sources: dict[str, int] = {}
     rebuilt: dict[str, int] = {}
-    for source, items in load_web_pages(store_root).items():
+    for source, items in _read_all_pages_uncached(store_root).items():
         pages = [web_page_from_dict(recompute_language_flags(item)) for item in items]
         save_web_pages(store_root, source, pages, rewrite_index=False)
         sources[source] = len(pages)

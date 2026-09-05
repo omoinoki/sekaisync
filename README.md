@@ -111,7 +111,7 @@ SekaiSync includes an **experimental** terminology pipeline that cuts proper nou
 - **Cross-language penetration**: same-position alignment (`sekaisync terms penetrate`) and released/unreleased tag clouds (`sekaisync tag-clouds`).
 - **Honest gating**: statistical alignment is only adopted with ≥2-story evidence (containment ≥ 0.30); low-confidence terms stay language-local instead of producing wrong translations.
 
-> ⚠️ **Status: experimental.** Recall on a 487-word manual gold set is ~81%, and fragment filtering still relies on LLM judgement (`--llm-config`) for 4-character colloquial fragments that rule-based filters miss. Do not treat extracted terms as an authoritative lexicon yet — verify against the official glossary when accuracy matters.
+> ⚠️ **Status: experimental.** Recall on a 487-word manual gold set was ~81% as measured against the pre-cleanup term index (12,580 entries, measured 2026-08-14); not re-measured since the 2026-08-23 cleanup (9,324 entries). Fragment filtering still relies on LLM judgement (`--llm-config`) for 4-character colloquial fragments that rule-based filters miss. Do not treat extracted terms as an authoritative lexicon yet — verify against the official glossary when accuracy matters.
 
 ---
 

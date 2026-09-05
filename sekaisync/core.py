@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
+from sekaisync.config import REGIONS
 from sekaisync.factpacks import build_fact_pack, load_fact_packs
 from sekaisync.glossary import find_terms, load_glossary, resolve_name
 from sekaisync.layout import (
     factpack_path,
     freshness_path,
     glossary_path,
+    news_dir,
+    region_master_dir,
     registry_path,
     terms_path,
     web_consent_path,
     web_index_path,
+    web_root,
 )
 from sekaisync.normalize import normalize_name
 from sekaisync.registry import entity_by_id, load_registry, lookup_entity
@@ -34,6 +39,64 @@ class SekaiSyncCore:
         self.glossary = load_glossary(glossary_path(store_root))
         self.factpacks = load_fact_packs(factpack_path(store_root, "en"))
         self.terms = load_terms(terms_path(store_root))
+        # Aggregate-result cache for status/progress/trust_summary on
+        # long-lived HTTP/MCP processes. Invalidated by (a) any change to
+        # the in-memory datasets (version bump) and (b) the on-disk
+        # signature of the files those aggregates read.
+        self._data_version = 0
+        self._result_cache: dict[str, tuple[tuple, dict]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _bump_data_version(self) -> None:
+        with self._cache_lock:
+            self._data_version += 1
+            self._result_cache.clear()
+
+    def _disk_signature(self) -> tuple:
+        """Signature of every on-disk file feeding the aggregate endpoints.
+
+        Roughly 120 stat() calls per lookup; negligible next to the
+        multi-GB aggregates it guards. Files that disappeared compare
+        unequal to any present-file signature, so deletions invalidate.
+        """
+        paths: list[Path] = [
+            web_consent_path(self.store_root),
+            web_index_path(self.store_root),
+            freshness_path(self.store_root),
+            registry_path(self.store_root),
+        ]
+        web_dir = web_root(self.store_root)
+        if web_dir.exists():
+            for source_dir in sorted(web_dir.iterdir()):
+                if source_dir.is_dir():
+                    paths.append(source_dir / "pages.json")
+        for region in REGIONS:
+            base = region_master_dir(self.store_root, region)
+            if base.exists():
+                paths.extend(sorted(base.rglob("*.json")))
+        news_root = news_dir(self.store_root)
+        if news_root.exists():
+            paths.extend(sorted(news_root.glob("*.json")))
+        signature = []
+        for path in paths:
+            try:
+                st = path.stat()
+            except OSError:
+                signature.append((str(path), None))
+            else:
+                signature.append((str(path), st.st_mtime_ns, st.st_size))
+        return tuple(signature)
+
+    def _cached_aggregate(self, key: str, compute: Callable[[], dict]) -> dict:
+        disk = self._disk_signature()
+        with self._cache_lock:
+            hit = self._result_cache.get(key)
+            if hit is not None and hit[0] == (self._data_version, disk):
+                return hit[1]
+        result = compute()
+        with self._cache_lock:
+            self._result_cache[key] = ((self._data_version, disk), result)
+        return result
 
     def refresh(self) -> dict:
         """Reload registry/glossary/factpacks/terms from disk.
@@ -47,6 +110,7 @@ class SekaiSyncCore:
         self.glossary = load_glossary(glossary_path(self.store_root))
         self.factpacks = load_fact_packs(factpack_path(self.store_root, "en"))
         self.terms = load_terms(terms_path(self.store_root))
+        self._bump_data_version()
         return {
             "registry": len(self.registry),
             "glossary": len(self.glossary),
@@ -363,54 +427,70 @@ class SekaiSyncCore:
 
         if master_base:
             apply_master_base(master_base)
-        return compute_progress(
-            self.store_root,
-            regions=regions,
-            live=live,
-            fetcher=fetcher,
-        )
+        if live or fetcher is not None or master_base:
+            # Network-driven or caller-instrumented runs: never cached.
+            return compute_progress(
+                self.store_root,
+                regions=regions,
+                live=live,
+                fetcher=fetcher,
+            )
+        key_regions = tuple(regions) if regions is not None else None
+
+        def _compute() -> dict:
+            return compute_progress(
+                self.store_root,
+                regions=regions,
+                live=False,
+                fetcher=None,
+            )
+
+        return self._cached_aggregate(f"progress:{key_regions}", _compute)
 
     def trust_summary(self) -> dict:
-        from sekaisync.trust import TRUST_LEVELS, trust_for_page
+        def _compute() -> dict:
+            from sekaisync.trust import TRUST_LEVELS, trust_for_page
 
-        counts = {
-            level: {"registry": 0, "glossary": 0, "terms": 0, "web": 0, "auxiliary": 0}
-            for level in TRUST_LEVELS
-        }
-        for entity in self.registry:
-            level = entity.trust.upper()
-            if level in counts:
-                counts[level]["registry"] += 1
-        for term in self.glossary:
-            level = term.trust.upper()
-            if level in counts:
-                counts[level]["glossary"] += 1
-        for term in self.terms:
-            level = term.trust.upper()
-            if level in counts:
-                counts[level]["terms"] += 1
-        web_total = 0
-        auxiliary_total = 0
-        for page in load_web_index(self.store_root):
-            level = trust_for_page(page).upper()
-            if level not in counts:
-                continue
-            if is_auxiliary_page(page):
-                counts[level]["auxiliary"] += 1
-                auxiliary_total += 1
-            else:
-                counts[level]["web"] += 1
-                web_total += 1
-        return {
-            "levels": counts,
-            "totals": {
-                "registry": len(self.registry),
-                "glossary": len(self.glossary),
-                "terms": len(self.terms),
-                "web": web_total,
-                "auxiliary": auxiliary_total,
-            },
-        }
+            counts = {
+                level: {"registry": 0, "glossary": 0, "terms": 0, "web": 0, "auxiliary": 0}
+                for level in TRUST_LEVELS
+            }
+            for entity in self.registry:
+                level = entity.trust.upper()
+                if level in counts:
+                    counts[level]["registry"] += 1
+            for term in self.glossary:
+                level = term.trust.upper()
+                if level in counts:
+                    counts[level]["glossary"] += 1
+            for term in self.terms:
+                level = term.trust.upper()
+                if level in counts:
+                    counts[level]["terms"] += 1
+            web_total = 0
+            auxiliary_total = 0
+            for page in load_web_index(self.store_root):
+                level = trust_for_page(page).upper()
+                if level not in counts:
+                    continue
+                if is_auxiliary_page(page):
+                    counts[level]["auxiliary"] += 1
+                    auxiliary_total += 1
+                else:
+                    counts[level]["web"] += 1
+                    web_total += 1
+            return {
+                "levels": counts,
+                "totals": {
+                    "registry": len(self.registry),
+                    "glossary": len(self.glossary),
+                    "terms": len(self.terms),
+                    "web": web_total,
+                    "auxiliary": auxiliary_total,
+                },
+            }
+
+        return self._cached_aggregate("trust", _compute)
 
     def integrity(self, limit: int = 20) -> dict:
         from sekaisync.integrity import run_integrity_check
@@ -427,34 +507,44 @@ class SekaiSyncCore:
         }
 
     def status(self) -> dict:
-        from sekaisync.webindex import load_web_category_counts
+        def _compute() -> dict:
+            from sekaisync.filecache import cached_json
+            from sekaisync.webindex import load_web_category_counts
 
-        consent_path = web_consent_path(self.store_root)
-        index_path = web_index_path(self.store_root)
-        consent = False
-        if consent_path.exists():
-            data = json.loads(consent_path.read_text(encoding="utf-8"))
-            consent = bool(data)
-        sources = {}
-        if index_path.exists():
-            sources = json.loads(index_path.read_text(encoding="utf-8")).get("sources", {})
-        web_status = {
-            "enabled": bool(sources) and consent,
-            "consent": consent,
-            "sources": sources,
-            "category_counts": load_web_category_counts(self.store_root),
-            "auxiliary": auxiliary_page_summary(self.store_root),
-        }
-        return {
-            "store": str(self.store_root.resolve()),
-            "master": self.store_stats(),
-            "web": web_status,
-            "terms": self.term_status(),
-            "trust": self.trust_summary(),
-            "progress": self.progress(),
-            "news": self.news(),
-            "freshness": self.freshness(),
-        }
+            consent_path = web_consent_path(self.store_root)
+            index_path = web_index_path(self.store_root)
+            consent = False
+            if consent_path.exists():
+                data = json.loads(consent_path.read_text(encoding="utf-8"))
+                consent = bool(data)
+            sources = {}
+            if index_path.exists():
+                # Shared raw parse (same scope as progress.matched_text_units)
+                # instead of a third full read of the 500MB index.
+                sources = cached_json(
+                    index_path,
+                    lambda p: json.loads(p.read_text(encoding="utf-8")),
+                    scope="web_index_raw",
+                ).get("sources", {})
+            web_status = {
+                "enabled": bool(sources) and consent,
+                "consent": consent,
+                "sources": sources,
+                "category_counts": load_web_category_counts(self.store_root),
+                "auxiliary": auxiliary_page_summary(self.store_root),
+            }
+            return {
+                "store": str(self.store_root.resolve()),
+                "master": self.store_stats(),
+                "web": web_status,
+                "terms": self.term_status(),
+                "trust": self.trust_summary(),
+                "progress": self.progress(),
+                "news": self.news(),
+                "freshness": self.freshness(),
+            }
+
+        return self._cached_aggregate("status", _compute)
 
     def data_gaps(self) -> list[dict]:
         """Known data source limitations, first-class visible to agents."""
@@ -645,6 +735,7 @@ class SekaiSyncCore:
 
         path = terms_path(self.store_root)
         save_terms(self.terms, path, compact_evidence=True)
+        self._bump_data_version()
         return {
             "zhfirst_candidates": len(zh_data),
             "added_new": added,

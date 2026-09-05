@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from sekaisync.config import DEFAULT_REGION_ORDER, REGIONS, ViewerSettings
+from sekaisync.filecache import cached_json
 from sekaisync.layout import (
     progress_path,
     region_master_dir,
@@ -113,18 +114,22 @@ def _load_records(
             break
     if path is None or not path.exists():
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-    if isinstance(data, dict):
-        for key in ("records", "items", "data"):
-            if isinstance(data.get(key), list):
-                data = data[key]
-                break
-        else:
+
+    def _read_records(p: Path) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
             return []
-    return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ("records", "items", "data"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            else:
+                return []
+        return [item for item in data if isinstance(item, dict)]
+
+    return cached_json(path, _read_records, scope="master_table")
 
 
 def _now_ms(now: Optional[float] = None) -> int:
@@ -371,7 +376,13 @@ def matched_text_units(
     index_path = web_index_path(store_root)
     if not index_path.exists():
         return matched
-    data = json.loads(index_path.read_text(encoding="utf-8"))
+    # Raw parse (no flag normalization) so the filtering below sees exactly
+    # the on-disk flags, same as before caching; shares one parse per call.
+    data = cached_json(
+        index_path,
+        lambda p: json.loads(p.read_text(encoding="utf-8")),
+        scope="web_index_raw",
+    )
     for page in data.get("pages", []):
         if is_derived_page(page):
             continue
