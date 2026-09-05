@@ -27,6 +27,7 @@ from sekaisync.config import (
 )
 from sekaisync.layout import web_category_dir, web_consent_path, web_pages_path
 from sekaisync.models import WebPage
+from sekaisync.endpoints import configure_endpoints, current_endpoints
 from sekaisync.sources import (
     BACKEND_MOESEKAI,
     BACKEND_SEKAI_VIEWER,
@@ -68,28 +69,6 @@ _cv_sv_instance: "contextvars.ContextVar[str]" = contextvars.ContextVar(
     "altsource_sv_instance", default=SOURCE_SV
 )
 
-_EMPTY_BUCKETS = {
-    "jp": "sekai-jp-assets",
-    "en": "sekai-en-assets",
-    "tc": "sekai-tc-assets",
-    "kr": "sekai-kr-assets",
-    "cn": "sekai-cn-assets",
-}
-
-# Module defaults (empty = unconfigured). ``apply_source_settings`` mutates
-# these for backward compatibility; crawl entry points instead push a fresh
-# per-call context so distinct instances are isolated.
-ALTSOURCE_MS_BASE = ""
-ALTSOURCE_MS_SITEMAP = ""
-ALTSOURCE_MS_STORY_DETAIL_BASE = ""
-ALTSOURCE_MS_METADATA_BASES: tuple[str, ...] = ()
-ALTSOURCE_MS_ASSET_BASES: tuple[str, ...] = ()
-ALTSOURCE_MS_FALLBACK_TO_VIEWER_CDN = True
-ALTSOURCE_MS_LOCALE_SERVERS: dict[str, str] = {}
-ALTSOURCE_MS_LOCALE_LANGUAGES: dict[str, str] = {}
-ALTSOURCE_MS_TRANSLATION_BASE = ""
-
-ALTSOURCE_SV_I18N_BASE = ""
 ALTSOURCE_SV_I18N_LANGUAGES = ("ja", "zh-CN", "zh-TW", "en", "ko")
 ALTSOURCE_SV_I18N_NAMESPACES = (
     "area_name",
@@ -115,9 +94,6 @@ ALTSOURCE_SV_I18N_NAMESPACES = (
     "unit_story_episode_title",
     "virtualLive_name",
 )
-ALTSOURCE_SV_MASTER_BASE = ""
-ALTSOURCE_SV_ASSET_BASE = ""
-ALTSOURCE_SV_ASSET_BUCKETS: dict[str, str] = dict(_EMPTY_BUCKETS)
 ALTSOURCE_SV_TABLES = [
     "eventStories",
     "unitStories",
@@ -140,6 +116,9 @@ ALTSOURCE_SV_TABLES = [
     "items",
     "versions",
 ]
+
+
+_EP = current_endpoints
 
 
 def _current_ms_instance() -> str:
@@ -180,34 +159,21 @@ def apply_source_settings(
     moesekai: Optional[MoesekaiSettings] = None,
     viewer: Optional[ViewerSettings] = None,
 ) -> None:
-    """Apply active site settings to the module defaults (backward compat)."""
-    global ALTSOURCE_MS_BASE, ALTSOURCE_MS_SITEMAP, ALTSOURCE_MS_STORY_DETAIL_BASE
-    global ALTSOURCE_MS_METADATA_BASES, ALTSOURCE_MS_ASSET_BASES, ALTSOURCE_MS_TRANSLATION_BASE
-    global ALTSOURCE_MS_FALLBACK_TO_VIEWER_CDN
-    global ALTSOURCE_MS_LOCALE_SERVERS, ALTSOURCE_MS_LOCALE_LANGUAGES
-    global ALTSOURCE_SV_I18N_BASE, ALTSOURCE_SV_MASTER_BASE, ALTSOURCE_SV_ASSET_BASE
-    global ALTSOURCE_SV_ASSET_BUCKETS
-    if moesekai is not None:
-        ALTSOURCE_MS_BASE = moesekai.site_base
-        ALTSOURCE_MS_SITEMAP = moesekai.sitemap_url
-        ALTSOURCE_MS_STORY_DETAIL_BASE = moesekai.story_detail_base
-        ALTSOURCE_MS_METADATA_BASES = moesekai.metadata_bases
-        ALTSOURCE_MS_ASSET_BASES = moesekai.asset_bases
-        ALTSOURCE_MS_TRANSLATION_BASE = moesekai.translation_base
-        ALTSOURCE_MS_FALLBACK_TO_VIEWER_CDN = moesekai.fallback_to_viewer_cdn
-        ALTSOURCE_MS_LOCALE_SERVERS = {
-            key: value for key, value in moesekai.locale_servers
-        } or ALTSOURCE_MS_LOCALE_SERVERS
-        ALTSOURCE_MS_LOCALE_LANGUAGES = {
-            key: value for key, value in moesekai.locale_languages
-        } or ALTSOURCE_MS_LOCALE_LANGUAGES
-    if viewer is not None:
-        ALTSOURCE_SV_I18N_BASE = viewer.i18n_base
-        ALTSOURCE_SV_MASTER_BASE = viewer.master_base
-        ALTSOURCE_SV_ASSET_BASE = viewer.asset_base
-        ALTSOURCE_SV_ASSET_BUCKETS = {
-            key: value for key, value in viewer.asset_buckets
-        } or ALTSOURCE_SV_ASSET_BUCKETS
+    """Apply active site settings (backward-compat single snapshot replace)."""
+    configure_endpoints(moesekai=moesekai, viewer=viewer)
+
+
+def __getattr__(name: str):
+    """Legacy read access to endpoint globals (PEP 562).
+
+    The endpoints now live in a single frozen snapshot in
+    ``sekaisync.endpoints``; module attribute reads keep working so older
+    callers/tests see the configured values under the old names.
+    """
+    try:
+        return getattr(current_endpoints(), name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
 TOS_WARNING_TEMPLATE = """\
 Project Sekai is owned by SEGA / Colorful Palette.
@@ -455,18 +421,18 @@ def altsource_ms_language_from_url(url: str) -> str:
     parts = urlparse(url).path.strip("/").split("/")
     if not parts:
         return ""
-    return ALTSOURCE_MS_LOCALE_LANGUAGES.get(parts[0].lower(), "")
+    return _EP().ALTSOURCE_MS_LOCALE_LANGUAGES.get(parts[0].lower(), "")
 
 
 def altsource_sv_master_json_url(region: str, table: str) -> str:
     repo = REGIONS[region].repo_slug
     repo_name = repo.rsplit("/", 1)[-1] if repo else region
-    return f"{ALTSOURCE_SV_MASTER_BASE}/{repo_name}/{table}.json"
+    return f"{_EP().ALTSOURCE_SV_MASTER_BASE}/{repo_name}/{table}.json"
 
 
 def altsource_sv_asset_url(region: str, path: str) -> str:
-    bucket = ALTSOURCE_SV_ASSET_BUCKETS.get(region, f"sekai-{region}-assets")
-    return f"{ALTSOURCE_SV_ASSET_BASE}/{bucket}/{path.lstrip('/')}"
+    bucket = _EP().ALTSOURCE_SV_ASSET_BUCKETS.get(region, f"sekai-{region}-assets")
+    return f"{_EP().ALTSOURCE_SV_ASSET_BASE}/{bucket}/{path.lstrip('/')}"
 
 
 def _expected_scenario_id(path: str) -> str:
@@ -737,7 +703,7 @@ def altsource_ms_story_detail_page(data: dict[str, Any], event_id: int, locale: 
     return WebPage(
         id=altsource_ms_page_id(locale, "story_detail", event_id),
         source=_current_ms_instance(), source_type=BACKEND_MOESEKAI,
-        url=f"{ALTSOURCE_MS_STORY_DETAIL_BASE}/event_{event_id:03d}.json",
+        url=f"{_EP().ALTSOURCE_MS_STORY_DETAIL_BASE}/event_{event_id:03d}.json",
         title=title,
         language="zh_hans",
         kind="story",
@@ -833,11 +799,11 @@ def _crawl_altsource_ms_site_impl(
         apply_source_settings(moesekai=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
-    require_endpoint(ALTSOURCE_MS_SITEMAP, "sitemap_url", _current_ms_instance())
-    require_endpoint(ALTSOURCE_MS_BASE, "site_base", _current_ms_instance())
-    require_endpoint(ALTSOURCE_MS_STORY_DETAIL_BASE, "story_detail_base", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_SITEMAP, "sitemap_url", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_BASE, "site_base", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_STORY_DETAIL_BASE, "story_detail_base", _current_ms_instance())
     write_consent(store_root, _current_ms_instance())
-    sitemap_xml = fetcher(ALTSOURCE_MS_SITEMAP)
+    sitemap_xml = fetcher(_EP().ALTSOURCE_MS_SITEMAP)
     candidate_urls: list[str] = []
     for sitemap_url in _altsource_ms_detail_sitemaps(sitemap_xml, locales):
         try:
@@ -855,7 +821,7 @@ def _crawl_altsource_ms_site_impl(
         if event_id is not None:
             try:
                 detail = json.loads(
-                    fetcher(f"{ALTSOURCE_MS_STORY_DETAIL_BASE}/event_{event_id:03d}.json")
+                    fetcher(f"{_EP().ALTSOURCE_MS_STORY_DETAIL_BASE}/event_{event_id:03d}.json")
                 )
             except _NETWORK_ERRORS:
                 detail = None
@@ -881,11 +847,11 @@ def _crawl_altsource_ms_site_impl(
 
 
 def altsource_ms_server_for_locale(locale: str) -> str:
-    return ALTSOURCE_MS_LOCALE_SERVERS.get(locale.lower(), "cn")
+    return _EP().ALTSOURCE_MS_LOCALE_SERVERS.get(locale.lower(), "cn")
 
 
 def altsource_ms_language_for_locale(locale: str) -> str:
-    return ALTSOURCE_MS_LOCALE_LANGUAGES.get(locale.lower(), "zh_hans")
+    return _EP().ALTSOURCE_MS_LOCALE_LANGUAGES.get(locale.lower(), "zh_hans")
 
 
 def altsource_ms_canonical_url(locale: str, path: str) -> str:
@@ -895,7 +861,7 @@ def altsource_ms_canonical_url(locale: str, path: str) -> str:
     the host must follow the instance's configured ``site_base`` so moved
     domains and self-hosted mirrors link back to themselves.
     """
-    base = require_endpoint(ALTSOURCE_MS_BASE, "site_base", _current_ms_instance()).rstrip("/")
+    base = require_endpoint(_EP().ALTSOURCE_MS_BASE, "site_base", _current_ms_instance()).rstrip("/")
     return f"{base}/{altsource_ms_locale_key(locale)}/{path.lstrip('/')}"
 
 
@@ -904,7 +870,7 @@ def altsource_ms_locale_key(locale: str) -> str:
 
 
 def altsource_ms_translation_event_url(event_id: int) -> str:
-    return f"{ALTSOURCE_MS_TRANSLATION_BASE}/eventStory/event_{int(event_id)}.json"
+    return f"{_EP().ALTSOURCE_MS_TRANSLATION_BASE}/eventStory/event_{int(event_id)}.json"
 
 
 def _normalize_overlay_language(value: Any) -> str:
@@ -1128,7 +1094,7 @@ def _crawl_altsource_sv_i18n(
             page_id = f"web:{_sv_aux()}:{target_language}:{namespace}"
             if known_ids and page_id in known_ids:
                 continue
-            url = f"{ALTSOURCE_SV_I18N_BASE}/{language_code}/{namespace}.json"
+            url = f"{_EP().ALTSOURCE_SV_I18N_BASE}/{language_code}/{namespace}.json"
             try:
                 raw = fetcher(_cache_bust_url(url))
             except _NETWORK_ERRORS:
@@ -1178,13 +1144,13 @@ def altsource_ms_page_id(locale: str, kind: str, *parts: Any) -> str:
 
 def _locale_from_altsource_ms_url(url: str) -> str:
     path = urlparse(url).path.strip("/").split("/")
-    if path and path[0].lower() in ALTSOURCE_MS_LOCALE_SERVERS:
+    if path and path[0].lower() in _EP().ALTSOURCE_MS_LOCALE_SERVERS:
         return path[0].lower()
     return "zh-cn"
 
 
 def fetch_altsource_ms_master(server: str, table: str, fetcher: Callable[[str], str]) -> list[dict[str, Any]]:
-    for base in ALTSOURCE_MS_METADATA_BASES:
+    for base in _EP().ALTSOURCE_MS_METADATA_BASES:
         try:
             data = json.loads(fetcher(f"{base}/{server}/master/{table}"))
         except _NETWORK_ERRORS:
@@ -1200,7 +1166,7 @@ def fetch_altsource_ms_scenario(
     fetcher: Callable[[str], str],
     language: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    for base in ALTSOURCE_MS_ASSET_BASES:
+    for base in _EP().ALTSOURCE_MS_ASSET_BASES:
         try:
             text, meta = _fetch_http_with_retry_meta(
                 fetcher,
@@ -1220,11 +1186,11 @@ def fetch_altsource_ms_scenario(
             )
             data["__assetMismatch"] = ""
             return data
-    if not ALTSOURCE_MS_FALLBACK_TO_VIEWER_CDN:
+    if not _EP().ALTSOURCE_MS_FALLBACK_TO_VIEWER_CDN:
         return None
     bucket = "tc" if server == "tw" else server
     alt_path = path[:-len(".json")] + ".asset" if path.endswith(".json") else path
-    fallback_url = _cache_bust_url(f"{ALTSOURCE_SV_ASSET_BASE}/sekai-{bucket}-assets/{alt_path}")
+    fallback_url = _cache_bust_url(f"{_EP().ALTSOURCE_SV_ASSET_BASE}/sekai-{bucket}-assets/{alt_path}")
     try:
         text, meta = _fetch_http_with_retry_meta(fetcher, fallback_url)
         data = json.loads(text)
@@ -1425,7 +1391,7 @@ def altsource_ms_record_page(
     return WebPage(
         id=altsource_ms_page_id(locale, table, record_id),
         source=_current_ms_instance(), source_type=BACKEND_MOESEKAI,
-        url=f"{ALTSOURCE_MS_METADATA_BASES[0]}/{server}/master/{table}",
+        url=f"{_EP().ALTSOURCE_MS_METADATA_BASES[0]}/{server}/master/{table}",
         title=record_title(record) or str(record_id),
         language=altsource_ms_language_for_locale(locale),
         kind=kind or table,
@@ -1894,7 +1860,7 @@ def _crawl_altsource_ms_home_lines(
             page = WebPage(
                 id=page_id,
                 source=_current_ms_instance(), source_type=BACKEND_MOESEKAI,
-                url=f"{ALTSOURCE_MS_METADATA_BASES[0]}/{server}/master/{table}",
+                url=f"{_EP().ALTSOURCE_MS_METADATA_BASES[0]}/{server}/master/{table}",
                 title=str(record.get("assetName") or record_id),
                 language=altsource_ms_language_for_locale(locale),
                 kind=kind,
@@ -2103,11 +2069,11 @@ def _crawl_altsource_ms_impl(
         apply_source_settings(moesekai=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
-    require_endpoint(ALTSOURCE_MS_BASE, "site_base", _current_ms_instance())
-    require_endpoint(ALTSOURCE_MS_METADATA_BASES, "metadata_bases", _current_ms_instance())
-    require_endpoint(ALTSOURCE_MS_ASSET_BASES, "asset_bases", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_BASE, "site_base", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_METADATA_BASES, "metadata_bases", _current_ms_instance())
+    require_endpoint(_EP().ALTSOURCE_MS_ASSET_BASES, "asset_bases", _current_ms_instance())
     if include_overlay:
-        require_endpoint(ALTSOURCE_MS_TRANSLATION_BASE, "translation_base", _current_ms_instance())
+        require_endpoint(_EP().ALTSOURCE_MS_TRANSLATION_BASE, "translation_base", _current_ms_instance())
     write_consent(store_root, _current_ms_instance())
     pages: list[WebPage] = []
     overlay_pages: list[WebPage] = []
@@ -3147,10 +3113,10 @@ def _crawl_altsource_sv_impl(
         apply_source_settings(viewer=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
-    require_endpoint(ALTSOURCE_SV_MASTER_BASE, "master_base", _current_sv_instance())
-    require_endpoint(ALTSOURCE_SV_ASSET_BASE, "asset_base", _current_sv_instance())
+    require_endpoint(_EP().ALTSOURCE_SV_MASTER_BASE, "master_base", _current_sv_instance())
+    require_endpoint(_EP().ALTSOURCE_SV_ASSET_BASE, "asset_base", _current_sv_instance())
     if include_i18n:
-        require_endpoint(ALTSOURCE_SV_I18N_BASE, "i18n_base", _current_sv_instance())
+        require_endpoint(_EP().ALTSOURCE_SV_I18N_BASE, "i18n_base", _current_sv_instance())
     write_consent(store_root, _current_sv_instance())
     if tables is None:
         return _crawl_altsource_sv_text(

@@ -15,7 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from sekaisync.config import REGIONS, ViewerSettings
+from sekaisync.config import REGIONS
+from sekaisync.endpoints import current_endpoints
 from sekaisync.eventalias import _build_jp_box_map, _load_json
 from sekaisync.layout import events_archive_path, region_master_dir, region_source_dir
 
@@ -26,13 +27,11 @@ ARCHIVE_PATH = "events/archive.json"
 JST = timezone(timedelta(hours=9))
 
 # altsource_sv (Sekai Viewer) master endpoint; overridable via settings.json.
-_SV_MASTER_BASE = ViewerSettings().master_base
-
-
 def apply_master_base(master_base: Optional[str]) -> None:
     """Point remote master-table fetches at a configured altsource_sv base."""
-    global _SV_MASTER_BASE
-    _SV_MASTER_BASE = str(master_base or "").rstrip("/") or ViewerSettings().master_base
+    from sekaisync.endpoints import configure_endpoints
+
+    configure_endpoints(sv_master_base=master_base)
 
 
 def jst_today() -> str:
@@ -52,7 +51,7 @@ def default_fetcher(url: str, timeout: int = 30) -> str:
 def _remote_master_url(region: str, table: str) -> str:
     region_info = REGIONS.get(region)
     repo = (region_info.repo_slug or "Sekai-World/sekai-master-db-diff").rsplit("/", 1)[-1]
-    return f"{_SV_MASTER_BASE}/{repo}/{table}.json"
+    return f"{current_endpoints().ALTSOURCE_SV_MASTER_BASE}/{repo}/{table}.json"
 
 
 def _source_write_dir(store_root: Path, region: str) -> Path:
@@ -88,7 +87,7 @@ def fetch_remote_events(
     fetcher: Optional[Callable[[str], str]] = None,
     timeout: int = 30,
 ) -> list[dict[str, Any]]:
-    if not _SV_MASTER_BASE:
+    if not current_endpoints().ALTSOURCE_SV_MASTER_BASE:
         raise ValueError(
             "No Sekai Viewer master_base configured. Configure it in settings.json "
             "(see README「配置数据源」) before running event checks."

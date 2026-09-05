@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from sekaisync.config import DEFAULT_REGION_ORDER, REGIONS, ViewerSettings
+from sekaisync.config import DEFAULT_REGION_ORDER, REGIONS
 from sekaisync.filecache import cached_json
 from sekaisync.layout import (
     progress_path,
@@ -16,17 +16,15 @@ from sekaisync.layout import (
     registry_path,
     web_index_path,
 )
+from sekaisync.endpoints import current_endpoints
 from sekaisync.registry import load_registry
 from sekaisync.webindex import canonical_key_for_page, is_derived_page
 
-# altsource_sv (Sekai Viewer) master endpoint; overridable via settings.json.
-_SV_MASTER_BASE = ViewerSettings().master_base
-
-
 def apply_master_base(master_base: Optional[str]) -> None:
     """Point remote master-table fetches at a configured altsource_sv base."""
-    global _SV_MASTER_BASE
-    _SV_MASTER_BASE = str(master_base or "").rstrip("/") or ViewerSettings().master_base
+    from sekaisync.endpoints import configure_endpoints
+
+    configure_endpoints(sv_master_base=master_base)
 
 
 FACT_TABLES: dict[str, tuple[str, Optional[str]]] = {
@@ -58,7 +56,7 @@ TEXT_TABLES: dict[str, str] = {
 def _remote_master_url(region: str, table: str) -> str:
     region_info = REGIONS.get(region)
     repo = (region_info.repo_slug or "Sekai-World/sekai-master-db-diff").rsplit("/", 1)[-1]
-    return f"{_SV_MASTER_BASE}/{repo}/{table}.json"
+    return f"{current_endpoints().ALTSOURCE_SV_MASTER_BASE}/{repo}/{table}.json"
 
 
 def _default_fetcher(url: str, timeout: int = 20) -> str:
@@ -480,7 +478,7 @@ def compute_progress(
     live: bool = False,
     fetcher: Optional[Callable[[str], str]] = None,
 ) -> dict[str, Any]:
-    if live and not _SV_MASTER_BASE:
+    if live and not current_endpoints().ALTSOURCE_SV_MASTER_BASE:
         raise ValueError(
             "No Sekai Viewer master_base configured. Configure it in settings.json "
             "(see README「配置数据源」) before using --live progress."
