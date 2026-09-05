@@ -282,7 +282,17 @@ def web_status_from_store(store_root: Path) -> dict:
 
 
 def cmd_crawl(args: argparse.Namespace) -> int:
+    from sekaisync.crawler import acquire_crawl_lock, release_crawl_lock
+
     config = config_from_args(args)
+    if not acquire_crawl_lock(config.store_root):
+        print(json.dumps({"error": "Another crawl is already running on this store (crawl.lock). "
+                                 "Wait for it to finish; the lock releases automatically when the "
+                                 "crawling process exits."}, ensure_ascii=False))
+        return 1
+    import atexit
+
+    atexit.register(release_crawl_lock, config.store_root)
     requested = (
         [item.strip().lower() for item in args.sources.split(",") if item.strip()]
         if args.sources
