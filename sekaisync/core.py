@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from sekaisync.config import REGIONS
+from sekaisync import dbstore
 from sekaisync.factpacks import build_fact_pack, load_fact_packs
 from sekaisync.glossary import find_terms, load_glossary, resolve_name
 from sekaisync.layout import (
+    db_path,
     factpack_path,
     freshness_path,
     glossary_path,
@@ -35,10 +37,13 @@ from sekaisync.webindex import (
 class SekaiSyncCore:
     def __init__(self, store_root: Path):
         self.store_root = store_root
-        self.registry = load_registry(registry_path(store_root))
-        self.glossary = load_glossary(glossary_path(store_root))
+        dbstore.ensure_store(store_root)
+        self.registry = dbstore.load_entities(store_root)
+        self.glossary = dbstore.load_glossary_terms(store_root)
         self.factpacks = load_fact_packs(factpack_path(store_root, "en"))
-        self.terms = load_terms(terms_path(store_root))
+        # Light evidence (no sentence bodies): server queries only need
+        # references; write-side pipelines reload with sentences on demand.
+        self.terms = dbstore.load_terms_records(store_root)
         # Aggregate-result cache for status/progress/trust_summary on
         # long-lived HTTP/MCP processes. Invalidated by (a) any change to
         # the in-memory datasets (version bump) and (b) the on-disk
@@ -53,23 +58,19 @@ class SekaiSyncCore:
             self._result_cache.clear()
 
     def _disk_signature(self) -> tuple:
-        """Signature of every on-disk file feeding the aggregate endpoints.
+        """Signature of on-disk inputs feeding the aggregate endpoints.
 
-        Roughly 120 stat() calls per lookup; negligible next to the
-        multi-GB aggregates it guards. Files that disappeared compare
-        unequal to any present-file signature, so deletions invalidate.
+        After the SQLite migration the DB file carries the kb state; the
+        raw region master tables, news JSON, freshness and consent files
+        remain external inputs. Disappeared files compare unequal to any
+        present-file signature, so deletions invalidate.
         """
         paths: list[Path] = [
+            db_path(self.store_root),
             web_consent_path(self.store_root),
-            web_index_path(self.store_root),
             freshness_path(self.store_root),
-            registry_path(self.store_root),
+            db_path(self.store_root).with_name(db_path(self.store_root).name + "-wal"),
         ]
-        web_dir = web_root(self.store_root)
-        if web_dir.exists():
-            for source_dir in sorted(web_dir.iterdir()):
-                if source_dir.is_dir():
-                    paths.append(source_dir / "pages.json")
         for region in REGIONS:
             base = region_master_dir(self.store_root, region)
             if base.exists():
@@ -106,10 +107,11 @@ class SekaiSyncCore:
         copies are stale.  Calling this makes the next query see the latest
         facts without restarting the server.
         """
-        self.registry = load_registry(registry_path(self.store_root))
-        self.glossary = load_glossary(glossary_path(self.store_root))
+        dbstore.ensure_store(self.store_root)
+        self.registry = dbstore.load_entities(self.store_root)
+        self.glossary = dbstore.load_glossary_terms(self.store_root)
         self.factpacks = load_fact_packs(factpack_path(self.store_root, "en"))
-        self.terms = load_terms(terms_path(self.store_root))
+        self.terms = dbstore.load_terms_records(self.store_root)
         self._bump_data_version()
         return {
             "registry": len(self.registry),
@@ -350,13 +352,13 @@ class SekaiSyncCore:
         )
 
     def tag_clouds(self) -> dict:
-        from sekaisync.termindex import build_tag_clouds, load_pages
+        from sekaisync.termindex import build_tag_clouds
 
-        pages = load_pages(self.store_root)
+        pages = dbstore.load_web_index_rows(self.store_root)
         return build_tag_clouds(self.terms, pages=pages)
 
     def term_status(self) -> dict:
-        return term_status(self.terms)
+        return dbstore.term_status_from_db(self.store_root)
 
     def event_alias(
         self,
@@ -508,24 +510,14 @@ class SekaiSyncCore:
 
     def status(self) -> dict:
         def _compute() -> dict:
-            from sekaisync.filecache import cached_json
             from sekaisync.webindex import load_web_category_counts
 
             consent_path = web_consent_path(self.store_root)
-            index_path = web_index_path(self.store_root)
             consent = False
             if consent_path.exists():
                 data = json.loads(consent_path.read_text(encoding="utf-8"))
                 consent = bool(data)
-            sources = {}
-            if index_path.exists():
-                # Shared raw parse (same scope as progress.matched_text_units)
-                # instead of a third full read of the 500MB index.
-                sources = cached_json(
-                    index_path,
-                    lambda p: json.loads(p.read_text(encoding="utf-8")),
-                    scope="web_index_raw",
-                ).get("sources", {})
+            sources = dbstore.web_source_counts(self.store_root)
             web_status = {
                 "enabled": bool(sources) and consent,
                 "consent": consent,
@@ -733,8 +725,7 @@ class SekaiSyncCore:
             if is_official:
                 official_inherited += 1
 
-        path = terms_path(self.store_root)
-        save_terms(self.terms, path, compact_evidence=True)
+        dbstore.save_terms_records(self.store_root, self.terms, replace_evidence=False)
         self._bump_data_version()
         return {
             "zhfirst_candidates": len(zh_data),

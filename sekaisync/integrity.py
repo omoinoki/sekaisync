@@ -5,10 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sekaisync.glossary import load_glossary
+from sekaisync import dbstore
 from sekaisync.layout import glossary_path, registry_path, terms_path
-from sekaisync.registry import load_registry
-from sekaisync.termindex import load_terms
 from sekaisync.webindex import flatten_web_pages, sha256_hex
 
 
@@ -278,17 +276,17 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
     reconciliation = cross_instance_reconciliation(store_root, limit=limit)
     registry = _verify_unique_layer(
         "registry",
-        load_registry(registry_path(store_root)),
+        dbstore.load_entities(store_root),
         limit,
     )
     glossary = _verify_unique_layer(
         "glossary",
-        load_glossary(glossary_path(store_root)),
+        dbstore.load_glossary_terms(store_root),
         limit,
     )
     terms = _verify_unique_layer(
         "terms",
-        load_terms(terms_path(store_root)),
+        dbstore.load_terms_records(store_root),
         limit,
     )
     all_issues = (

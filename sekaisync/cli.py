@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from sekaisync import dbstore
 from sekaisync.config import DEFAULT_REGION_ORDER, SekaiSyncConfig, load_config, region_keys
 from sekaisync.eventalias import build_event_alias_map, resolve_event_alias
 from sekaisync.layout import (
@@ -577,11 +578,10 @@ def cmd_integrity(args: argparse.Namespace) -> int:
 
 def cmd_terms_init(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    path = terms_path(config.store_root)
-    existing = [] if args.reset else load_terms(path)
+    existing = [] if args.reset else dbstore.load_terms_records(config.store_root, include_sentences=True)
     seeded = seed_from_glossary(config.store_root)
     merged = merge_terms([*existing, *seeded])
-    save_terms(merged, path, compact_evidence=True)
+    dbstore.save_terms_records(config.store_root, merged, replace_evidence=True)
     print(
         json.dumps(
             {
@@ -637,8 +637,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         for item in args.languages.split(",")
         if item.strip()
     ]
-    path = terms_path(config.store_root)
-    existing = load_terms(path)
+    existing = dbstore.load_terms_records(config.store_root, include_sentences=True)
     if args.local:
         memory = {}
         if len(pages) > 1:
@@ -666,7 +665,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         )
         llm_model = llm.config.model
     records = merge_terms(records)
-    save_terms(records, path, compact_evidence=True)
+    dbstore.save_terms_records(config.store_root, records, replace_evidence=True)
     print(
         json.dumps(
             {
@@ -688,8 +687,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
 
 def cmd_terms_lookup(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    path = terms_path(config.store_root)
-    terms = load_terms(path)
+    terms = dbstore.load_terms_records(config.store_root)
     languages = [
         item.strip()
         for item in args.languages.split(",")
@@ -720,8 +718,7 @@ def cmd_terms_lookup(args: argparse.Namespace) -> int:
 
 def cmd_terms_list(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    path = terms_path(config.store_root)
-    terms = load_terms(path)
+    terms = dbstore.load_terms_records(config.store_root)
     if args.kind:
         terms = [term for term in terms if term.kind == args.kind]
     tag_filter = getattr(args, "tag", None)
@@ -752,8 +749,7 @@ def cmd_terms_export(args: argparse.Namespace) -> int:
     language name (wide enough to re-import into a spreadsheet).
     """
     config = config_from_args(args)
-    path = terms_path(config.store_root)
-    terms = load_terms(path)
+    terms = dbstore.load_terms_records(config.store_root)
     languages = [item.strip() for item in args.languages.split(",") if item.strip()]
 
     # Deterministic ordering: canonical, then trust, then weight.
@@ -962,7 +958,7 @@ def cmd_terms_status(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "path": str(path),
-                **term_status(load_terms(path)),
+                **dbstore.term_status_from_db(config.store_root),
             },
             ensure_ascii=False,
             indent=2,

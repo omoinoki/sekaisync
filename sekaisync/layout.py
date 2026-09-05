@@ -109,6 +109,11 @@ def web_pages_path(store_root: Path, source: str) -> Path:
     return web_source_dir(store_root, source) / "pages.json"
 
 
+def db_path(store_root: Path) -> Path:
+    """SQLite knowledge store (kb/sekaisync.db) — unique data layer."""
+    return kb_dir(store_root) / "sekaisync.db"
+
+
 def web_index_path(store_root: Path) -> Path:
     return cache_dir(store_root) / "web" / "index.json"
 

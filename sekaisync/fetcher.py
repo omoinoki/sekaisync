@@ -19,6 +19,7 @@ from sekaisync.layout import (
     region_source_dir,
     seed_glossary_path,
 )
+from sekaisync import dbstore
 from sekaisync.coverage import build_region_coverage, build_source_manifest
 from sekaisync.factpacks import build_fact_packs, save_fact_packs
 from sekaisync.glossary import merge_glossary, save_glossary
@@ -222,13 +223,13 @@ def rebuild_indexes(config: SekaiSyncConfig, regions: Iterable[str]) -> dict:
     semantics.  Returns entity/term counts for callers that report them.
     """
     entities = build_registry(config.store_root, regions)
-    save_registry(entities, registry_path(config.store_root))
+    dbstore.save_entities(config.store_root, entities)
     seed = []
     seed_path = seed_glossary_path(config.store_root)
     if seed_path.exists():
         seed = json.loads(seed_path.read_text(encoding="utf-8"))
     terms = merge_glossary(entities, seed)
-    save_glossary(terms, glossary_path(config.store_root))
+    dbstore.save_glossary_terms(config.store_root, terms)
     for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
         packs = build_fact_packs(entities, language=language)
         save_fact_packs(packs, factpack_path(config.store_root, language))

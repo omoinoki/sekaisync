@@ -711,8 +711,8 @@ wait_click()
                 rewrite_index=False,
                 write_categories=False,
             )
-            self.assertTrue((store_root / "kb" / "web" / "altsource_ms" / "pages.json").exists())
-            self.assertFalse((store_root / "cache" / "web" / "index.json").exists())
+            from sekaisync.dbstore import count_rows
+            self.assertEqual(count_rows(store_root)["web_pages"], 1)
             self.assertFalse((store_root / "cache" / "web" / "altsource_ms" / "01_mainline.json").exists())
             existing = load_existing_page_map(store_root, "altsource_ms")
             self.assertEqual(len(existing), 1)
@@ -744,8 +744,8 @@ wait_click()
                 rewrite_index=True,
                 write_categories=True,
             )
-            index = json.loads((store_root / "cache" / "web" / "index.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(index["pages"]), 2)
+            from sekaisync.webindex import load_web_index
+            self.assertEqual(len(load_web_index(store_root)), 2)
             self.assertTrue((store_root / "cache" / "web" / "altsource_ms" / "02_event_story.json").exists())
 
     def test_altsource_ms_page_ids_include_locale(self):

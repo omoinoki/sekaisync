@@ -268,15 +268,22 @@ def rename_legacy_source_ids(
             if not dry_run:
                 _write_file(web_consent_path(store_root), text)
 
-    # 6. Drop the regenerable merged index so rebuild recreates it.
+    # 6. The merged index is now a DB concern: import the renamed pages
+    # and recompute their metadata columns.
     derived = web_index_path(store_root)
     if derived.exists() and not dry_run:
         derived.unlink()
 
     if rebuild_index and not dry_run:
+        from sekaisync import dbstore
         from sekaisync.webindex import rebuild_web_index
 
         try:
+            # The JSON directories are authoritative after renaming: drop any
+            # rows imported under legacy names, re-import, then recompute.
+            for legacy in LEGACY_IDS:
+                dbstore.delete_source_pages(store_root, legacy)
+            dbstore.reimport_pages(store_root)
             summary["rebuild"] = rebuild_web_index(store_root)
         except Exception as exc:  # keep the migration usable even if index rebuild fails
             summary["rebuild"] = {"error": str(exc)}

@@ -16,8 +16,8 @@ from sekaisync.layout import (
     registry_path,
     web_index_path,
 )
+from sekaisync import dbstore
 from sekaisync.endpoints import current_endpoints
-from sekaisync.registry import load_registry
 from sekaisync.webindex import canonical_key_for_page, is_derived_page
 
 def apply_master_base(master_base: Optional[str]) -> None:
@@ -188,15 +188,15 @@ def matched_fact_units(
     expected: dict[str, set[str]],
 ) -> dict[str, set[str]]:
     matched: dict[str, set[str]] = {category: set() for category in FACT_TABLES}
-    for entity in load_registry(registry_path(store_root)):
-        if region not in entity.regions and entity.region != region:
+    for entity_id, entity_type, regions, entity_region in dbstore.load_entity_keys(store_root):
+        if region not in regions and entity_region != region:
             continue
-        if entity.type not in expected:
+        if entity_type not in expected:
             continue
-        suffix = str(entity.id).rsplit(":", 1)[-1]
-        key = f"{entity.type}:{suffix}"
-        if key in expected[entity.type]:
-            matched[entity.type].add(key)
+        suffix = str(entity_id).rsplit(":", 1)[-1]
+        key = f"{entity_type}:{suffix}"
+        if key in expected[entity_type]:
+            matched[entity_type].add(key)
     return matched
 
 
@@ -371,28 +371,8 @@ def matched_text_units(
 ) -> dict[str, set[str]]:
     matched: dict[str, set[str]] = {category: set() for category in TEXT_TABLES}
     language = REGIONS[region].language if region in REGIONS else "zh_hans"
-    index_path = web_index_path(store_root)
-    if not index_path.exists():
-        return matched
-    # Raw parse (no flag normalization) so the filtering below sees exactly
-    # the on-disk flags, same as before caching; shares one parse per call.
-    data = cached_json(
-        index_path,
-        lambda p: json.loads(p.read_text(encoding="utf-8")),
-        scope="web_index_raw",
-    )
-    for page in data.get("pages", []):
-        if is_derived_page(page):
-            continue
-        if page.get("asset_mismatch") or page.get("content_language_mismatch"):
-            continue
-        if page.get("untranslated"):
-            continue
-        if page.get("language") != language:
-            continue
-        key = _web_text_key(page)
-        if not key:
-            continue
+    keys = dbstore.matched_text_keys(store_root, language)
+    for key in keys:
         category = key.split(":", 1)[0]
         if category in expected and key in expected[category]:
             matched[category].add(key)

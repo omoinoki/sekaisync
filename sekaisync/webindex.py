@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from sekaisync import dbstore
 from sekaisync.filecache import cached_json
 from sekaisync.layout import web_category_dir, web_index_path, web_pages_path, web_root
 from sekaisync.models import WebPage
@@ -561,40 +562,18 @@ def _read_all_pages_uncached(store_root: Path) -> dict[str, list[dict[str, Any]]
     return result
 
 def write_web_index(store_root: Path) -> Path:
-    index_path = web_index_path(store_root)
-    all_pages = _read_all_pages_uncached(store_root)
-    merged = [_index_record(item) for items in all_pages.values() for item in items]
-    index = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "sources": {
-            name: len(items)
-            for name, items in all_pages.items()
-        },
-        "pages": merged,
-    }
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-    return index_path
+    """Historical merged-index writer; rows are already stored in the DB."""
+    return dbstore.db_file(store_root)
+
+
 
 def load_existing_page_map(
     store_root: Path,
     source: str,
 ) -> dict[str, dict[str, Any]]:
-    path = web_pages_path(store_root, source)
-    if not path.exists():
-        return {}
-    existing: dict[str, dict[str, Any]] = {}
-    for item in json.loads(path.read_text(encoding="utf-8")):
-        if not item.get("id"):
-            continue
-        if page_backend(item) == BACKEND_MOESEKAI and str(item.get("kind", "")).lower() in DERIVED_KINDS:
-            item["derived"] = True
-        item["trust"] = trust_for_page(item)
-        normalize_mismatch_flags(item)
-        item["canonical_key"] = canonical_key_for_page(item)
-        item["text_hash"] = str(item.get("text_hash") or sha256_hex(str(item.get("text", ""))))
-        existing[str(item["id"])] = item
-    return existing
+    return dbstore.existing_page_map(store_root, source)
+
+
 
 
 def save_web_pages(
@@ -605,14 +584,12 @@ def save_web_pages(
     rewrite_index: bool = True,
     write_categories: bool = True,
 ) -> Path:
-    pages_path = web_pages_path(store_root, source)
-    pages_path.parent.mkdir(parents=True, exist_ok=True)
     if existing is None:
         existing = load_existing_page_map(store_root, source)
     for page in pages:
         existing[page.id] = web_page_to_dict(page)
     merged = list(existing.values())
-    pages_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    dbstore.save_web_pages_full(store_root, source, merged)
     if write_categories:
         write_category_files(
             web_category_dir(store_root, source),
@@ -621,7 +598,9 @@ def save_web_pages(
         )
     if rewrite_index:
         return write_web_index(store_root)
-    return pages_path
+    return dbstore.db_file(store_root)
+
+
 
 def _read_pages_json(pages_path: Path) -> list[dict[str, Any]]:
     return cached_json(
@@ -631,141 +610,98 @@ def _read_pages_json(pages_path: Path) -> list[dict[str, Any]]:
     )
 
 def load_web_pages(store_root: Path) -> dict[str, list[dict[str, Any]]]:
-    """Cached per-source pages. Treat the returned lists as read-only.
+    """Per-source page dicts (full load, compat shape) from the SQLite store."""
+    return dbstore.load_web_pages(store_root)
 
-    Write paths that mutate page dicts (index rebuilds) must read from
-    disk directly instead of going through this cache.
-    """
-    root = web_root(store_root)
-    if not root.exists():
-        return {}
-    result: dict[str, list[dict[str, Any]]] = {}
-    for source_dir in sorted(root.iterdir()):
-        if not source_dir.is_dir():
-            continue
-        pages_path = source_dir / "pages.json"
-        if not pages_path.exists():
-            continue
-        result[source_dir.name] = _read_pages_json(pages_path)
-    return result
+
 
 
 def load_web_category_counts(
     store_root: Path,
     source: Optional[str] = None,
 ) -> dict[str, dict[str, int]]:
-    counts: dict[str, dict[str, int]] = {}
-    for source_name, pages in load_web_pages(store_root).items():
-        if source and source_name != source:
-            continue
-        per_category: dict[str, int] = {}
-        for page in pages:
-            category = page_category(page)
-            per_category[category] = per_category.get(category, 0) + 1
-        counts[source_name] = per_category
-    if source:
-        return counts.get(source, {})
-    return counts
+    return dbstore.web_category_counts(store_root, source)
+
+
 
 def load_existing_page_ids(
     store_root: Path,
     source: str,
     skip_flagged: bool = False,
 ) -> set[str]:
-    path = web_pages_path(store_root, source)
-    if not path.exists():
-        return set()
-    ids: set[str] = set()
-    for item in json.loads(path.read_text(encoding="utf-8")):
-        if not item.get("id"):
-            continue
-        normalize_mismatch_flags(item)
-        if skip_flagged and (
-            item.get("asset_mismatch")
-            or item.get("untranslated")
-            or item.get("content_language_mismatch")
-        ):
-            continue
-        ids.add(str(item["id"]))
-    return ids
+    return dbstore.web_page_ids(store_root, source, skip_flagged=skip_flagged)
+
+
 
 
 def load_web_index(store_root: Path) -> list[dict[str, Any]]:
-    """Cached merged index with normalized flags and canonical keys.
+    """Merged index records (metadata only) from the SQLite store."""
+    return dbstore.load_web_index_rows(store_root)
 
-    The returned page dicts are shared between callers and must be
-    treated as read-only.
-    """
-    path = web_index_path(store_root)
-    if not path.exists():
-        return []
 
-    def _load(p: Path) -> list[dict[str, Any]]:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        pages = data.get("pages", [])
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            normalize_mismatch_flags(page)
-            page["canonical_key"] = canonical_key_for_page(page)
-        return pages
-
-    return cached_json(path, _load, scope="web_index")
 
 
 def flatten_web_pages(store_root: Path) -> list[dict[str, Any]]:
     """Return every page with its full text for operations that need the text layer."""
     return [
         page
-        for pages in load_web_pages(store_root).values()
+        for pages in dbstore.load_web_pages(store_root).values()
         for page in pages
     ]
 
+
+
 def rebuild_web_index(store_root: Path) -> dict[str, Any]:
-    """Regenerate per-source pages, category files and the merged index."""
+    """Recompute canonical/trust/flag columns for every source from stored text."""
+    from sekaisync.models import WebPage
+
     sources: dict[str, int] = {}
     rebuilt: dict[str, int] = {}
-    for source, items in _read_all_pages_uncached(store_root).items():
+    for source, items in dbstore.load_web_pages(store_root).items():
         pages = [web_page_from_dict(recompute_language_flags(item)) for item in items]
-        save_web_pages(store_root, source, pages, rewrite_index=False)
-        sources[source] = len(pages)
-        rebuilt[source] = len(pages)
-    index_path = write_web_index(store_root)
+        merged = [web_page_to_dict(page) for page in pages]
+        dbstore.save_web_pages_full(store_root, source, merged)
+        write_category_files(
+            web_category_dir(store_root, source),
+            merged,
+            lightweight=True,
+        )
+        sources[source] = len(merged)
+        rebuilt[source] = len(merged)
     return {
         "sources": sources,
         "pages": sum(sources.values()),
-        "index": str(index_path),
+        "index": str(dbstore.db_file(store_root)),
         "rebuilt": rebuilt,
     }
 
 
+
+
 def auxiliary_page_summary(store_root: Path) -> dict[str, Any]:
-    pages = [page for page in load_web_index(store_root) if is_auxiliary_page(page)]
+    rows = dbstore.auxiliary_summary_rows(store_root)
     sources: dict[str, int] = {}
     languages: dict[str, int] = {}
     translation_sources: dict[str, int] = {}
     trusts: dict[str, int] = {}
     kinds: dict[str, int] = {}
-    for page in pages:
-        source = str(page.get("source", "unknown"))
-        language = str(page.get("language", "unknown"))
-        translation_source = str(page.get("translation_source", "unknown"))
-        trust = str(page.get("trust") or trust_for_page(page) or "unknown")
-        kind = str(page.get("kind", "unknown"))
-        sources[source] = sources.get(source, 0) + 1
-        languages[language] = languages.get(language, 0) + 1
-        translation_sources[translation_source] = translation_sources.get(translation_source, 0) + 1
-        trusts[trust] = trusts.get(trust, 0) + 1
-        kinds[kind] = kinds.get(kind, 0) + 1
+    for row in rows:
+        sources[row["source"]] = sources.get(row["source"], 0) + 1
+        languages[row["language"]] = languages.get(row["language"], 0) + 1
+        translation_sources[row["translation_source"]] = translation_sources.get(row["translation_source"], 0) + 1
+        trusts[row["trust"]] = trusts.get(row["trust"], 0) + 1
+        kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
     return {
-        "available": bool(pages),
-        "count": len(pages),
+        "available": bool(rows),
+        "count": len(rows),
         "sources": sources,
         "languages": languages,
         "translation_sources": translation_sources,
         "trust": trusts,
         "kinds": kinds,
     }
+
+
 
 
 def web_search(

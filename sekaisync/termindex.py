@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from sekaisync import dbstore
 from sekaisync.glossary import load_glossary
 from sekaisync.layout import glossary_path, web_index_path
 from sekaisync.llm_client import LLMClient
@@ -785,19 +786,8 @@ def load_pages(
             data = data.get("pages", [])
         return [item for item in data if isinstance(item, dict)]
     pages: list[dict] = []
-    index_path = web_index_path(store_root)
-    if index_path.exists():
-        data = json.loads(index_path.read_text(encoding="utf-8"))
-        pages = [item for item in data.get("pages", []) if isinstance(item, dict)]
-        if any(isinstance(page, dict) and "text" in page for page in pages[:5]):
-            if not include_overlay:
-                pages = [page for page in pages if not is_auxiliary_page(page)]
-            return pages
-    pages = [
-        page
-        for source_pages in load_web_pages(store_root).values()
-        for page in source_pages
-    ]
+    for source_pages in dbstore.load_web_pages(store_root).values():
+        pages.extend(source_pages)
     if not include_overlay:
         pages = [page for page in pages if not is_auxiliary_page(page)]
     return pages
@@ -1065,7 +1055,7 @@ def _merge_reciprocal(records: list[TermRecord]) -> list[TermRecord]:
 
 
 def seed_from_glossary(store_root: Path) -> list[TermRecord]:
-    glossary = load_glossary(glossary_path(store_root))
+    glossary = dbstore.load_glossary_terms(store_root)
     records: list[TermRecord] = []
     for term in glossary:
         # Only seed real nouns — title kinds (card/event_story/stamp/music_*)

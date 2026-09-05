@@ -136,10 +136,11 @@ class SourceMigrateTest(unittest.TestCase):
         self.assertIn(SOURCE_SV, consent)
         self.assertNotIn("altsource", consent)
 
-        # Index rebuilt under canonical source names.
-        index = json.loads(web_index_path(self.store).read_text(encoding="utf-8"))
-        self.assertIn(SOURCE_MS, index.get("sources", {}))
-        self.assertIn(SOURCE_SV, index.get("sources", {}))
+        # Index rebuilt under canonical source names (DB-backed).
+        from sekaisync.webindex import load_web_pages
+        sources = set(load_web_pages(self.store))
+        self.assertIn(SOURCE_MS, sources)
+        self.assertIn(SOURCE_SV, sources)
 
         # Category artifacts regenerated under cache/web/<source>.
         self.assertTrue((self.store / "cache" / "web" / SOURCE_MS / "02_event_story.json").exists())

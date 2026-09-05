@@ -127,16 +127,17 @@ class IntegrityTest(unittest.TestCase):
             store_root = Path(tmp) / "store"
             self._write_pages(store_root)
 
+            from sekaisync.webindex import load_existing_page_map
             for source in ("altsource_ms", "altsource_sv"):
-                pages_path = store_root / "kb" / "web" / source / "pages.json"
-                pages = json.loads(pages_path.read_text(encoding="utf-8"))
-                for page in pages:
+                existing = load_existing_page_map(store_root, source)
+                for page in existing.values():
                     if page["id"] == "web:altsource_ms:event_story:1:1":
                         page["text_hash"] = "wrong"
                     if page["id"] == "web:altsource_sv:cn:event_story:1:1:conflict":
                         page["asset_mismatch"] = "language_mismatch: expected zh_hans, text script mismatch"
                         page["scenario_id_mismatch"] = "ScenarioId event_01_02 != expected event_01_01"
-                pages_path.write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
+                from sekaisync.dbstore import save_web_pages_full
+                save_web_pages_full(store_root, source, list(existing.values()))
 
             result = run_integrity_check(store_root, limit=10)
             self.assertEqual(result["summary"]["mirror_duplicates"], 1)
