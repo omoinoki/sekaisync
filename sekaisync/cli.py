@@ -346,6 +346,7 @@ def cmd_crawl(args: argparse.Namespace) -> int:
                 crawl_altsource_sv(
                     config.store_root,
                     regions=regions,
+                    tables=tuple(x.strip() for x in args.sv_tables.split(",") if x.strip()) if args.sv_tables else None,
                     limit=args.limit,
                     accept_tos=True,
                     delay=args.delay,
@@ -1163,6 +1164,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_crawl.add_argument("--limit", type=int, default=10, help="Maximum pages/records to crawl per source")
     p_crawl.add_argument("--delay", type=float, default=0.5, help="Seconds between requests")
     p_crawl.add_argument("--workers", type=int, default=4, help="Concurrent text fetches per source")
+    p_crawl.add_argument("--sv-tables", default=None, help="altsource_sv master tables, comma-separated (e.g. eventStories,cards); default: crawl story text via sitemap instead")
     p_crawl.add_argument("--no-resume", action="store_true", help="Ignore locally crawled pages and redownload everything")
     p_crawl.add_argument("--accept-tos", action="store_true", help="Confirm TOS compliance without interactive prompt")
     p_crawl.add_argument(
