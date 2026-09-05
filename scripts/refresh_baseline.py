@@ -51,7 +51,9 @@ def build_block(store_root: Path, status: dict) -> str:
 
     per_lang = {lang: 0 for lang in LANGS}
     five = 0
-    for (names_json,) in dbstore.connect(store_root).execute("SELECT names_json FROM terms"):
+    with dbstore.connect(store_root) as conn:
+        rows = conn.execute("SELECT names_json FROM terms").fetchall()
+    for (names_json,) in rows:
         names = _json.loads(names_json)
         present = [lang for lang in LANGS if names.get(lang)]
         for lang in present:
@@ -72,7 +74,7 @@ def build_block(store_root: Path, status: dict) -> str:
         + " |",
         f"| Web 正文页 | {counts['web_pages']:,} | 含辅助页（管道 B） |",
         "| ".join(["辅助翻译参考", f"{aux['count']:,}", "auxiliary 辅助页（翻译参考/overlay）"]) + " |",
-        f"| 官方公告 | {status['news']['total']:,} | "
+        f"| 官方公告 | {status['news']['count']:,} | "
         + "、".join(f"{lang} {count}" for lang, count in sorted(status["news"].get("languages", {}).items()))
         + " |",
     ]

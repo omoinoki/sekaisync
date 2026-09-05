@@ -586,7 +586,7 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "path": str(path),
+                "path": str(dbstore.db_file(config.store_root)),
                 "seeded": len(seeded),
                 "terms": len(merged),
             },
@@ -670,7 +670,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "path": str(path),
+                "path": str(dbstore.db_file(config.store_root)),
                 "story_key_count": len(keys),
                 "story_keys": sorted(keys)[:20],
                 "pages": len(selected),
@@ -958,7 +958,7 @@ def cmd_terms_status(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "path": str(path),
+                "path": str(dbstore.db_file(config.store_root)),
                 **dbstore.term_status_from_db(config.store_root),
             },
             ensure_ascii=False,
