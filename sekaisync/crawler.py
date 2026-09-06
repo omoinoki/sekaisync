@@ -6,6 +6,7 @@ import hashlib
 import html.parser
 import http.client
 import json
+import os
 import re
 import sys
 import time
@@ -215,6 +216,56 @@ def _source_sha256(value: Any) -> str:
 
 def _page_known(page_id: str, known_ids: Optional[set[str]]) -> bool:
     return bool(known_ids and page_id in known_ids)
+
+
+
+_LOCK_HANDLE = None
+
+
+def acquire_crawl_lock(store_root: Path) -> bool:
+    """Single-instance lock for crawls on one store (OS-level file lock).
+
+    Two concurrent crawls on the same store corrupt each other: checkpoints
+    replace the whole per-source page set with the caller's snapshot. The
+    OS releases the lock automatically when the process dies, so a crashed
+    crawl never wedges the store.
+    """
+    global _LOCK_HANDLE
+    path = Path(store_root) / "crawl.lock"
+    handle = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _LOCK_HANDLE = handle
+    return True
+
+
+def release_crawl_lock(store_root: Path) -> None:
+    global _LOCK_HANDLE
+    handle = _LOCK_HANDLE
+    _LOCK_HANDLE = None
+    if handle is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    finally:
+        handle.close()
 
 
 def fetch_http_text_with_headers(
