@@ -513,6 +513,28 @@ def _scenario_mismatch_reason(data: dict[str, Any], expected_id: str) -> str:
     return "; ".join(parts)
 
 
+_sv_cache_root: "contextvars.ContextVar[Optional[Path]]" = contextvars.ContextVar(
+    "sv_master_cache_root", default=None
+)
+
+
+def _sv_master_cache_path(url: str) -> Optional[Path]:
+    """Disk cache location for a master table URL.
+
+    Bound to the crawl's store root via contextvar: real crawls get a cache
+    under ``store/cache/sv_master/``; direct function calls (tests, probes)
+    default to no cache so fake fetchers are always exercised.
+    """
+    root = _sv_cache_root.get()
+    if root is None:
+        return None
+    marker = "/sekai-master-db"
+    i = url.find(marker)
+    if i < 0:
+        return None
+    return Path(root) / "cache" / "sv_master" / url[i + 1:].replace("/", "_")
+
+
 def fetch_altsource_sv_master(
     region: str,
     table: str,
@@ -523,6 +545,16 @@ def fetch_altsource_sv_master(
     final failure visible instead of silently emptying a whole stage."""
     table = table.removesuffix(".json")
     url = altsource_sv_master_json_url(region, table)
+    # Cross-session disk cache: resume runs re-download 1-2GB of unchanged
+    # master tables on every restart otherwise. Store-root-keyed so tests
+    # with temp stores never share state.
+    cache_path = _sv_master_cache_path(url)
+    if cache_path is not None and cache_path.exists():
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        except (OSError, json.JSONDecodeError):
+            pass
     last_error: Optional[Exception] = None
     data: Any = None
     for attempt in range(4):
@@ -540,7 +572,16 @@ def fetch_altsource_sv_master(
         )
         return []
     if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
+        records = [item for item in data if isinstance(item, dict)]
+        if cache_path is not None:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = cache_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(cache_path)
+            except OSError:
+                pass
+        return records
     return []
 
 
@@ -3153,6 +3194,7 @@ def crawl_altsource_sv(
     instance: Optional[str] = None,
 ) -> dict[str, Any]:
     with _sv_instance_scope(instance):
+        _sv_cache_root.set(Path(store_root))
         return _crawl_altsource_sv_impl(
             store_root, regions=regions, tables=tables, limit=limit,
             accept_tos=accept_tos, delay=delay, fetcher=fetcher,
