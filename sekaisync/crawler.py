@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from sekaisync.config import (
     REGIONS,
@@ -384,6 +384,10 @@ NEWS_BODY_ALLOWED_HOST_SUFFIXES = (
     "ibytedtos.com",  # ByteDance overseas CDN (tc/kr)
     "sgsnssdk.com",  # ByteDance in-game activity pages
 )
+_SEKAI_WEB_HOSTS = frozenset({
+    "production-web.sekai.colorfulpalette.org",
+    "n-production-web.sekai-en.com",
+})
 NEWS_BODY_ALLOWED_HOSTS = frozenset({
     "production-web.sekai.colorfulpalette.org",  # jp in-game web
     "n-production-web.sekai-en.com",  # en in-game web
@@ -433,6 +437,13 @@ def crawl_news_bodies(
     fetched = 0
     for record in pending:
         url = str(record.get("url") or "")
+        # sekai-web information pages are Nuxt shells; the article body is a
+        # separate static fragment at /html/{id}.html on the same host.
+        parsed = urlparse(url)
+        if parsed.netloc in _SEKAI_WEB_HOSTS and parsed.path.endswith("index.html"):
+            info_id = (parse_qs(parsed.query).get("id") or [None])[0]
+            if info_id:
+                url = f"{parsed.scheme}://{parsed.netloc}/html/{info_id}.html"
         try:
             html = fetcher(url)
         except Exception:  # noqa: BLE001 - keep link-only form on failure
