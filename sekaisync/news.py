@@ -111,10 +111,12 @@ def fetch_altsource_ms_news(
         path = str(item.get("path") or "")
         start = _timestamp_ms(item.get("startAt"))
         end = _timestamp_ms(item.get("endAt"))
+        information_type = str(item.get("informationType") or "")
+        information_tag = str(item.get("informationTag") or "")
         text_parts = [
             title,
-            str(item.get("informationTag") or ""),
-            str(item.get("informationType") or ""),
+            information_tag,
+            information_type,
             path,
         ]
         records.append(
@@ -133,6 +135,11 @@ def fetch_altsource_ms_news(
                 "canonical_key": _news_key(language, title, path, item_id),
                 "kind": "game_news",
                 "trust": "B",
+                "information_type": information_type,
+                "information_tag": information_tag,
+                "browse_type": str(item.get("browseType") or ""),
+                "platform": str(item.get("platform") or ""),
+                "body_available": False,
             }
         )
     return records
@@ -167,10 +174,16 @@ def fetch_altsource_sv_game_news(
         path = str(item.get("path") or "")
         start = _timestamp_ms(item.get("startAt"))
         end = _timestamp_ms(item.get("endAt"))
+        information_type = str(item.get("informationType") or "")
+        information_tag = str(item.get("informationTag") or "")
+        if not title:
+            # The tc diff feed omits `title` on most entries; fall back to
+            # tag + id so the record stays identifiable.
+            title = f"{information_tag or information_type or 'news'} #{item_id}"
         text_parts = [
             title,
-            str(item.get("informationTag") or ""),
-            str(item.get("informationType") or ""),
+            information_tag,
+            information_type,
             path,
         ]
         records.append(
@@ -189,6 +202,11 @@ def fetch_altsource_sv_game_news(
                 "canonical_key": _news_key(language, title, path, item_id),
                 "kind": "game_news",
                 "trust": "B",
+                "information_type": information_type,
+                "information_tag": information_tag,
+                "browse_type": str(item.get("browseType") or ""),
+                "platform": str(item.get("platform") or ""),
+                "body_available": False,
             }
         )
     return records
@@ -331,7 +349,7 @@ def _dispatch_entries(
 
 def sync_news(
     store_root: Path,
-    regions: Iterable[str] = ("jp", "cn"),
+    regions: Iterable[str] = ("jp", "en", "tc", "kr", "cn"),
     sources: Optional[Iterable[str]] = None,
     fetcher: Callable[[str], str] = _default_fetcher,
     settings: Optional[MoesekaiSettings] = None,

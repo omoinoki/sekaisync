@@ -1309,8 +1309,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_news_sync.add_argument(
         "--regions",
-        default="jp,cn",
-        help="altsource_ms regions to fetch (cn/jp)",
+        default="jp,en,tc,kr,cn",
+        help="Regions to fetch news for (jp/en/tc/kr/cn); ms provides cn+jp, sv provides all five",
     )
     p_news_sync.add_argument(
         "--sources",
