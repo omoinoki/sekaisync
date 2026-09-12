@@ -376,6 +376,32 @@ def _cache_bust_url(url: str) -> str:
     return f"{url}{marker}v={int(time.time() * 1000)}"
 
 
+# News bodies are only fetched from official game-content hosts. Everything
+# else in the news feeds is an outbound link (social media, questionnaires,
+# official site homepages, app deep links) and stays link-only.
+NEWS_BODY_ALLOWED_HOST_SUFFIXES = (
+    "draftstatic.com",  # ByteDance CDN: plain article pages (cn/tc/kr)
+    "ibytedtos.com",  # ByteDance overseas CDN (tc/kr)
+    "sgsnssdk.com",  # ByteDance in-game activity pages
+)
+NEWS_BODY_ALLOWED_HOSTS = frozenset({
+    "production-web.sekai.colorfulpalette.org",  # jp in-game web
+    "n-production-web.sekai-en.com",  # en in-game web
+})
+
+
+def _news_body_host_allowed(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = urlparse(url).netloc.lower()
+    if not host:
+        return False
+    return host in NEWS_BODY_ALLOWED_HOSTS or any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in NEWS_BODY_ALLOWED_HOST_SUFFIXES
+    )
+
+
 def crawl_news_bodies(
     store_root: Path,
     fetcher: Callable[[str], str] = fetch_http_text,
@@ -386,17 +412,24 @@ def crawl_news_bodies(
     ByteDance region news (cn/tc/kr) point at plain HTML article pages on
     their CDN; jp/en webview pages are Nuxt shells with no fetchable body
     and stay link-only. Entries that already have a body are skipped, so
-    repeated crawls are incremental.
+    repeated crawls are incremental. Only in-game hosts are fetched; social
+    media, questionnaires and official-site links stay link-only.
     """
     from sekaisync.news import load_news, news_summary, save_news
 
     records = load_news(store_root)
-    pending = [
-        record
-        for record in records
-        if not record.get("body_available")
-        and str(record.get("url") or "").startswith(("http://", "https://"))
-    ]
+    skipped = 0
+    pending = []
+    for record in records:
+        if record.get("body_available"):
+            continue
+        url = str(record.get("url") or "")
+        if not url.startswith(("http://", "https://")):
+            continue
+        if not _news_body_host_allowed(url):
+            skipped += 1
+            continue
+        pending.append(record)
     fetched = 0
     for record in pending:
         url = str(record.get("url") or "")
@@ -419,7 +452,12 @@ def crawl_news_bodies(
             time.sleep(delay)
     if fetched:
         save_news(records, store_root)
-    return {"pending": len(pending), "fetched": fetched, "summary": news_summary(store_root)}
+    return {
+        "pending": len(pending),
+        "fetched": fetched,
+        "skipped_out_of_scope": skipped,
+        "summary": news_summary(store_root),
+    }
 
 
 def require_tos_consent(accept_tos: bool) -> bool:
