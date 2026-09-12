@@ -376,6 +376,52 @@ def _cache_bust_url(url: str) -> str:
     return f"{url}{marker}v={int(time.time() * 1000)}"
 
 
+def crawl_news_bodies(
+    store_root: Path,
+    fetcher: Callable[[str], str] = fetch_http_text,
+    delay: float = 0.3,
+) -> dict[str, int]:
+    """Fetch article bodies for news entries missing them.
+
+    ByteDance region news (cn/tc/kr) point at plain HTML article pages on
+    their CDN; jp/en webview pages are Nuxt shells with no fetchable body
+    and stay link-only. Entries that already have a body are skipped, so
+    repeated crawls are incremental.
+    """
+    from sekaisync.news import load_news, news_summary, save_news
+
+    records = load_news(store_root)
+    pending = [
+        record
+        for record in records
+        if not record.get("body_available")
+        and str(record.get("url") or "").startswith(("http://", "https://"))
+    ]
+    fetched = 0
+    for record in pending:
+        url = str(record.get("url") or "")
+        try:
+            html = fetcher(url)
+        except Exception:  # noqa: BLE001 - keep link-only form on failure
+            if delay:
+                time.sleep(delay)
+            continue
+        if not html or "<" not in html[:300]:
+            if delay:
+                time.sleep(delay)
+            continue
+        text = re.sub(r"\s+", " ", extract_visible_text(html)).strip()
+        if len(text) >= 200:
+            record["text"] = text
+            record["body_available"] = True
+            fetched += 1
+        if delay:
+            time.sleep(delay)
+    if fetched:
+        save_news(records, store_root)
+    return {"pending": len(pending), "fetched": fetched, "summary": news_summary(store_root)}
+
+
 def require_tos_consent(accept_tos: bool) -> bool:
     print(TOS_WARNING_TEMPLATE.format(sites=enabled_site_summary()))
     if accept_tos:

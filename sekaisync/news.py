@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -33,6 +34,14 @@ _LANGUAGE_MAP = {
     "en": "en",
     "ko-kr": "ko",
     "ko": "ko",
+}
+
+
+# In-game webview hosts for sv information detail pages (jp/en paths are
+# relative to these; tc/kr/cn entries carry absolute URLs already).
+_NEWS_WEB_BASES = {
+    "jp": "https://production-web.sekai.colorfulpalette.org",
+    "en": "https://n-production-web.sekai-en.com",
 }
 
 
@@ -119,6 +128,10 @@ def fetch_altsource_ms_news(
             information_type,
             path,
         ]
+        page_url = path
+        if path and not path.startswith(("http://", "https://", "weixin://")):
+            web_base = _NEWS_WEB_BASES.get(region)
+            page_url = f"{web_base}/{path.lstrip('/')}" if web_base else path
         records.append(
             {
                 "id": f"news:{language}:{source_id}:{item_id}",
@@ -186,6 +199,10 @@ def fetch_altsource_sv_game_news(
             information_type,
             path,
         ]
+        page_url = path
+        if path and not path.startswith(("http://", "https://")):
+            web_base = _NEWS_WEB_BASES.get(region)
+            page_url = f"{web_base}/{path.lstrip('/')}" if web_base else path
         records.append(
             {
                 "id": f"news:{language}:{source_id}:{item_id}",
@@ -195,7 +212,7 @@ def fetch_altsource_sv_game_news(
                 "language": language,
                 "title": title,
                 "text": "\n".join(part for part in text_parts if part).strip(),
-                "url": path,
+                "url": page_url,
                 "start_at": _iso(start),
                 "end_at": _iso(end),
                 "published_at": _iso(start),
@@ -242,7 +259,12 @@ def _prefer_record(
     record_rank = source_rank(record_source, priority)
     if record_rank != existing_rank:
         return record_rank < existing_rank
-    return len(str(record.get("text") or "")) > len(str(existing.get("text") or ""))
+    old_text, new_text = str(existing.get("text") or ""), str(record.get("text") or "")
+    if len(new_text) != len(old_text):
+        return len(new_text) > len(old_text)
+    # Tie (same summary text): prefer the record with structured category
+    # fields and an absolute URL over legacy link-only snapshots.
+    return bool(record.get("information_type")) and not existing.get("information_type")
 
 
 def save_news(records: Iterable[dict[str, Any]], store_root: Path) -> Path:
@@ -381,11 +403,22 @@ def sync_news(
     else:
         priority = DEFAULT_SOURCE_PRIORITY
     # Also purge any previously imported Sekai Viewer site announcements on disk.
-    records.extend(
+    stored = [
         record
         for record in load_news(store_root)
         if not _is_website_announcement(record)
-    )
+    ]
+    # Complete relative URLs on legacy stored entries (fetch functions now
+    # emit absolute URLs; older snapshots predate the web-domain mapping).
+    for record in stored:
+        url = str(record.get("url") or "")
+        if url and not url.startswith(("http://", "https://", "weixin://")):
+            language = str(record.get("language") or "")
+            region = {"ja": "jp", "en": "en", "ko": "kr", "zh_hant": "tc", "zh_hans": "cn"}.get(language)
+            web_base = _NEWS_WEB_BASES.get(region)
+            if web_base:
+                record["url"] = f"{web_base}/{url.lstrip('/')}"
+    records.extend(stored)
     merged = merge_news(records, source_priority=priority)
     save_news(merged, store_root)
     return {
