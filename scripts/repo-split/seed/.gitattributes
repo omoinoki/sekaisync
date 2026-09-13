@@ -1,0 +1,13 @@
+# 换行归一化：仓库内统一存 LF，检出时按平台决定，避免跨机器整文件 diff
+* text=auto
+
+# 二进制文件不参与换行转换
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.pfx binary

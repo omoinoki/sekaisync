@@ -1,0 +1,484 @@
+[
+  {
+    "canonical": "庭師のおはなしによると",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "庭師のおはなしによると",
+      "en": "The Gardener's Story",
+      "ko": "庭師のおはなしによると",
+      "zh_hans": "庭師のおはなしによると"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "おこちゃま戦争",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "おこちゃま戦争",
+      "en": "OKOCHAMA SENSO",
+      "ko": "おこちゃま戦争",
+      "zh_hans": "おこちゃま戦争"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "キラー",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "キラー",
+      "en": "KILLER",
+      "ko": "キラー",
+      "zh_hans": "キラー",
+      "title": "キラー",
+      "zh_hant": "キラー"
+    },
+    "everyday": false,
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:525",
+    "lines": {
+      "ja": {
+        "term": "キラー",
+        "sentence": "貝殻とかキラキラーってした石がたっくさん落ちてたんだよ！",
+        "trust": "B",
+        "auxiliary": false,
+        "released": false,
+        "cloud_rank": null,
+        "note": "unreleased story — translation pending global launch"
+      },
+      "zh_hans": {
+        "term": "キラー",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "en": {
+        "term": "KILLER",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "ko": {
+        "term": "キラー",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      }
+    }
+  },
+  {
+    "canonical": "天体望遠鏡",
+    "tags": [
+      "location"
+    ],
+    "names": {
+      "ja": "天体望遠鏡",
+      "en": "Telescope",
+      "ko": "천체 망원경",
+      "zh_hans": "天文望远镜"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "ハローセカイ",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "ハローセカイ",
+      "en": "Hello, SEKAI",
+      "ko": "ハローセカイ",
+      "zh_hans": "ハローセカイ"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "フュージョン",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "フュージョン",
+      "en": "Fusion",
+      "ko": "フュージョン",
+      "zh_hans": "フュージョン"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "Sage",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "Sage",
+      "en": "Sage",
+      "ko": "Sage",
+      "zh_hans": "Sage"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "ナンセンス文学",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "ナンセンス文学",
+      "en": "Literary nonsense",
+      "ko": "ナンセンス文学",
+      "zh_hans": "ナンセンス文学"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "ポップアップストア",
+    "tags": [
+      "product"
+    ],
+    "names": {
+      "ja": "ポップアップストア",
+      "zh_hans": "快闪店",
+      "en": "Pop-up Store",
+      "zh_tw": "快閃店",
+      "ko": "팝업 스토어"
+    },
+    "everyday": false,
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2345",
+    "lines": {
+      "ja": {
+        "term": "ポップアップストア",
+        "sentence": "こっちでポップアップストアをやることになったんだって』",
+        "trust": "B",
+        "auxiliary": false,
+        "released": false,
+        "cloud_rank": null,
+        "note": "unreleased story — translation pending global launch"
+      },
+      "zh_hans": {
+        "term": "快闪店",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "zh_tw": {
+        "term": "快閃店",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "en": {
+        "term": "Pop-up Store",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "ko": {
+        "term": "팝업 스토어",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      }
+    }
+  },
+  {
+    "canonical": "番凩",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "番凩",
+      "en": "TSUGAIKOGARASHI",
+      "ko": "番凩",
+      "zh_hans": "番凩"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "flos",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "flos",
+      "en": "flos",
+      "ko": "flos",
+      "zh_hans": "flos"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "Q",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "Q",
+      "en": "Q",
+      "ko": "Q",
+      "zh_hans": "Q",
+      "title": "Q",
+      "zh_hant": "Q"
+    },
+    "everyday": false,
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:659",
+    "lines": {
+      "ja": {
+        "term": "Q",
+        "sentence": "QTのミニライブを例にして話すわね",
+        "trust": "B",
+        "auxiliary": false,
+        "released": false,
+        "cloud_rank": null,
+        "note": "unreleased story — translation pending global launch"
+      },
+      "zh_hans": {
+        "term": "Q",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "en": {
+        "term": "Q",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "ko": {
+        "term": "Q",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      }
+    }
+  },
+  {
+    "canonical": "Blessing",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "Blessing",
+      "en": "Blessing",
+      "ko": "Blessing",
+      "zh_hans": "Blessing"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  },
+  {
+    "canonical": "potatoになっていく",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "potatoになっていく",
+      "en": "Becoming Potatoes",
+      "ko": "potatoになっていく",
+      "zh_hans": "potatoになっていく",
+      "title": "potatoになっていく",
+      "zh_hant": "potatoになっていく"
+    },
+    "everyday": false,
+    "story_key": "virtual_live:web:altsource_ms:ja-jp:virtual_live:773",
+    "lines": {
+      "ja": {
+        "term": "potatoになっていく",
+        "sentence": "だったら、“potatoになっていく”が歌いたいな",
+        "trust": "B",
+        "auxiliary": false,
+        "released": false,
+        "cloud_rank": null,
+        "note": "unreleased story — translation pending global launch"
+      },
+      "zh_hans": {
+        "term": "potatoになっていく",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "en": {
+        "term": "Becoming Potatoes",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      },
+      "ko": {
+        "term": "potatoになっていく",
+        "sentence": "",
+        "trust": "",
+        "auxiliary": false,
+        "missing": true,
+        "released": false,
+        "cloud_rank": null
+      }
+    }
+  },
+  {
+    "canonical": "Cool Me Down",
+    "tags": [
+      "other"
+    ],
+    "names": {
+      "ja": "Cool Me Down",
+      "en": "Cool Me Down",
+      "ko": "Cool Me Down",
+      "zh_hans": "Cool Me Down"
+    },
+    "everyday": false,
+    "story_key": null,
+    "lines": {
+      "ja": {},
+      "zh_hans": {},
+      "zh_tw": {},
+      "en": {},
+      "ko": {}
+    }
+  }
+]

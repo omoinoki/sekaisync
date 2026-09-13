@@ -11,7 +11,7 @@ import json, re
 from pathlib import Path
 from collections import Counter
 
-sample = json.loads(Path("docs/NOUNS_RELEASED_LLM_SAMPLE_500.json").read_text(encoding='utf-8'))
+sample = json.loads(Path("data/nouns/NOUNS_RELEASED_LLM_SAMPLE_500.json").read_text(encoding='utf-8'))
 
 # Load glossary for person check
 try:
@@ -114,5 +114,5 @@ print(f"issue types: {dict(issue_counter.most_common(8))}")
 for r in mismatch[:20]:
     print(f"  {r['canonical'][:35]:35s} {r['tags']} w={r['weight']:.1f} {r['issues'][:2]}")
 
-Path("docs/NOUNS_RELEASED_AUDIT_LLM_500.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
-print("wrote docs/NOUNS_RELEASED_AUDIT_LLM_500.json")
+Path("data/audits/NOUNS_RELEASED_AUDIT_LLM_500.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
+print("wrote data/audits/NOUNS_RELEASED_AUDIT_LLM_500.json")

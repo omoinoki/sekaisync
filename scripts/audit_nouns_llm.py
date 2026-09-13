@@ -13,10 +13,10 @@ import json, re
 from pathlib import Path
 from collections import Counter, defaultdict
 
-sample_path = Path("docs/NOUNS_RELEASED_SAMPLE_500.json")
+sample_path = Path("data/nouns/NOUNS_RELEASED_SAMPLE_500.json")
 if not sample_path.exists():
     import random
-    released = json.loads(Path("docs/NOUNS_RELEASED.json").read_text(encoding='utf-8'))
+    released = json.loads(Path("data/nouns/NOUNS_RELEASED.json").read_text(encoding='utf-8'))
     random.seed(42)
     sample = random.sample(released, 500)
     sample_path.write_text(json.dumps(sample, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -112,5 +112,5 @@ for r in mismatch[:20]:
     print(f"  {r['canonical'][:30]:30s} {r['tags']} w={r['weight']:.2f} -> {r['issues']}")
 
 # Save
-Path("docs/NOUNS_RELEASED_AUDIT_500.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
-print("wrote docs/NOUNS_RELEASED_AUDIT_500.json")
+Path("data/audits/NOUNS_RELEASED_AUDIT_500.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
+print("wrote data/audits/NOUNS_RELEASED_AUDIT_500.json")

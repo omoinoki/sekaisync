@@ -1,0 +1,3887 @@
+[
+  {
+    "no": 1,
+    "canonical": "フェニーのぬいぐるみ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "フェニーのぬいぐるみ",
+      "en": "Phenny Plushie",
+      "ko": "피니 인형",
+      "zh_hans": "菲尼玩偶"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 2,
+    "canonical": "トナカイ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "トナカイ",
+      "zh_hans": "雪橇",
+      "zh_tw": "雪橇"
+    },
+    "story_key": "event:152:7",
+    "lines": {
+      "ja": {
+        "term": "トナカイ",
+        "sentence": "いくぞ、相棒の——トナカイ達！』"
+      },
+      "zh_hans": {
+        "term": "雪橇",
+        "sentence": "驯鹿：“是！今年我们也会拼尽全力拉雪橇的！”"
+      },
+      "zh_tw": {
+        "term": "雪橇",
+        "sentence": "馴鹿：「是！我今年也會卯足全力拉雪橇的！」"
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 3,
+    "canonical": "ニーゴ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ニーゴ",
+      "zh_hans": "光源",
+      "en": "N25 Rangers",
+      "ko": "장이라"
+    },
+    "story_key": "event:199:8",
+    "lines": {
+      "ja": {
+        "term": "ニーゴ",
+        "sentence": "ニーゴの作業ができないかもしれない）"
+      },
+      "zh_hans": {
+        "term": "光源",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "N25 Rangers",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "장이라",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 4,
+    "canonical": "クールフラワー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "クールフラワー",
+      "en": "Cool Flowers",
+      "ko": "쿨 플라워",
+      "zh_hans": "帅气鲜花"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 5,
+    "canonical": "ライブグッズ",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ライブグッズ",
+      "zh_hans": "演出周边",
+      "en": "Live Goods",
+      "zh_tw": "演出週邊",
+      "ko": "라이브 굿즈"
+    },
+    "story_key": "event:94:4",
+    "lines": {
+      "ja": {
+        "term": "ライブグッズ",
+        "sentence": "遥：前に……ライブグッズのことで、そういう声を"
+      },
+      "zh_hans": {
+        "term": "演出周边",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "演出週邊",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Live Goods",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "라이브 굿즈",
+        "sentence": "하루카：전에…… 라이브 굿즈와 관련해서"
+      }
+    }
+  },
+  {
+    "no": 6,
+    "canonical": "星乃一歌",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "星乃一歌",
+      "full": "星乃一歌",
+      "firstName": "星乃",
+      "firstNameEnglish": "HOSHINO",
+      "givenNameEnglish": "ICHIKA",
+      "givenName": "一歌",
+      "zh_hant": "星乃一歌",
+      "en": "HOSHINO ICHIKA",
+      "ko": "호시노 이치카",
+      "zh_hans": "星乃一歌"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_aprilfool2022_001",
+    "lines": {
+      "ja": {
+        "term": "星乃一歌",
+        "sentence": "一歌：えっと……咲希とは幼馴染みで、宮女１年の星乃一歌です。"
+      },
+      "zh_hans": {
+        "term": "星乃一歌",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "HOSHINO ICHIKA",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "호시노 이치카",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 7,
+    "canonical": "シャツ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "シャツ",
+      "en": "Ribbon Knights",
+      "zh_tw": "班服"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1981",
+    "lines": {
+      "ja": {
+        "term": "シャツ",
+        "sentence": "絵名：……このダッサいクラスTシャツ着てやるのが、"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "班服",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Ribbon Knights",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 8,
+    "canonical": "ミステリアスフラワー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミステリアスフラワー",
+      "en": "Mysterious Flowers",
+      "ko": "미스테리어스 플라워",
+      "zh_hans": "神秘鲜花"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 9,
+    "canonical": "MORE MORE",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "MORE MORE",
+      "zh_hans": "再交",
+      "en": "Unlike Haruka"
+    },
+    "story_key": "event:17:4",
+    "lines": {
+      "ja": {
+        "term": "MORE MORE",
+        "sentence": "ななみん：それじゃあ早速、MORE MORE JUMP！の"
+      },
+      "zh_hans": {
+        "term": "再交",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Unlike Haruka",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 10,
+    "canonical": "ReLight",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ReLight",
+      "en": "ReLight needs",
+      "ko": "장한"
+    },
+    "story_key": "event:157:5",
+    "lines": {
+      "ja": {
+        "term": "ReLight",
+        "sentence": "会話の流れだと、番組の枠にReLightを選ばなければ"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "ReLight needs",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "장한",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 11,
+    "canonical": "スクランブル交差点",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "スクランブル交差点",
+      "en": "Scramble Crossing",
+      "ko": "스크램블 교차로",
+      "zh_hans": "全向十字路口",
+      "name": "スクランブル交差点",
+      "zh_hant": "十字路口"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk03_182",
+    "lines": {
+      "ja": {
+        "term": "スクランブル交差点",
+        "sentence": "類：さあ、スクランブル交差点でのショーだ！"
+      },
+      "zh_hans": {
+        "term": "全向十字路口",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Scramble Crossing",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "스크램블 교차로",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 12,
+    "canonical": "アイドルグッズ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "アイドルグッズ",
+      "en": "Idol Merch",
+      "ko": "아이돌 굿즈",
+      "zh_hans": "偶像周边",
+      "name": "アイドルグッズ",
+      "zh_hant": "偶像周邊"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk01_015",
+    "lines": {
+      "ja": {
+        "term": "アイドルグッズ",
+        "sentence": "それとも、アイドルグッズ用の衣装ケース？"
+      },
+      "zh_hans": {
+        "term": "偶像周边",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Idol Merch",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "아이돌 굿즈",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 13,
+    "canonical": "ブラフェス",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ブラフェス",
+      "zh_hans": "婚庆展",
+      "en": "Bridal Festa",
+      "zh_tw": "婚博"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1831",
+    "lines": {
+      "ja": {
+        "term": "ブラフェス",
+        "sentence": "今回のブラフェスの日程、チャットで送るよ』"
+      },
+      "zh_hans": {
+        "term": "婚庆展",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "婚博",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Bridal Festa",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 14,
+    "canonical": "THEATRE",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "THEATRE",
+      "zh_hans": "中心剧场",
+      "en": "Theatre"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2444",
+    "lines": {
+      "ja": {
+        "term": "THE CENTER",
+        "sentence": "THE CENTER THEATREで公演したんだって？"
+      },
+      "zh_hans": {
+        "term": "中心剧场",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Theatre",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 15,
+    "canonical": "座長のショーステッキ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "座長のショーステッキ",
+      "en": "Showman's Baton",
+      "ko": "단장의 쇼 스틱",
+      "zh_hans": "团长的表演手杖"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 16,
+    "canonical": "ミクのCD",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミクのCD",
+      "en": "Miku CDs",
+      "ko": "미쿠 CD",
+      "zh_hans": "初音未来的CD",
+      "name": "ミクのCD",
+      "zh_hant": "初音未來的CD"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_wl_shuffle_01_004",
+    "lines": {
+      "ja": {
+        "term": "ミクのCD",
+        "sentence": "奏：あ、ミクのCDでよければ、これオススメだよ。"
+      },
+      "zh_hans": {
+        "term": "初音未来的CD",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Miku CDs",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "미쿠 CD",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 17,
+    "canonical": "『RAD WEEKEND』のフライヤー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "『RAD WEEKEND』のフライヤー",
+      "en": "RAD WEEKEND Flyer",
+      "ko": "\"RAD WEEKEND\"의 홍보 포스터",
+      "zh_hans": "“RAD WEEKEND”的传单",
+      "name": "『RAD WEEKEND』のフライヤー",
+      "zh_hant": "「RAD WEEKEND」的傳單"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk03_149",
+    "lines": {
+      "ja": {
+        "term": "『RAD WEEKEND』のフライヤー",
+        "sentence": "彰人：あの壁の『RAD WEEKEND』のフライヤー、"
+      },
+      "zh_hans": {
+        "term": "“RAD WEEKEND”的传单",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "RAD WEEKEND Flyer",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "\"RAD WEEKEND\"의 홍보 포스터",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 18,
+    "canonical": "教室のセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "教室のセカイ",
+      "en": "School SEKAI",
+      "ko": "교실 세카이",
+      "zh_hans": "教室「世界」"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 19,
+    "canonical": "チラシ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "チラシ",
+      "en": "Pulling Weeds",
+      "zh_tw": "基地"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:121",
+    "lines": {
+      "ja": {
+        "term": "チラシ",
+        "sentence": "オレ達のステージを宣伝するチラシだ！"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "基地",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Pulling Weeds",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 20,
+    "canonical": "ステージのセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ステージのセカイ",
+      "en": "Stage SEKAI",
+      "ko": "스테이지 세카이",
+      "zh_hans": "舞台「世界」",
+      "name": "ステージのセカイ",
+      "zh_hant": "舞台的「世界」"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2189",
+    "lines": {
+      "ja": {
+        "term": "ステージのセカイ",
+        "sentence": "ステージのセカイのミク：『——ねえ、ルカちゃん。どんな魔法を使ったの？』"
+      },
+      "zh_hans": {
+        "term": "舞台「世界」",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Stage SEKAI",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "스테이지 세카이",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 21,
+    "canonical": "東雲絵名",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "東雲絵名",
+      "full": "東雲絵名",
+      "firstName": "東雲",
+      "firstNameEnglish": "SHINONOME",
+      "givenNameEnglish": "ENA",
+      "givenName": "絵名",
+      "zh_hant": "東雲繪名",
+      "en": "SHINONOME ENA",
+      "ko": "시노노메 에나",
+      "zh_hans": "东云绘名"
+    },
+    "story_key": "event:197:6",
+    "lines": {
+      "ja": {
+        "term": "東雲絵名",
+        "sentence": "スタッフA：最後の方、東雲絵名さん"
+      },
+      "zh_hans": {
+        "term": "东云绘名",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "SHINONOME ENA",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "시노노메 에나",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 22,
+    "canonical": "桐谷遥",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "桐谷遥",
+      "full": "桐谷遥",
+      "firstName": "桐谷",
+      "firstNameEnglish": "KIRITANI",
+      "givenNameEnglish": "HARUKA",
+      "givenName": "遥",
+      "zh_hant": "桐谷遙",
+      "en": "KIRITANI HARUKA",
+      "ko": "키리타니 하루카",
+      "zh_hans": "桐谷遥"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1614",
+    "lines": {
+      "ja": {
+        "term": "桐谷遥",
+        "sentence": "お客さん達：……あのー、もしかして桐谷遥ちゃん、ですか！？"
+      },
+      "zh_hans": {
+        "term": "桐谷遥",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "KIRITANI HARUKA",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "키리타니 하루카",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 23,
+    "canonical": "モデル",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "モデル",
+      "en": "Portraits",
+      "zh_tw": "像模"
+    },
+    "story_key": "event:155:3",
+    "lines": {
+      "ja": {
+        "term": "モデル",
+        "sentence": "本物のモデルさんみたいに決まってて……"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "像模",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Portraits",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 24,
+    "canonical": "マックス",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "マックス",
+      "zh_hans": "麦克思",
+      "en": "Max"
+    },
+    "story_key": "event:126:3",
+    "lines": {
+      "ja": {
+        "term": "マックス",
+        "sentence": "石原：……よし！　マックス、ゴー！"
+      },
+      "zh_hans": {
+        "term": "麦克思",
+        "sentence": "石原：……好！去吧，麦克思！"
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Max",
+        "sentence": "Ishihara：Ready, Max? Go...!"
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 25,
+    "canonical": "ミク(？)のきぐるみ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミク(？)のきぐるみ",
+      "en": "Miku(?) Mascot",
+      "ko": "미쿠(?) 인형 탈",
+      "zh_hans": "初音未来（？）的玩偶装"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 26,
+    "canonical": "古びたDJセット",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "古びたDJセット",
+      "en": "Old DJing Set",
+      "ko": "오래된 DJ 세트",
+      "zh_hans": "陈旧的DJ设备"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 27,
+    "canonical": "ルカのベース",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ルカのベース",
+      "en": "Luka's Bass Guitar",
+      "ko": "루카의 베이스",
+      "zh_hans": "巡音流歌的贝斯",
+      "name": "ルカのベース",
+      "zh_hant": "流歌的貝斯"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk02_329",
+    "lines": {
+      "ja": {
+        "term": "ルカのベース",
+        "sentence": "ミク：……！　相変わらず、ルカのベースはカッコイイ……！"
+      },
+      "zh_hans": {
+        "term": "巡音流歌的贝斯",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Luka's Bass Guitar",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "루카의 베이스",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 28,
+    "canonical": "オオカミ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "オオカミ",
+      "zh_hans": "扮演大灰狼",
+      "en": "Unprecedented Appearance"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1053",
+    "lines": {
+      "ja": {
+        "term": "オオカミ",
+        "sentence": "衣装チームA：でも、今できあがってるのはオオカミ１匹と"
+      },
+      "zh_hans": {
+        "term": "扮演大灰狼",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Unprecedented Appearance",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 29,
+    "canonical": "かわいい服",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "かわいい服",
+      "en": "Cute Outfit",
+      "ko": "귀여운 옷",
+      "zh_hans": "可爱的服装",
+      "name": "かわいい服",
+      "zh_hant": "可愛的衣服"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_sanrio_005",
+    "lines": {
+      "ja": {
+        "term": "かわいい服",
+        "sentence": "クロミ：（か、かわいい服に、ファッションショー！？）"
+      },
+      "zh_hans": {
+        "term": "可爱的服装",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Cute Outfit",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "귀여운 옷",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 30,
+    "canonical": "キャスト",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "キャスト",
+      "zh_hans": "们居然",
+      "en": "I'm Kusanagi",
+      "zh_tw": "員人數"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1244",
+    "lines": {
+      "ja": {
+        "term": "キャスト",
+        "sentence": "キャスト達：おはよう、草薙さん。"
+      },
+      "zh_hans": {
+        "term": "们居然",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "員人數",
+        "sentence": ""
+      },
+      "en": {
+        "term": "I'm Kusanagi",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 31,
+    "canonical": "Amia",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "Amia",
+      "en": "MV during",
+      "ko": "님과"
+    },
+    "story_key": "unit_story:web:altsource_ms:ja-jp:unit_story:nightcode_01_04",
+    "lines": {
+      "ja": {
+        "term": "Amia",
+        "sentence": "【Amia】：『あれ、雪？　来たんだ。お疲れー♪』"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "MV during",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "님과",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 32,
+    "canonical": "ドッジボール",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ドッジボール",
+      "zh_hans": "躲避球",
+      "en": "Dodgeball",
+      "zh_tw": "玩躲避球"
+    },
+    "story_key": "event:106:3",
+    "lines": {
+      "ja": {
+        "term": "ドッジボール",
+        "sentence": "この、『ドッジボールをする！』ってところなんだけど～！"
+      },
+      "zh_hans": {
+        "term": "躲避球",
+        "sentence": "关于“玩躲避球！”这条～！"
+      },
+      "zh_tw": {
+        "term": "玩躲避球",
+        "sentence": "關於「玩躲避球！」這一項啊～！"
+      },
+      "en": {
+        "term": "Dodgeball",
+        "sentence": "Haruka：Huh? Dodgeball?"
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 33,
+    "canonical": "プロダクション",
+    "tags": [
+      "organization"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "プロダクション",
+      "zh_hans": "制作公司",
+      "en": "Production",
+      "zh_tw": "製作公司",
+      "ko": "프로덕션"
+    },
+    "story_key": "event:138:1",
+    "lines": {
+      "ja": {
+        "term": "プロダクション",
+        "sentence": "音楽プロデューサーや芸能プロダクション……"
+      },
+      "zh_hans": {
+        "term": "制作公司",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "製作公司",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Production",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "프로덕션",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 34,
+    "canonical": "カフェの看板",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "カフェの看板",
+      "en": "Cafe Signboard",
+      "ko": "카페 간판",
+      "zh_hans": "咖啡厅的广告板",
+      "name": "カフェの看板",
+      "zh_hant": "咖啡廳的招牌"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1257",
+    "lines": {
+      "ja": {
+        "term": "カフェの看板",
+        "sentence": "絵名：『でしょ？　それに、カフェの看板メニューの"
+      },
+      "zh_hans": {
+        "term": "咖啡厅的广告板",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Cafe Signboard",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "카페 간판",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 35,
+    "canonical": "リボン",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "リボン",
+      "en": "Embroidered",
+      "zh_tw": "蝴蝶結？"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:442",
+    "lines": {
+      "ja": {
+        "term": "リボン",
+        "sentence": "たとえば衣装のリボンとか、ブーツのひもとかね"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "蝴蝶結？",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Embroidered",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 36,
+    "canonical": "スムージー",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "スムージー",
+      "en": "Smoothies",
+      "zh_tw": "冰沙"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_idol_09_002",
+    "lines": {
+      "ja": {
+        "term": "スムージー",
+        "sentence": "遥：ねえ、愛莉が合宿で作ってくれたスムージー、"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "冰沙",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Smoothies",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 37,
+    "canonical": "アークランドショーコンテスト",
+    "tags": [
+      "event",
+      "location"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "アークランドショーコンテスト",
+      "zh_hans": "弧光乐园表演大赛",
+      "en": "Ark Land Show Contest",
+      "zh_tw": "弧光樂園表演大賽",
+      "ko": "아크랜드 쇼 콘테스트"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_wonder_22_003",
+    "lines": {
+      "ja": {
+        "term": "アークランドショーコンテスト",
+        "sentence": "司：アークランドショーコンテストを通して、"
+      },
+      "zh_hans": {
+        "term": "弧光乐园表演大赛",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "弧光樂園表演大賽",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Ark Land Show Contest",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "아크랜드 쇼 콘테스트",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 38,
+    "canonical": "ワンマンライブ",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ワンマンライブ",
+      "zh_hans": "专场演唱会",
+      "en": "Solo Live",
+      "zh_tw": "專場演唱會",
+      "ko": "원맨 라이브"
+    },
+    "story_key": "event:73:1",
+    "lines": {
+      "ja": {
+        "term": "ワンマンライブ",
+        "sentence": "斎藤：それじゃあ、ワンマンライブ前の"
+      },
+      "zh_hans": {
+        "term": "专场演唱会",
+        "sentence": "斋藤：那我们在专场演唱会前的"
+      },
+      "zh_tw": {
+        "term": "專場演唱會",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Solo Live",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "원맨 라이브",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 39,
+    "canonical": "繋ぎなおされたリボン",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "繋ぎなおされたリボン",
+      "en": "Re-Tied Ribbon",
+      "ko": "다시 이어진 리본",
+      "zh_hans": "重新系好的缎带"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 40,
+    "canonical": "KAITO",
+    "tags": [
+      "other",
+      "person"
+    ],
+    "source": "local",
+    "official": true,
+    "names": {
+      "ja": "KAITO",
+      "zh_hans": "抛沙包",
+      "en": "Th-That didn't",
+      "zh_tw": "看起來好好吃～～～！",
+      "givenNameEnglish": "KAITO",
+      "givenName": "KAITO"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2216",
+    "lines": {
+      "ja": {
+        "term": "KAITO",
+        "sentence": "KAITO：（えむちゃんが気になって来てみたけど……）"
+      },
+      "zh_hans": {
+        "term": "抛沙包",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "看起來好好吃～～～！",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Th-That didn't",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 41,
+    "canonical": "キュートフラワー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "キュートフラワー",
+      "en": "Cute Flowers",
+      "ko": "큐트 플라워",
+      "zh_hans": "可爱鲜花"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 42,
+    "canonical": "マイク",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "マイク",
+      "en": "Against Taiga",
+      "zh_tw": "涉足"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk03_134",
+    "lines": {
+      "ja": {
+        "term": "マイク",
+        "sentence": "こいつにいろいろなマイクを試させようと思ってさ"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "涉足",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Against Taiga",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 43,
+    "canonical": "ストリートのセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ストリートのセカイ",
+      "en": "Street SEKAI",
+      "ko": "스트리트 세카이",
+      "zh_hans": "街头「世界」"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 44,
+    "canonical": "アクアリウム",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "アクアリウム",
+      "en": "Aquarium",
+      "ko": "어항",
+      "zh_hans": "水族箱",
+      "name": "アクアリウム",
+      "zh_hant": "水族箱"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:137",
+    "lines": {
+      "ja": {
+        "term": "アクアリウム",
+        "sentence": "まふゆ：うーん。あえて言うなら……アクアリウム、かな"
+      },
+      "zh_hans": {
+        "term": "水族箱",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Aquarium",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "어항",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 45,
+    "canonical": "星空図鑑",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "星空図鑑",
+      "en": "Stargazing Guide",
+      "ko": "밤하늘 도감",
+      "zh_hans": "星空图鉴"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 46,
+    "canonical": "バレンタイン",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "バレンタイン",
+      "zh_hans": "做情人节",
+      "en": "Tadaa"
+    },
+    "story_key": "event:84:2",
+    "lines": {
+      "ja": {
+        "term": "バレンタイン",
+        "sentence": "瑞希：もうすぐ——バレンタインだって！"
+      },
+      "zh_hans": {
+        "term": "做情人节",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Tadaa",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 47,
+    "canonical": "２本のマイク",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "２本のマイク",
+      "en": "Pair of Mics",
+      "ko": "2개의 마이크",
+      "zh_hans": "两支麦克风"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 48,
+    "canonical": "日野森雫",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "日野森雫",
+      "full": "日野森雫",
+      "firstName": "日野森",
+      "firstNameEnglish": "HINOMORI",
+      "givenNameEnglish": "SHIZUKU",
+      "givenName": "雫",
+      "zh_hant": "日野森雫",
+      "en": "HINOMORI SHIZUKU",
+      "ko": "히노모리 시즈쿠",
+      "zh_hans": "日野森雫"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2608",
+    "lines": {
+      "ja": {
+        "term": "日野森雫",
+        "sentence": "雫：『全公演で、センターとして“完璧な日野森雫”だった』って、"
+      },
+      "zh_hans": {
+        "term": "日野森雫",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "HINOMORI SHIZUKU",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "히노모리 시즈쿠",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 49,
+    "canonical": "鏡音リン",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "鏡音リン",
+      "full": "鏡音リン",
+      "firstName": "鏡音",
+      "firstNameEnglish": "KAGAMINE",
+      "givenNameEnglish": "RIN",
+      "givenName": "リン",
+      "zh_hant": "鏡音鈴",
+      "en": "KAGAMINE RIN",
+      "ko": "카가미네 린",
+      "zh_hans": "镜音铃"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_idol_03_007",
+    "lines": {
+      "ja": {
+        "term": "鏡音リン",
+        "sentence": "ん～、鏡音リン……リン……"
+      },
+      "zh_hans": {
+        "term": "镜音铃",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "KAGAMINE RIN",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "카가미네 린",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 50,
+    "canonical": "志歩のベース",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "志歩のベース",
+      "en": "Shiho's Bass Guitar",
+      "ko": "시호의 베이스",
+      "zh_hans": "志步的贝斯",
+      "name": "志歩のベース",
+      "zh_hant": "志步的貝斯"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk02_315",
+    "lines": {
+      "ja": {
+        "term": "志歩のベース",
+        "sentence": "ルカ：志歩のベース、手入れが行き届いているわね"
+      },
+      "zh_hans": {
+        "term": "志步的贝斯",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Shiho's Bass Guitar",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "시호의 베이스",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 51,
+    "canonical": "テーマパーク",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "テーマパーク",
+      "en": "Theme Park",
+      "ko": "놀이공원",
+      "zh_hans": "主题乐园",
+      "name": "テーマパーク",
+      "zh_hant": "主題樂園"
+    },
+    "story_key": "event:196:7",
+    "lines": {
+      "ja": {
+        "term": "テーマパーク",
+        "sentence": "『イルガスを代表する世界規模のテーマパークを開業する』ための"
+      },
+      "zh_hans": {
+        "term": "主题乐园",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Theme Park",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "놀이공원",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 52,
+    "canonical": "ケンカ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ケンカ",
+      "zh_hans": "小丫头",
+      "en": "Amy"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1788",
+    "lines": {
+      "ja": {
+        "term": "ケンカ",
+        "sentence": "杏：——今日は私とこはね、ケンカ中だから！"
+      },
+      "zh_hans": {
+        "term": "小丫头",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Amy",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 53,
+    "canonical": "ベテラン",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ベテラン",
+      "en": "Conceptually",
+      "ko": "정하다니"
+    },
+    "story_key": "event:24:5",
+    "lines": {
+      "ja": {
+        "term": "ベテラン",
+        "sentence": "ベテラン風のエキストラ：——なあ君、本当に大丈夫なのか？"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Conceptually",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "정하다니",
+        "sentence": "특기만 듣고서 역할을 정하다니……"
+      }
+    }
+  },
+  {
+    "no": 54,
+    "canonical": "ポータブルスピーカー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ポータブルスピーカー",
+      "en": "Portable Speakers",
+      "ko": "휴대용 스피커",
+      "zh_hans": "便携扩音器"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 55,
+    "canonical": "ハッピーオレンジ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ハッピーオレンジ",
+      "en": "Happy Oranges",
+      "ko": "해피 오렌지",
+      "zh_hans": "快乐柑橘"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 56,
+    "canonical": "誰もいないセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "誰もいないセカイ",
+      "en": "Empty SEKAI",
+      "ko": "아무도 없는 세카이",
+      "zh_hans": "无人「世界」",
+      "name": "誰もいないセカイ",
+      "zh_hant": "空無一人的「世界」"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_shuffle_15_017",
+    "lines": {
+      "ja": {
+        "term": "誰もいないセカイ",
+        "sentence": "だからここは、もう誰もいないセカイじゃない"
+      },
+      "zh_hans": {
+        "term": "无人「世界」",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Empty SEKAI",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "아무도 없는 세카이",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 57,
+    "canonical": "ミクのギター",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミクのギター",
+      "en": "Miku's Guitar",
+      "ko": "미쿠의 기타",
+      "zh_hans": "初音未来的吉他"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 58,
+    "canonical": "草薙寧々",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "草薙寧々",
+      "full": "草薙寧々",
+      "firstName": "草薙",
+      "firstNameEnglish": "KUSANAGI",
+      "givenNameEnglish": "NENE",
+      "givenName": "寧々",
+      "zh_hant": "草薙寧寧",
+      "en": "KUSANAGI NENE",
+      "ko": "쿠사나기 네네",
+      "zh_hans": "草薙宁宁"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_ev_wonder_23_001",
+    "lines": {
+      "ja": {
+        "term": "草薙寧々",
+        "sentence": "司：『草薙寧々　最高のお姫様』……"
+      },
+      "zh_hans": {
+        "term": "草薙宁宁",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "KUSANAGI NENE",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "쿠사나기 네네",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 59,
+    "canonical": "愛莉がくれたタオル",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "愛莉がくれたタオル",
+      "en": "Towel From Airi",
+      "ko": "아이리가 준 수건",
+      "zh_hans": "爱莉赠予的毛巾"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 60,
+    "canonical": "音楽ショップ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "音楽ショップ",
+      "en": "Music Shop",
+      "ko": "음반 상점",
+      "zh_hans": "音乐商店"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 61,
+    "canonical": "神代類",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "神代類",
+      "full": "神代類",
+      "firstName": "神代",
+      "firstNameEnglish": "KAMISHIRO",
+      "givenNameEnglish": "RUI",
+      "givenName": "類",
+      "zh_hant": "神代類",
+      "en": "KAMISHIRO RUI",
+      "ko": "카미시로 루이",
+      "zh_hans": "神代类"
+    },
+    "story_key": "unit_story:web:altsource_ms:ja-jp:unit_story:wonder_01_05",
+    "lines": {
+      "ja": {
+        "term": "神代類",
+        "sentence": "クラスメイト：神代類……って言ったかな。"
+      },
+      "zh_hans": {
+        "term": "神代类",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "KAMISHIRO RUI",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "카미시로 루이",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 62,
+    "canonical": "STANDOUT",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "STANDOUT",
+      "zh_hans": "新人舞台",
+      "en": "STANDOUT show",
+      "zh_tw": "新人舞台"
+    },
+    "story_key": "event:20:2",
+    "lines": {
+      "ja": {
+        "term": "STANDOUT",
+        "sentence": "今日出演するSTANDOUTなんですけど……"
+      },
+      "zh_hans": {
+        "term": "新人舞台",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "新人舞台",
+        "sentence": ""
+      },
+      "en": {
+        "term": "STANDOUT show",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 63,
+    "canonical": "黄色いフラワースタンド",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "黄色いフラワースタンド",
+      "en": "Yellow Flower Stand",
+      "ko": "노란색 화환",
+      "zh_hans": "黄色祝花"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 64,
+    "canonical": "フォトコンテスト",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "フォトコンテスト",
+      "zh_hans": "摄影大赛",
+      "en": "Photo Contest"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1686",
+    "lines": {
+      "ja": {
+        "term": "フォトコンテスト",
+        "sentence": "瑞希：フォトコンテスト、参加してたんでしょ？"
+      },
+      "zh_hans": {
+        "term": "摄影大赛",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Photo Contest",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 65,
+    "canonical": "ミクデミー 教室",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミクデミー 教室",
+      "en": "MIKUdemy Classroom",
+      "ko": "미쿠데미 교실",
+      "zh_hans": "未来学院 教室"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 66,
+    "canonical": "ピュアアップル",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ピュアアップル",
+      "en": "Pure Apples",
+      "ko": "퓨어 애플",
+      "zh_hans": "纯真苹果"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 67,
+    "canonical": "ショッピングモール",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ショッピングモール",
+      "en": "Shopping Mall",
+      "ko": "쇼핑몰",
+      "zh_hans": "购物中心",
+      "name": "ショッピングモール",
+      "zh_hant": "購物中心"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:645",
+    "lines": {
+      "ja": {
+        "term": "ショッピングモール",
+        "sentence": "みのり：あ、ショッピングモールの福引券だ！"
+      },
+      "zh_hans": {
+        "term": "购物中心",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Shopping Mall",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "쇼핑몰",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 68,
+    "canonical": "MEIKO",
+    "tags": [
+      "other",
+      "person"
+    ],
+    "source": "local",
+    "official": true,
+    "names": {
+      "ja": "MEIKO",
+      "zh_hans": "带柴柴",
+      "en": "Playing Hanetsuki",
+      "zh_tw": "……！謝謝大家！",
+      "givenNameEnglish": "MEIKO",
+      "givenName": "MEIKO"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:838",
+    "lines": {
+      "ja": {
+        "term": "MEIKO",
+        "sentence": "MEIKO：あ、誰が聴いてるのかと思ったら、"
+      },
+      "zh_hans": {
+        "term": "带柴柴",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "……！謝謝大家！",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Playing Hanetsuki",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 69,
+    "canonical": "リオン",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "リオン",
+      "zh_hans": "里昂",
+      "zh_tw": "里昂"
+    },
+    "story_key": "event:124:7",
+    "lines": {
+      "ja": {
+        "term": "リオン",
+        "sentence": "リオン：でも……。"
+      },
+      "zh_hans": {
+        "term": "里昂",
+        "sentence": "里昂：可是……"
+      },
+      "zh_tw": {
+        "term": "里昂",
+        "sentence": "里昂：可是……這種夢想太荒謬了……"
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 70,
+    "canonical": "ライブハウス",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ライブハウス",
+      "zh_hans": "Live House",
+      "en": "Live House",
+      "zh_tw": "Live House",
+      "ko": "라이브 하우스"
+    },
+    "story_key": "event:65:2",
+    "lines": {
+      "ja": {
+        "term": "ライブハウス",
+        "sentence": "ライブハウスの客達：今日、初めて出るバンドあるんだって"
+      },
+      "zh_hans": {
+        "term": "Live House",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "Live House",
+        "sentence": "Live House的觀眾們：聽說今天有第一次在這裡登台的樂團。"
+      },
+      "en": {
+        "term": "Live House",
+        "sentence": "Live House Audience：I heard one of the bands is playing here for the first time."
+      },
+      "ko": {
+        "term": "라이브 하우스",
+        "sentence": "라이브 하우스 관객들：오늘 처음 나오는 밴드가 있대."
+      }
+    }
+  },
+  {
+    "no": 71,
+    "canonical": "クリエイター",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "クリエイター",
+      "en": "VIRTUAL SINGERs",
+      "ko": "아오"
+    },
+    "story_key": "event:212:5",
+    "lines": {
+      "ja": {
+        "term": "クリエイター",
+        "sentence": "一歌：クリエイターの活動をサポートする……あ、これだ"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "VIRTUAL SINGERs",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "아오",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 72,
+    "canonical": "三国志",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "三国志",
+      "zh_hans": "作或",
+      "en": "Three Kingdoms"
+    },
+    "story_key": "event:58:3",
+    "lines": {
+      "ja": {
+        "term": "三国志",
+        "sentence": "本当に『三国志』みたい"
+      },
+      "zh_hans": {
+        "term": "作或",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Three Kingdoms",
+        "sentence": "Like the real “Three Kingdoms”."
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 73,
+    "canonical": "ショーフラッグ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ショーフラッグ",
+      "en": "Show Flag",
+      "ko": "쇼 플래그",
+      "zh_hans": "演出旗帜"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 74,
+    "canonical": "コンテスト",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "コンテスト",
+      "zh_hans": "大赛",
+      "en": "Contest",
+      "zh_tw": "大賽",
+      "ko": "콘테스트"
+    },
+    "story_key": "event:3:2",
+    "lines": {
+      "ja": {
+        "term": "コンテスト",
+        "sentence": "類：ショーコンテスト？"
+      },
+      "zh_hans": {
+        "term": "大赛",
+        "sentence": "类：表演大赛？"
+      },
+      "zh_tw": {
+        "term": "大賽",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Contest",
+        "sentence": "Rui：A Show Contest?"
+      },
+      "ko": {
+        "term": "콘테스트",
+        "sentence": "루이：쇼 콘테스트?"
+      }
+    }
+  },
+  {
+    "no": 75,
+    "canonical": "ショウタイム",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ショウタイム",
+      "zh_hans": "嗷呜～！",
+      "en": "You're Wonderlands",
+      "zh_tw": "男孩里奧"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2242",
+    "lines": {
+      "ja": {
+        "term": "ショウタイム",
+        "sentence": "ワンダーランズ×ショウタイムはなかったかもしれない"
+      },
+      "zh_hans": {
+        "term": "嗷呜～！",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "男孩里奧",
+        "sentence": ""
+      },
+      "en": {
+        "term": "You're Wonderlands",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 76,
+    "canonical": "ニューヨーク",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ニューヨーク",
+      "zh_hans": "纽约",
+      "en": "Lloyd Hopper"
+    },
+    "story_key": "event:154:2",
+    "lines": {
+      "ja": {
+        "term": "ニューヨーク",
+        "sentence": "こはね：『ニューヨーク音楽院』……？"
+      },
+      "zh_hans": {
+        "term": "纽约",
+        "sentence": "心羽：“纽约音乐学院”……？"
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Lloyd Hopper",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 77,
+    "canonical": "アップ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "アップ",
+      "en": "Smile Videos",
+      "zh_tw": "貼文"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:2425",
+    "lines": {
+      "ja": {
+        "term": "アップ",
+        "sentence": "真理奈：——以上が、Cheerful＊Daysのアップの流れです！"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "貼文",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Smile Videos",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 78,
+    "canonical": "ミニチュア",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミニチュア",
+      "en": "Mini Model",
+      "ko": "미니어처",
+      "zh_hans": "迷你模型",
+      "name": "ミニチュア",
+      "zh_hant": "微縮模型"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1752",
+    "lines": {
+      "ja": {
+        "term": "ミニチュア",
+        "sentence": "楽之介：家具のミニチュアもたくさんある！"
+      },
+      "zh_hans": {
+        "term": "迷你模型",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Mini Model",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "미니어처",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 79,
+    "canonical": "ふしぎな時空のセカイ？",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ふしぎな時空のセカイ？",
+      "en": "Time Warp SEKAI",
+      "ko": "신비한 시공의 세카이?",
+      "zh_hans": "神奇时空「世界」？"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 80,
+    "canonical": "ミクデミー 運動場",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミクデミー 運動場",
+      "en": "MIKUdemy Field",
+      "ko": "미쿠데미 운동장",
+      "zh_hans": "未来学院 运动场"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 81,
+    "canonical": "悪ノ大罪シリーズのセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "悪ノ大罪シリーズのセカイ",
+      "en": "Aku no Taizai Series SEKAI",
+      "ko": "악의 대죄 시리즈 세카이",
+      "zh_hans": "恶之大罪系列「世界」"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 82,
+    "canonical": "コーヒーミル",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "コーヒーミル",
+      "en": "Coffee Grinder",
+      "ko": "커피 그라인더",
+      "zh_hans": "咖啡研磨机",
+      "name": "コーヒーミル",
+      "zh_hant": "手搖磨豆機"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk_aprilfool2024_025",
+    "lines": {
+      "ja": {
+        "term": "コーヒーミル",
+        "sentence": "MEIKO：ふふ、コーヒーミルよ。いい豆も見つかったら、"
+      },
+      "zh_hans": {
+        "term": "咖啡研磨机",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Coffee Grinder",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "커피 그라인더",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 83,
+    "canonical": "ライブカフェ",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ライブカフェ",
+      "zh_hans": "Live咖啡厅",
+      "en": "Live Cafe",
+      "zh_tw": "Live咖啡廳",
+      "ko": "라이브 카페"
+    },
+    "story_key": "area_talk:web:altsource_ms:ja-jp:area_talk:areatalk02_157",
+    "lines": {
+      "ja": {
+        "term": "ライブカフェ",
+        "sentence": "絵名：ねえ、入り浸ってるライブカフェがあるでしょ。"
+      },
+      "zh_hans": {
+        "term": "Live咖啡厅",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "Live咖啡廳",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Live Cafe",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "라이브 카페",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 84,
+    "canonical": "RAD WEEKEND",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "RAD WEEKEND",
+      "en": "WEEKEND during",
+      "zh_tw": "曲相"
+    },
+    "story_key": "event:49:3",
+    "lines": {
+      "ja": {
+        "term": "RAD WEEKEND",
+        "sentence": "大河：RAD WEEKENDの動画ね……"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "曲相",
+        "sentence": ""
+      },
+      "en": {
+        "term": "WEEKEND during",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 85,
+    "canonical": "メール",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "メール",
+      "en": "Important Announcement",
+      "zh_tw": "給小莉！"
+    },
+    "story_key": "virtual_live:web:altsource_ms:ja-jp:virtual_live:978",
+    "lines": {
+      "ja": {
+        "term": "メール",
+        "sentence": "そうだ、ここはオレがお礼のメールを送るとするか！　英語で！"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "給小莉！",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Important Announcement",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 86,
+    "canonical": "ナイトコード",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ナイトコード",
+      "zh_hans": "Nightcord",
+      "en": "Nightcord",
+      "zh_tw": "Nightcord",
+      "ko": "나이트코드"
+    },
+    "story_key": "event:184:5",
+    "lines": {
+      "ja": {
+        "term": "ナイトコード",
+        "sentence": "絵名：（私にとっての『目印』は……ナイトコードの画面）"
+      },
+      "zh_hans": {
+        "term": "Nightcord",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "Nightcord",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Nightcord",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "나이트코드",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 87,
+    "canonical": "シブフェス",
+    "tags": [
+      "event"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "シブフェス",
+      "zh_hans": "涩谷艺术节",
+      "en": "Shibuya Festa",
+      "zh_tw": "澀谷藝術節"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1022",
+    "lines": {
+      "ja": {
+        "term": "シブフェス",
+        "sentence": "咲希：今日シブフェスで道混んでてちょっと危ないから、"
+      },
+      "zh_hans": {
+        "term": "涩谷艺术节",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "澀谷藝術節",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Shibuya Festa",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 88,
+    "canonical": "ハッピーフラワー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ハッピーフラワー",
+      "en": "Happy Flowers",
+      "ko": "해피 플라워",
+      "zh_hans": "快乐鲜花"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 89,
+    "canonical": "・リオ",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "・リオ",
+      "zh_hans": "少年里欧",
+      "zh_tw": "男孩里奧"
+    },
+    "story_key": "event:88:3",
+    "lines": {
+      "ja": {
+        "term": "・リオ",
+        "sentence": "少年・リオ役のオーディションを受けることとなったわけだ！！"
+      },
+      "zh_hans": {
+        "term": "少年里欧",
+        "sentence": "少年里欧这一角色的内部选拔！！"
+      },
+      "zh_tw": {
+        "term": "男孩里奧",
+        "sentence": "我決定參加男孩里奧這個角色的徵選了！！"
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 90,
+    "canonical": "開かれた窓のセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "開かれた窓のセカイ",
+      "en": "Unshuttered SEKAI",
+      "ko": "창이 열린 세카이",
+      "zh_hans": "窗扉打开的「世界」"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 91,
+    "canonical": "ワンダーランドのセカイ",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ワンダーランドのセカイ",
+      "en": "Wonderland SEKAI",
+      "ko": "원더랜드 세카이",
+      "zh_hans": "奇幻乐园「世界」"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 92,
+    "canonical": "アカウント",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "アカウント",
+      "en": "Videos",
+      "zh_tw": "帳號"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:975",
+    "lines": {
+      "ja": {
+        "term": "アカウント",
+        "sentence": "こちらのアカウントで合っているでしょうか？』"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "帳號",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Videos",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 93,
+    "canonical": "鏡音レン",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "鏡音レン",
+      "full": "鏡音レン",
+      "firstName": "鏡音",
+      "firstNameEnglish": "KAGAMINE",
+      "givenNameEnglish": "LEN",
+      "givenName": "レン",
+      "zh_hant": "鏡音連",
+      "en": "KAGAMINE LEN",
+      "ko": "카가미네 렌",
+      "zh_hans": "镜音连"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1489",
+    "lines": {
+      "ja": {
+        "term": "鏡音レン",
+        "sentence": "バーチャル・シンガーの鏡音レンくんです！"
+      },
+      "zh_hans": {
+        "term": "镜音连",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "KAGAMINE LEN",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "카가미네 렌",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 94,
+    "canonical": "花里みのり",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "花里みのり",
+      "full": "花里みのり",
+      "firstName": "花里",
+      "firstNameEnglish": "HANASATO",
+      "givenNameEnglish": "MINORI",
+      "givenName": "みのり",
+      "zh_hant": "花里實乃理",
+      "en": "HANASATO MINORI",
+      "ko": "하나사토 미노리",
+      "zh_hans": "花里实乃理"
+    },
+    "story_key": "event:209:6",
+    "lines": {
+      "ja": {
+        "term": "花里みのり",
+        "sentence": "MORE MORE JUMP！の花里みのりです！"
+      },
+      "zh_hans": {
+        "term": "花里实乃理",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "HANASATO MINORI",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "하나사토 미노리",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 95,
+    "canonical": "ミュージックスピーカー",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ミュージックスピーカー",
+      "en": "Music Speakers",
+      "ko": "뮤직 스피커",
+      "zh_hans": "音乐扩音器"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 96,
+    "canonical": "宵崎奏",
+    "tags": [
+      "person"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "宵崎奏",
+      "full": "宵崎奏",
+      "firstName": "宵崎",
+      "firstNameEnglish": "YOISAKI",
+      "givenNameEnglish": "KANADE",
+      "givenName": "奏",
+      "zh_hant": "宵崎奏",
+      "en": "YOISAKI KANADE",
+      "ko": "요이사키 카나데",
+      "zh_hans": "宵崎奏"
+    },
+    "story_key": "event:84:3",
+    "lines": {
+      "ja": {
+        "term": "宵崎奏",
+        "sentence": "寧々：（宵崎奏さん、って言ってたけど……。"
+      },
+      "zh_hans": {
+        "term": "宵崎奏",
+        "sentence": "宁宁：（她好像是叫宵崎奏吧……"
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "YOISAKI KANADE",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "요이사키 카나데",
+        "sentence": "네네：(요이사키 카나데 씨라고 했는데……"
+      }
+    }
+  },
+  {
+    "no": 97,
+    "canonical": "ドローン入りのショー道具",
+    "tags": [
+      "location"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "ドローン入りのショー道具",
+      "en": "Show Kit (Drones Incl.)",
+      "ko": "드론이 포함된 쇼 도구",
+      "zh_hans": "装有无人机的演出道具箱"
+    },
+    "story_key": null,
+    "lines": {
+      "ja": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "",
+        "sentence": ""
+      },
+      "en": {
+        "term": "",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 98,
+    "canonical": "ホワイトデー",
+    "tags": [
+      "other"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "ホワイトデー",
+      "en": "Th-Three truckloads",
+      "zh_tw": "製作小卡片"
+    },
+    "story_key": "event:123:2",
+    "lines": {
+      "ja": {
+        "term": "ホワイトデー",
+        "sentence": "一歌：ホワイトデー限定メニュー……"
+      },
+      "zh_hans": {
+        "term": "",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "製作小卡片",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Th-Three truckloads",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "",
+        "sentence": ""
+      }
+    }
+  },
+  {
+    "no": 99,
+    "canonical": "Leo/need",
+    "tags": [
+      "organization",
+      "other"
+    ],
+    "source": "master_db:jp",
+    "official": true,
+    "names": {
+      "ja": "Leo/need",
+      "en": "Leo/need",
+      "ko": "Leo/need",
+      "zh_hans": "Leo/need",
+      "zh_tw": "Leo/need",
+      "unitName": "Leo/need",
+      "unitProfileName": "Leo/need",
+      "zh_hant": "Leo/need"
+    },
+    "story_key": "event:121:3",
+    "lines": {
+      "ja": {
+        "term": "Leo/need",
+        "sentence": "Leo/needのみんなの力になりたいんだって"
+      },
+      "zh_hans": {
+        "term": "Leo/need",
+        "sentence": "穗波：我想为——Leo/need贡献自己的力量。"
+      },
+      "zh_tw": {
+        "term": "Leo/need",
+        "sentence": "穗波：我──想幫助Leo/need的大家。"
+      },
+      "en": {
+        "term": "Leo/need",
+        "sentence": "Honami：I want to be able to support everyone in Leo/need."
+      },
+      "ko": {
+        "term": "Leo/need",
+        "sentence": "Leo/need 멤버들에게 힘이 되고 싶다는 생각."
+      }
+    }
+  },
+  {
+    "no": 100,
+    "canonical": "フェニックスワンダーランド",
+    "tags": [
+      "location",
+      "product"
+    ],
+    "source": "local",
+    "official": false,
+    "names": {
+      "ja": "フェニックスワンダーランド",
+      "zh_hans": "菲尼克斯奇幻乐园",
+      "en": "Phoenix Wonderland",
+      "zh_tw": "菲尼克斯奇幻樂園",
+      "ko": "피닉스 원더랜드"
+    },
+    "story_key": "card_story:web:altsource_ms:ja-jp:card_story:1877",
+    "lines": {
+      "ja": {
+        "term": "フェニックスワンダーランド",
+        "sentence": "えむ：フェニックスワンダーランドのポップコーンみたいに、"
+      },
+      "zh_hans": {
+        "term": "菲尼克斯奇幻乐园",
+        "sentence": ""
+      },
+      "zh_tw": {
+        "term": "菲尼克斯奇幻樂園",
+        "sentence": ""
+      },
+      "en": {
+        "term": "Phoenix Wonderland",
+        "sentence": ""
+      },
+      "ko": {
+        "term": "피닉스 원더랜드",
+        "sentence": ""
+      }
+    }
+  }
+]

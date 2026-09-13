@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Refresh the generated data-baseline block in docs/BASELINE.md.
+"""Refresh the generated data-baseline block in data/reports/BASELINE.md.
 
 Run after every major data change (sync / crawl / cleanup):
 
@@ -7,8 +7,8 @@ Run after every major data change (sync / crawl / cleanup):
 
 Reads live store counters (no full JSON parsing — the SQLite store answers
 in milliseconds) and rewrites the block between the GENERATED markers in
-docs/BASELINE.md. Numbers outside the markers are hand-maintained prose and
-left untouched. Stdlib only.
+data/reports/BASELINE.md. Numbers outside the markers are hand-maintained prose
+and left untouched. Stdlib only.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def main() -> int:
         build_block(store_root, status),
         END,
     )
-    baseline = ROOT / "docs" / "BASELINE.md"
+    baseline = ROOT / "data" / "reports" / "BASELINE.md"
     text = baseline.read_text(encoding="utf-8")
     start = text.find(BEGIN)
     end = text.find(END)

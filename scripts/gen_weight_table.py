@@ -2,7 +2,7 @@
 """Generate a weight table for manual review.
 
 Usage:
-  python scripts/gen_weight_table.py [--top 200] [--out docs/WEIGHT_TABLE.md]
+  python scripts/gen_weight_table.py [--top 200] [--out data/reports/WEIGHT_TABLE.md]
 """
 
 import argparse
@@ -32,7 +32,7 @@ def evidence_sample(term) -> str:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--top", type=int, default=200, help="Rows in main table")
-    parser.add_argument("--out", type=Path, default=Path("docs/WEIGHT_TABLE.md"))
+    parser.add_argument("--out", type=Path, default=Path("data/reports/WEIGHT_TABLE.md"))
     parser.add_argument("--store", type=Path, default=Path("store"))
     parser.add_argument(
         "--exclude-ja-only",
