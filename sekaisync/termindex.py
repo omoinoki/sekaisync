@@ -400,11 +400,68 @@ def compute_weight(occurrences: int, trust: str, tags: list[str]) -> float:
 
 
 def _refresh_term_weight(term: TermRecord) -> None:
-    occ = len(term.evidence) if term.occurrences == 0 and term.evidence else term.occurrences
-    if occ == 0 and term.evidence:
-        occ = len(term.evidence)
+    """Recompute occurrences + weight from the current evidence list.
+
+    ``occurrences`` is "how many times this term was observed"; the evidence
+    list is its direct measurement. The previous version guarded on
+    ``term.occurrences == 0``, which froze the field at 1 as soon as a record
+    was loaded back from disk — no matter how far the evidence later grew.
+    With occurrences pinned at 1, ``compute_weight`` collapsed to a function of
+    trust + tags alone, so the word cloud lost its frequency dimension and the
+    "count how often a term recurs" question became unanswerable.
+
+    Taking the max keeps the field monotonic: an incremental merge run passes
+    light records whose in-memory evidence is not authoritative (see
+    ``save_terms_records(replace_evidence=False)``), and a compacted evidence
+    list must not shrink a previously observed count.
+    """
+    occ = max(len(term.evidence), int(term.occurrences or 0))
     term.occurrences = occ
     term.weight = compute_weight(occ, term.trust or "C", term.tags or ["other"])
+
+
+def looks_like_proper_noun(
+    *,
+    stories_n: int,
+    lines_n: int,
+    total_stories: int = 0,
+    quoted: bool = False,
+) -> bool:
+    """Positive proper-noun signal, replacing the old "bursty" heuristic.
+
+    The previous rule was ``stories_n <= 5 or lines_n / stories_n >= 2.0``.
+    Both branches describe *narrow* or *dense* terms, so a core location or
+    facility that gets one or two mentions across fifty different stories had
+    stories_n=50 and a ratio near 1.0, failed both branches, and was stamped
+    ``everyday`` — which removes it from alignment entirely. That is exactly
+    backwards: wide-coverage names are the ones cross-language alignment most
+    needs. In the shipped store this discarded 889 terms.
+
+    Signals used instead, all positive except the coverage ceiling:
+
+    - ``quoted``: the narrative itself marks the phrase as a name;
+    - density ``lines_n / stories_n >= 2``: it recurs inside the stories where
+      it appears, which is what a name does and ordinary vocabulary does not;
+    - ``stories_n <= 5``: narrow, so it belongs to a specific storyline;
+    - many mentions at low coverage: wide but substantial, the case the old
+      rule got wrong.
+    - coverage ceiling: a phrase in a fifth of all stories is common vocabulary
+      whatever else is true of it.
+    """
+    if quoted:
+        return True
+    if stories_n <= 0 or lines_n <= 0:
+        return False
+    coverage = (stories_n / total_stories) if total_stories > 0 else 0.0
+    if coverage >= 0.15:
+        return False
+    if lines_n / stories_n >= 2.0:
+        return True
+    if stories_n <= 5:
+        return True
+    if lines_n >= 30 and coverage < 0.03:
+        return True
+    return False
 
 
 # Explicit per-term overrides for high-precision tagging (normalized key → tags).
@@ -541,10 +598,8 @@ _ROLE_SUFFIX_RE = re.compile(
 def _character_name_set(glossary: Optional[Iterable[Any]] = None) -> set[str]:
     """Collect all character display names from glossary (person entities)."""
     if glossary is None:
-        try:
-            from sekaisync.layout import glossary_path as _gp
-            glossary = load_glossary(_gp(Path("store"))) if Path("store").exists() else []
-        except Exception:
+        glossary = _load_glossary_fallback(Path("store"))
+        if not glossary:
             return set()
     names: set[str] = set()
     for gt in glossary:
@@ -649,8 +704,8 @@ def term_to_dict(
         if truncate_context and len(context) > 500:
             entry["context"] = context[:500] + "..."
         evidence.append(entry)
-    # Ensure weight is consistent before serializing
-    if term.weight == 0.0 and term.evidence:
+    # Ensure occurrences/weight are consistent before serializing
+    if term.evidence and (term.weight == 0.0 or term.occurrences < len(term.evidence)):
         _refresh_term_weight(term)
     data = {
         "id": term.id,
@@ -707,9 +762,10 @@ def term_from_dict(data: dict) -> TermRecord:
         everyday=bool(data.get("everyday", False)),
         positions=[dict(p) for p in data.get("positions", []) if isinstance(p, dict)],
     )
-    if rec.occurrences == 0 and rec.evidence:
-        rec.occurrences = len(rec.evidence)
-    if rec.weight == 0.0:
+    # Self-heal: stores written before the occurrences fix carry the field
+    # frozen at 1 while their evidence list kept growing. Recompute whenever
+    # the two disagree so existing databases converge without a full re-extract.
+    if rec.evidence and (rec.weight == 0.0 or rec.occurrences < len(rec.evidence)):
         _refresh_term_weight(rec)
     return rec
 
@@ -1109,7 +1165,7 @@ def extract_terms(
     records_by_id = {record.id: record for record in existing or []}
 
     for story_key, pages_by_language in sorted(groups.items()):
-        source_page = pages_by_language.get(source_language)
+        source_page = _group_page(pages_by_language, source_language)
         if source_page is None:
             continue
         source_text = str(source_page.get("text", ""))
@@ -1127,7 +1183,7 @@ def extract_terms(
             for target_language in targets:
                 if target_language == source_language:
                     continue
-                target_page = pages_by_language.get(target_language)
+                target_page = _group_page(pages_by_language, target_language)
                 if target_page is None:
                     continue
                 mapping = translate_terms_for_story(
@@ -1551,22 +1607,30 @@ def _translation_candidate_acceptable(term: str, target_language: str) -> bool:
     return True
 
 
-def _split_zh_run(run: str) -> list[str]:
-    """Yield 2-8 char Chinese phrases plus all aligned sub-windows so that a
-    4-char term like 网络天堂 is also recoverable (网络/天堂/网络天堂) — the
-    distribution aligner then picks the whole 4-char window as its candidate,
-    which dominates over the 2-char fragments by co-occurrence."""
+def _split_zh_run(run: str, *, enumerate_windows: bool = True) -> list[str]:
+    """Split a Chinese run into candidate phrases.
+
+    Segmentation is function-word driven: multi-character function words and
+    individual function characters act as hard cut points, so a returned phrase
+    never straddles 的/了/在. That alone yields the whole-run phrases.
+
+    ``enumerate_windows`` adds every aligned sub-window so a 4-char term like
+    网络天堂 is still reachable as 网络/天堂. It is a fallback, not the primary
+    path: enumerating a 6-char run produces 20 openings of which at most one is
+    a word, and when a discovered-word vocabulary is available the aligner
+    filters against it anyway, so the openings are pure overhead.
+    """
     word_pattern = "|".join(re.escape(word) for word in sorted(_ZH_FUNCTION_WORDS, key=len, reverse=True))
     pieces = re.split(word_pattern, run)
     out: list[str] = []
     char_pattern = "[" + re.escape("".join(sorted(set(_ZH_FUNCTION_CHARS)))) + "]"
     for piece in pieces:
         for sub in re.split(char_pattern, piece):
-            if len(sub) < 2 or len(sub) > 8 or any(ch in sub for ch in _ZH_FUNCTION_CHARS):
+            if len(sub) < 2 or len(sub) > 8:
                 continue
             out.append(sub)
-            # Also add the aligned sub-windows (长度 2..len) so both fragments
-            # and the full phrase are present as candidates.
+            if not enumerate_windows:
+                continue
             n = len(sub)
             for wlen in range(2, n):
                 for start in range(0, n - wlen + 1):
@@ -1605,7 +1669,12 @@ def _ko_token_candidates(segment: str) -> list[str]:
         out.append(a + " " + b)
     return out
 
-def _local_translation_candidates(segment: str, target_language: str) -> list[str]:
+def _local_translation_candidates(
+    segment: str,
+    target_language: str,
+    *,
+    enumerate_zh_windows: bool = True,
+) -> list[str]:
     lang = _term_language(target_language)
     out: list[str] = []
 
@@ -1633,7 +1702,7 @@ def _local_translation_candidates(segment: str, target_language: str) -> list[st
         for term in _local_latin_candidates(seg):
             add(term)
         for run in _CJK_RUN_RE.findall(seg):
-            for piece in _split_zh_run(run):
+            for piece in _split_zh_run(run, enumerate_windows=enumerate_zh_windows):
                 add(piece)
     elif lang == "ko":
         for term in _local_latin_candidates(seg):
@@ -1644,19 +1713,24 @@ def _local_translation_candidates(segment: str, target_language: str) -> list[st
 
 
 def build_zh_lexicon(glossary: Iterable[Any]) -> tuple[set[str], set[str]]:
-    """Collect all Chinese display names (zh_hans/zh_tw) from glossary nouns.
+    """Collect all Chinese display names from glossary nouns.
 
     Returns (normalized_set, surface_set). The normalized set matches the
     normalize_name key; the surface set holds raw forms for longest match.
     Used to constrain Chinese translation candidates to words that actually
-    exist in the official lexicon — eliminating fragment enumeration noise."""
+    exist in the official lexicon, eliminating fragment enumeration noise.
+
+    Names are read through ``_canon_names`` because the glossary spells the
+    traditional slot ``zh_hant`` while this filter looks it up as ``zh_tw``;
+    a direct ``names["zh_tw"]`` hit only 2 of the 43k official entries."""
     zh_norm: set[str] = set()
     zh_surface: set[str] = set()
     for term in glossary:
         if str(getattr(term, "kind", "")) not in NOUN_KINDS:
             continue
+        canon = _canon_names(getattr(term, "names", {}) or {})
         for k in ("zh_hans", "zh_tw"):
-            v = str((getattr(term, "names", {}) or {}).get(k, ""))
+            v = canon.get(k, "")
             if v:
                 zh_norm.add(normalize_name(v))
                 zh_surface.add(v)
@@ -1672,6 +1746,93 @@ def _filter_zh_candidates(cands: list[str], zh_lexicon: set[str]) -> list[str]:
     return kept if kept else cands
 
 
+def _canon_names(names: Any) -> dict[str, str]:
+    """Collapse language-alias spellings onto the internal TERM_LANGUAGES set.
+
+    Data sources disagree on how to spell the traditional-Chinese slot: both
+    the corpus language column and the glossary use ``zh_hant`` (144k pages /
+    43k official names), while TERM_LANGUAGES and the alignment code use
+    ``zh_tw``. Reading ``names["zh_tw"]`` therefore found nothing for
+    essentially every official Chinese name, and ``_texts("zh_tw")`` returned
+    an empty corpus, so the traditional-Chinese half of the store was never
+    segmented at all. Funnelling every lookup through this helper keeps both
+    sides talking about the same language without hardcoding one spelling.
+    """
+    out: dict[str, str] = {}
+    for key, value in (names or {}).items():
+        if not value:
+            continue
+        out.setdefault(_term_language(str(key)), str(value))
+    return out
+
+
+def _group_page(by_language: dict, lang: str) -> Optional[dict]:
+    """Fetch a story's page for ``lang``, resolving language aliases.
+
+    ``group_pages_by_story`` keys pages by the corpus spelling (zh_hant); every
+    caller here asks in TERM_LANGUAGES spelling (zh_tw). A plain dict lookup
+    silently returns None for the whole traditional-Chinese corpus.
+    """
+    page = by_language.get(lang)
+    if page is not None:
+        return page
+    want = _term_language(lang)
+    for key, value in by_language.items():
+        if value is not None and _term_language(str(key)) == want:
+            return value
+    return None
+
+
+def _load_glossary_fallback(store_root: Path) -> list[Any]:
+    """Best-effort glossary load for callers that did not pass one in.
+
+    Glossary terms live in the SQLite store (``dbstore.load_glossary_terms``);
+    ``kb/glossary.json`` only exists for demo and export stores. The old
+    fallback read the JSON path unconditionally, so on a real store it returned
+    an empty list and every official translation silently dropped out of the
+    alignment vocabulary — leaving the unsupervised (and much noisier)
+    discovered words as the only candidates.
+    """
+    if not store_root.exists():
+        return []
+    try:
+        from sekaisync import dbstore
+
+        terms = list(dbstore.load_glossary_terms(store_root))
+        if terms:
+            return terms
+    except Exception:
+        pass
+    try:
+        from sekaisync.layout import glossary_path
+
+        return list(load_glossary(glossary_path(store_root)))
+    except Exception:
+        return []
+
+
+def _discover_ko_words(texts: list[str], min_freq: int = 3) -> set[str]:
+    """Korean vocabulary via whitespace tokenisation + particle stripping.
+
+    Korean marks word boundaries with spaces, so the Matrix67 n-gram discovery
+    used for Chinese is the wrong tool here. It counted substrings straddling
+    spaces and kept digits, producing a vocabulary that was 96.5% numeric
+    fragments (' 1년 동안', ' 10개', ' 100번', ' 1년이'). Requiring a token to be
+    pure Hangul (``_HANGUL_RUN_RE.fullmatch``) drops all of those by
+    construction, and ``_strip_ko_suffix`` removes the trailing particle so the
+    same noun does not fragment across its case forms.
+    """
+    counts: Counter[str] = Counter()
+    for text in texts:
+        for token in _KO_SPLIT_RE.split(text):
+            if not token or not _HANGUL_RUN_RE.fullmatch(token):
+                continue
+            stem = _strip_ko_suffix(token)
+            if 2 <= len(stem) <= 12:
+                counts[stem] += 1
+    return {word for word, count in counts.items() if count >= min_freq}
+
+
 def build_alignment_vocab(
     groups: dict,
     targets: Iterable[str],
@@ -1679,10 +1840,21 @@ def build_alignment_vocab(
 ) -> dict[str, set[str]]:
     """Build per-language allowed-candidate vocabularies for distribution alignment.
 
-    zh_hans/zh_tw/ko: official glossary names ∪ unsupervised discovered words
+    zh_hans / zh_tw: official glossary names ∪ unsupervised discovered words
     (wordseg: frequency × PMI cohesion × boundary entropy). Discovered words
     replace naive sub-window enumeration, which flooded the aligner with
-    fragments (爱莉/笑梦/弧光). English keeps its latin tokenizer unfiltered.
+    fragments (爱莉/笑梦/弧光). Korean goes through whitespace tokenisation
+    instead (see ``_discover_ko_words``). English keeps its latin tokenizer
+    unfiltered.
+
+    Every entry is stored as a ``normalize_name()`` key, because that is what
+    the filter sites compare against::
+
+        cands = [c for c in cands if normalize_name(c) in allowed]
+
+    Storing raw surfaces here silently dropped every candidate whose surface
+    differs from its normalized form — 96.5% of the Korean vocabulary and
+    ~900 Chinese entries could never match.
 
     Character/person names are EXCLUDED on purpose: they are speaker labels in
     dialogue, never translations of non-person terms, and their ubiquity inside
@@ -1692,68 +1864,81 @@ def build_alignment_vocab(
     targets = [t for t in targets if t]
     vocab: dict[str, set[str]] = {}
 
-    glossary_zh: set[str] = set()
-    glossary_ko: set[str] = set()
+    glossary_by_lang: dict[str, set[str]] = {lang: set() for lang in TERM_LANGUAGES}
     char_names: set[str] = set()
     if glossary is None:
-        try:
-            from sekaisync.layout import glossary_path as _gp
-            glossary = load_glossary(_gp(Path("store"))) if Path("store").exists() else []
-        except Exception:
-            glossary = []
+        glossary = _load_glossary_fallback(Path("store"))
     for gt in (glossary or []):
         kind = str(getattr(gt, "kind", ""))
         names = getattr(gt, "names", {}) or {}
         if kind in {"character", "character_profile"}:
             for v in names.values():
                 if v:
-                    char_names.add(str(v))
+                    char_names.add(normalize_name(str(v)))
             continue
-        for k in ("zh_hans", "zh_tw"):
-            v = names.get(k)
-            if v:
-                glossary_zh.add(str(v))
-        ko_v = names.get("ko")
-        if ko_v:
-            glossary_ko.add(str(ko_v))
+        for lang, value in _canon_names(names).items():
+            if lang in glossary_by_lang:
+                glossary_by_lang[lang].add(normalize_name(value))
 
     def _texts(lang: str) -> list[str]:
-        out = []
-        for by in groups.values():
-            pg = by.get(lang)
-            if pg is not None:
-                out.append(str(pg.get("text", "")))
+        out: list[str] = []
+        for by_language in groups.values():
+            page = _group_page(by_language, lang)
+            if page is not None:
+                out.append(str(page.get("text", "")))
         return out
 
-    need_zh = any(t in ("zh_hans", "zh_tw", "zh_hant") for t in targets)
-    need_ko = "ko" in targets
+    def _assign(language: str, words: set[str]) -> None:
+        # Key by the caller's own spelling: align_term_by_frequency does a
+        # direct vocab.get(target_language) and never resolves aliases itself.
+        for target in targets:
+            if _term_language(target) == language:
+                vocab[target] = words
 
-    zh_words: set[str] = set(glossary_zh)
-    if need_zh:
-        def _is_char_fragment(w: str) -> bool:
+    zh_languages = ("zh_hans", "zh_tw")
+    if any(_term_language(t) in zh_languages for t in targets):
+        def _is_char_fragment(word: str) -> bool:
             # 笑梦 ⊂ 凤笑梦: given-name fragments of characters must not become
             # alignment candidates either.
-            if w in char_names:
+            if word in char_names:
                 return True
-            return any(w in cn or cn in w for cn in char_names)
+            return any(word in cn or cn in word for cn in char_names)
 
-        for lang in ("zh_hans", "zh_tw"):
-            texts = _texts(lang)
+        # Official Chinese names are authoritative in both scripts, so each
+        # script's vocabulary inherits the full official set. Discovered words
+        # stay script-local: normalize_name does not fold simplified against
+        # traditional, so mixing them would only inflate the list without
+        # buying real coverage.
+        official_zh = glossary_by_lang["zh_hans"] | glossary_by_lang["zh_tw"]
+        for language in zh_languages:
+            words: set[str] = set(official_zh)
+            texts = _texts(language)
             if texts:
-                found = discover_words(texts, min_freq=3, max_chars=2_000_000)
-                zh_words |= {w for w in found if not _is_char_fragment(w)}
-    if need_zh:
-        for t in ("zh_hans", "zh_tw", "zh_hant"):
-            if t in targets:
-                vocab[t] = zh_words
+                # boundary_stop_chars: a word may not begin or end on a
+                # Chinese function character. Without it the discovery pass
+                # keeps grammar phrasing ('的攝影', '了很多人的') that happens to
+                # be frequent together, and those become alignment candidates.
+                found = discover_words(
+                    texts,
+                    min_freq=3,
+                    max_chars=2_000_000,
+                    boundary_stop_chars=_ZH_FUNCTION_CHARS,
+                )
+                words |= {
+                    normalize_name(w) for w in found
+                    if not _is_char_fragment(normalize_name(w))
+                }
+            _assign(language, words)
 
-    if need_ko:
-        ko_words = set(glossary_ko)
+    if any(_term_language(t) == "ko" for t in targets):
+        words = set(glossary_by_lang["ko"])
         texts = _texts("ko")
         if texts:
-            found = discover_words(texts, min_freq=3, max_chars=2_000_000)
-            ko_words |= {w for w in found if w not in char_names}
-        vocab["ko"] = ko_words
+            words |= {
+                normalize_name(w) for w in _discover_ko_words(texts)
+                if normalize_name(w) not in char_names
+            }
+        _assign("ko", words)
 
     return vocab
 
@@ -1770,7 +1955,7 @@ def build_translation_memory(
     total: dict[tuple[str, str], int] = defaultdict(int)
 
     for _story_key, by_language in groups.items():
-        source_page = by_language.get(source_language)
+        source_page = _group_page(by_language, source_language)
         if source_page is None:
             continue
         source_lines = [
@@ -1781,7 +1966,7 @@ def build_translation_memory(
         if not source_lines:
             continue
         for target_language in targets:
-            target_page = by_language.get(target_language)
+            target_page = _group_page(by_language, target_language)
             if target_page is None:
                 continue
             target_lines = [
@@ -1879,13 +2064,18 @@ def compute_lang_idf(
     df: dict[tuple[str, str], int] = defaultdict(int)
     for sk, by in groups.items():
         for lang in target_languages:
-            pg = by.get(lang)
+            pg = _group_page(by, lang)
             if pg is None:
                 continue
             allowed = vocab.get(lang) if vocab else None
             seen: set[str] = set()
             for seg in str(pg.get("text", "")).splitlines():
-                cands = _local_translation_candidates(seg.strip(), lang)
+                # Sub-window enumeration is only worth it when there is no
+                # vocabulary to filter against; with one, the aligner keeps
+                # only exact discovered words anyway.
+                cands = _local_translation_candidates(
+                    seg.strip(), lang, enumerate_zh_windows=not allowed,
+                )
                 if allowed:
                     cands = [c for c in cands if normalize_name(c) in allowed]
                 for cand in cands:
@@ -1932,8 +2122,8 @@ def align_term_by_frequency(
     co_docs: dict[str, int] = defaultdict(int)
     for sk in src_stories:
         by = groups.get(sk, {})
-        spg = by.get(source_language)
-        tpg = by.get(target_language)
+        spg = _group_page(by, source_language)
+        tpg = _group_page(by, target_language)
         if spg is None or tpg is None:
             continue
         src_lines = [ln.strip() for ln in str(spg.get("text", "")).splitlines() if ln.strip()]
@@ -1950,7 +2140,9 @@ def align_term_by_frequency(
             for ti in (pred, pred - 1, pred + 1):
                 if ti < 0 or ti >= len(tgt_lines):
                     continue
-                cands = _local_translation_candidates(tgt_lines[ti], target_language)
+                cands = _local_translation_candidates(
+                    tgt_lines[ti], target_language, enumerate_zh_windows=not allowed,
+                )
                 if allowed:
                     cands = [c for c in cands if normalize_name(c) in allowed]
                 for cand in cands:
@@ -2008,10 +2200,14 @@ def build_alignment_resources(
     Building both from scratch costs ~6 minutes on the full store; the cache
     makes repeated `terms extract` runs instant until the corpus changes."""
     targets = [t for t in targets if t]
+    # The signature must be sensitive to every corpus the vocab is built from.
+    # `by.get(lang)` used to miss the traditional-Chinese corpus completely
+    # (the corpus spells it zh_hant, this loop asked for zh_tw), so that half
+    # of the store could change without ever invalidating the cached vocab.
     sig_parts = []
     for lang in ("zh_hans", "zh_tw", "en", "ko"):
         chars = sum(
-            len(str(by.get(lang, {}).get("text", "")))
+            len(str((_group_page(by, lang) or {}).get("text", "")))
             for by in groups.values()
         )
         sig_parts.append(f"{lang}:{chars}")
@@ -2067,11 +2263,7 @@ def extract_terms_local(
 
     # Build the noun lexicon once from official glossary (noun kinds only).
     if glossary is None:
-        try:
-            from sekaisync.layout import glossary_path as _gp
-            glossary = load_glossary(_gp(Path("store"))) if Path("store").exists() else []
-        except Exception:
-            glossary = []
+        glossary = _load_glossary_fallback(Path("store"))
     lexicon = build_noun_lexicon(glossary)
 
     # Per-language alignment vocab (glossary ∪ discovered words) + IDF, cached.
@@ -2085,7 +2277,7 @@ def extract_terms_local(
     term_lines: dict[str, int] = defaultdict(int)
     canon_quoted: dict[str, bool] = defaultdict(bool)
     for story_key, pages_by_language in sorted(groups.items()):
-        source_page = pages_by_language.get(source_language)
+        source_page = _group_page(pages_by_language, source_language)
         if source_page is None:
             continue
         source_text = str(source_page.get("text", ""))
@@ -2153,12 +2345,13 @@ def extract_terms_local(
                     record.names["en"] = surface
             continue
         c = record.canonical
-        stories_n = len(term_stories.get(c, set()))
-        lines_n = term_lines.get(c, 0)
-        bursty = stories_n > 0 and (
-            stories_n <= 5 or lines_n / max(1, stories_n) >= 2.0
+        view = term_stories.get(c, set())
+        record.everyday = not looks_like_proper_noun(
+            stories_n=len(view),
+            lines_n=term_lines.get(c, 0),
+            total_stories=len(groups),
+            quoted=canon_quoted.get(c, False),
         )
-        record.everyday = not (bursty or canon_quoted.get(c, False))
 
     # Alignment phase: translate each distinct canonical ONCE per language,
     # memoized, then stamp every record that shares it.
@@ -2311,14 +2504,21 @@ def _build_positions_for_term(
             continue
         for lang, page in by_lang.items():
             text = str(page.get("text", ""))
-            seg = find_segment(text, term.canonical) if lang == term.source_language else ""
+            # The corpus keys pages by its own spelling (zh_hant) while
+            # term.names uses TERM_LANGUAGES spelling (zh_tw). Resolve before
+            # the lookup, and emit the canonical spelling too, so a position
+            # lines up with term.names and with the vocab/IDF keyed by target
+            # language. Without this, positions for every traditional-Chinese
+            # line carried an empty sentence and a mismatched language key.
+            canon = _term_language(lang)
+            seg = find_segment(text, term.canonical) if canon == term.source_language else ""
             # For non-source languages try to find the translated name in text
-            trans_name = term.names.get(lang, "")
-            if lang != term.source_language and trans_name:
+            trans_name = term.names.get(canon, "")
+            if canon != term.source_language and trans_name:
                 seg = find_segment(text, trans_name) or seg
             out.append({
                 "story_key": story_key,
-                "language": lang,
+                "language": canon,
                 "sentence": seg[:300] if seg else "",
                 "term": trans_name if trans_name else term.canonical,
                 "trust": str(page.get("trust", "")),
@@ -2480,10 +2680,14 @@ def term_penetrate(
     pos_map: dict[str, dict] = {}
     for p in best.positions:
         if str(p.get("story_key", "")) == sk:
-            pos_map[str(p.get("language", ""))] = p
+            # Positions now emit the canonical spelling, but rows written
+            # before that fix still say zh_hant. Normalise defensively so a
+            # zh_tw lookup finds either vintage.
+            pos_map[_term_language(str(p.get("language", "")))] = p
     langs_to_check = target_langs if target_langs else list(TERM_LANGUAGES)
     for lang in langs_to_check:
-        cached = pos_map.get(lang)
+        canon = _term_language(lang)
+        cached = pos_map.get(canon)
         if cached:
             per_lang[lang] = {
                 "term": str(cached.get("term", "")),
@@ -2494,12 +2698,12 @@ def term_penetrate(
                 "released": is_released,
             }
             continue
-        page = by_lang.get(lang)
+        page = _group_page(by_lang, lang)
         if page is None:
-            per_lang[lang] = {"term": best.names.get(lang, ""), "sentence": "", "trust": "", "auxiliary": False, "missing": True, "released": is_released, "cloud_rank": cloud_rank.get(best.canonical)}
+            per_lang[lang] = {"term": best.names.get(canon, ""), "sentence": "", "trust": "", "auxiliary": False, "missing": True, "released": is_released, "cloud_rank": cloud_rank.get(best.canonical)}
             continue
         text = str(page.get("text", ""))
-        name = best.names.get(lang, "")
+        name = best.names.get(canon, "")
         seg = find_segment(text, name) if name else ""
         if not seg and name:
             seg = ""

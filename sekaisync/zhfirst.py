@@ -25,6 +25,8 @@ from sekaisync.normalize import normalize_name
 from sekaisync.wordseg import discover_words
 from sekaisync.termindex import (
     group_pages_by_story,
+    looks_like_proper_noun,
+    _ZH_FUNCTION_CHARS,
     _local_translation_candidates,
 )
 
@@ -651,7 +653,8 @@ def extract_terms_zhfirst(
         and str(groups[sk]["zh_hans"].get("text", "")).strip() not in ("", "[未翻译]")
     ]
     discovered = discover_words(zh_texts, min_freq=min_freq, min_cohesion=8.0,
-                                min_entropy=1.0, max_chars=3_500_000)
+                                min_entropy=1.0, max_chars=3_500_000,
+                                boundary_stop_chars=_ZH_FUNCTION_CHARS)
 
     # 人工标注种子：把 docs/手动切分.txt 的词并入候选词典，2 字通用词
     # （贝斯/网球/美元）靠人工词表直接命中，不再依赖统计。
@@ -717,9 +720,12 @@ def extract_terms_zhfirst(
         tf = ZhFirstTerm(canonical=canon, stories=set(stories))
         tf.lines_n = term_lines.get(canon, 0)
         tf.names["zh_hans"] = canon
-        stories_n = len(stories)
-        bursty = stories_n <= 5 or tf.lines_n / max(1, stories_n) >= 2.0
-        tf.everyday = not (bursty or term_quoted.get(canon, False))
+        tf.everyday = not looks_like_proper_noun(
+            stories_n=len(stories),
+            lines_n=tf.lines_n,
+            total_stories=len(term_stories),
+            quoted=term_quoted.get(canon, False),
+        )
         if key in official:
             tf.official = True; tf.everyday = False
             tf.names.update({k: v for k, v in official[key].items() if v})
@@ -754,7 +760,10 @@ def extract_terms_zhfirst(
     # 对齐预算：全量候选在 10 万+，逐词×逐语×逐 story 扫描不可行。
     # 只对出现在 ≤30 个 story 的突发专名做对齐（罕见词才需要穿透补名），
     # 高频通用词保持 zh_hans-only（它们本就该进停用表或 everyday）。
-    alignable = [tf for tf in alignable if len(tf.stories) <= 30]
+    # 对齐预算：全量候选在 10 万+，逐词×逐语×逐 story 扫描不可行。这里只是
+    # 性能阀，不是正确性阀 —— 旧的 30 与 everyday 的反向判据叠加，把广布型
+    # 专名（核心设施/地点，在几十个 story 里各提一两次）挡在了穿透之外。
+    alignable = [tf for tf in alignable if len(tf.stories) <= 150]
     align_cache: dict[tuple[str, str], str] = {}
     for tf in alignable:
         for tl in targets:
