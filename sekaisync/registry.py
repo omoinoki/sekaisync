@@ -111,8 +111,28 @@ _KIND_ALIASES = {
     "areaItems": "area_item",
     "virtualLives": "virtual_live",
     "stamps": "stamp",
-    "missions": "mission",
     "items": "item",
+    # 2026-09 上游重组织：missions.json/items.json 聚合表拆分为细分表
+    # （sekai-master-db-diff 扩到 419 张）。旧表名 404，细分表逐一映射。
+    "honors": "honor",
+    "bonds": "bond",
+    "characterRanks": "character_rank",
+    "mysekaiFixtures": "mysekai_fixture",
+    "liveMissions": "live_mission",
+    "characterMissions": "character_mission",
+    "eventMissions": "event_mission",
+    "normalMissions": "normal_mission",
+    "storyMissions": "story_mission",
+    "honorMissions": "honor_mission",
+    "mysekaiNormalMissions": "mysekai_normal_mission",
+    "beginnerMissions": "beginner_mission",
+    "beginnerMissionV2s": "beginner_mission_v2",
+    "shopItems": "shop_item",
+    "billingShopItems": "billing_shop_item",
+    "virtualItems": "virtual_item",
+    "mysekaiItems": "mysekai_item",
+    "eventItems": "event_item",
+    "serialCodeItems": "serial_code_item",
 }
 
 REGISTRY_TABLES = frozenset(_KIND_ALIASES)
