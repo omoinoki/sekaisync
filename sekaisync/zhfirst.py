@@ -1,6 +1,6 @@
 """zh-first terminology pipeline (人工标准复刻).
 
-以《手动切分.txt》的人工标注为黄金标准反推的抽取算法：
+以 `docs/term-annotations.json` 的人工标注为黄金标准反推的抽取算法：
 
 1. 候选主位是简中正文（zh_hans），不是日文。
 2. 每行剥离冒号前发言人（说话人不是术语）。
@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from sekaisync.normalize import normalize_name
@@ -145,21 +147,65 @@ def build_zhfirst_blocklist(glossary: Iterable[Any]) -> tuple[set[str], set[str]
 _CJK = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 
 
+# Resolved against the package location rather than the process CWD: the file
+# is a data asset consumed by the pipeline, and callers run from the repo root,
+# from tests, and from installed CLIs alike.
+_MANUAL_ANNOTATIONS_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "term-annotations.json"
+)
+
+
+def _read_manual_annotations() -> dict:
+    """Read the annotation document.
+
+    The primary path is resolved from this module, so the file is found
+    regardless of the working directory. The CWD-relative fallback covers
+    installs where the repository ``data/`` directory is not shipped next to
+    the package.
+    """
+    for path in (_MANUAL_ANNOTATIONS_PATH, Path("data/term-annotations.json")):
+        try:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return {}
+
+
+def load_manual_annotations() -> dict[str, list[str]]:
+    """Return the human annotations as ``story_key -> terms``.
+
+    This is the raw shape of the annotation file, and the reason it is JSON:
+    the previous line-oriented text held the same information but threw the
+    story boundaries away on load, so the only thing anyone could do with it was
+    take the union. Keeping the per-story structure makes the file usable as a
+    ground truth for extraction precision/recall, not just as a seed list.
+
+    Terms are returned exactly as annotated; nothing is normalized here, since
+    callers differ on whether they want surface forms or comparison keys.
+    """
+    data = _read_manual_annotations()
+    stories = data.get("stories", {}) if isinstance(data, dict) else {}
+    out: dict[str, list[str]] = {}
+    for story_key, terms in stories.items():
+        if not isinstance(terms, list):
+            continue
+        cleaned = [str(t).strip() for t in terms if str(t).strip()]
+        if cleaned:
+            out[str(story_key)] = cleaned
+    return out
+
+
 def _load_manual_seed() -> set[str]:
-    """读取 docs/手动切分.txt 的人工词表作为种子词典。"""
-    try:
-        from pathlib import Path
-        p = Path("docs/手动切分.txt")
-        if not p.exists():
-            return set()
-        out = set()
-        for line in p.read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if s and "/" not in s:
-                out.add(s)
-        return out
-    except Exception:
-        return set()
+    """Seed vocabulary: the union of all annotated terms.
+
+    See `docs/term-annotations.json` for provenance and caveats."""
+    out: set[str] = set()
+    for terms in load_manual_annotations().values():
+        for term in terms:
+            if term:
+                out.add(term)
+    return out
 
 
 def _segment_forward(text: str, vocab: frozenset, max_len: int = 5) -> list[str]:
@@ -656,7 +702,7 @@ def extract_terms_zhfirst(
                                 min_entropy=1.0, max_chars=3_500_000,
                                 boundary_stop_chars=_ZH_FUNCTION_CHARS)
 
-    # 人工标注种子：把 docs/手动切分.txt 的词并入候选词典，2 字通用词
+    # 人工标注种子：把 docs/term-annotations.json 的词并入候选词典，2 字通用词
     # （贝斯/网球/美元）靠人工词表直接命中，不再依赖统计。
     from sekaisync.termindex import group_pages_by_story as _gps  # noqa
     seed = _load_manual_seed()
