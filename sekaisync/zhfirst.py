@@ -321,6 +321,88 @@ _FRAGMENT_WORDS = {
 }
 
 
+
+# 结构信号专名：活动/设施/组织后缀 + 拉丁专名模式。
+# termextract 思想的轻量版——低频一次性专名（freq=1）无法靠统计发现，
+# 但"以这些后缀结尾"或"拉丁多词大写串"的结构信号足以放行。
+_QUOTE_MARKS = set("“”『』「」''")
+
+# 纯汉字后缀（通道 D 反查锚点）：从 _PROPER_SUFFIXES 过滤全汉字项并扩充
+_PROPER_SUFFIX_HANZI = tuple(
+    s for s in (
+        "大奖赛", "锦标赛", "音乐节", "艺术节", "纪念日", "演唱会", "广播剧",
+        "歌剧团", "剧团", "乐团", "乐队", "经纪公司", "学园", "高校", "学校",
+        "学院", "十字路口", "公园", "广场", "舞台", "庆典", "粉丝节", "派队",
+        "县政府", "町", "泡水",
+    ) if all("一" <= ch <= "鿿" for ch in s)
+)
+_PROPER_SUFFIXES = (
+    "大奖赛", "锦标赛", "音乐节", "艺术节", "纪念日", "演唱会", "广播剧",
+    "组合", "乐团", "乐队", "歌剧团", "剧团", "经纪公司", "公司", "商店",
+    "咖啡厅", "咖啡店", "学园", "学校", "学院", "电视台", "广播台", "研究所",
+    "工作室", "公园", "广场", "路口", "通道", "舞台", "唱片", "视频",
+    "时间", "计划", "项目", "大奖", "祭", "杯", "展", "会",
+)
+_PROPER_LATIN = re.compile(r"[A-Za-z][A-Za-z0-9&.+'\-/ ]{2,40}[A-Za-z0-9]")
+
+
+# Latin+汉字混合专名或 ≥2 词纯 Latin 串（非引号文本通道用）。
+# 混合：jam音乐节 / LUMINA时间 / Smile视频 / C位（单字母+汉字也认，限2处）
+# 纯 Latin：Lasting ECHO Fes / LOVELOve（多词或有大小写交替）
+# 专名尾字白名单：混合专名的汉字部分以"词性闭类"字符结尾的情况极少，
+# 但后续常接动词/助词（要开始了/开幕了/投稿活动）。用常见名词后缀或
+# 端点约束处理：汉字段最多 4 字且其后必须是非汉字或句子端点由 finditer
+# 天然给出——这里再排除以常见动词助词开头粘连的伪词由 _is_content_word 兜底。
+_MIXED_PROPER_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9&+'.\-]{0,19}(?:[ ][A-Za-z0-9&+'.\-]+){0,5}[一-鿿]{1,8}"
+    r"|[A-Za-z]{1,3}[一-鿿]{1,4}"
+)
+# 汉字尾部的单字动词/助词（可循环剥）+ 常见双字动词（一次剥）。
+# 贪心匹配会把 "LUMINA时间要开始了" 整段吞进来；专名的语义边界在
+# "时间"，后面是谓语。循环剥到剩下 "汉字段+专名核心" 为止。
+_MIXED_TAIL_SINGLE = set("了着过的是呢吧吗哦呀啊")
+_MIXED_TAIL_WORDS = ("要开始", "开始", "举办", "投稿", "开幕", "上线", "说明", "通知")
+
+
+def mixed_proper_surface(m) -> str:
+    """从贪心匹配里剥掉粘连的谓语/助词尾巴，返回专名 surface。"""
+    w = m.group(0)
+    changed = True
+    while changed and len(w) > 3:
+        changed = False
+        if w[-1] in _MIXED_TAIL_SINGLE:
+            w = w[:-1]
+            changed = True
+            continue
+        for word in _MIXED_TAIL_WORDS:
+            if w.endswith(word) and len(w) - len(word) >= 3:
+                w = w[: -len(word)]
+                changed = True
+                break
+    return w
+
+
+def looks_like_proper_surface(w: str) -> bool:
+    """结构信号专名判定（中文串按后缀，拉丁串按形态）。"""
+    w = w.strip()
+    if not w:
+        return False
+    if _PROPER_LATIN.fullmatch(w):
+        return True
+    if len(w) >= 3 and w.endswith(_PROPER_SUFFIXES):
+        # 汉字串 + 专名后缀；排除明显的句子片段（前缀含功能字开头则不管，
+        # 因为后缀信号本身已足够强）
+        return True
+    # 拉丁+汉字混合（LUMINA时间 / Smile视频 / jam音乐节）
+    if len(w) >= 4 and re.search(r"[A-Za-z]", w) and re.search(r"[一-鿿]", w)             and w.endswith(_PROPER_SUFFIXES):
+        return True
+    return False
+
+
+def _default_fetcher_placeholder():
+    return None
+
+
 def _is_fragment(w: str) -> bool:
     """判定 w 是否为语义碎片（非完整名词）。"""
     if len(w) <= 2 and w in _FRAGMENT_WORDS:
@@ -541,6 +623,13 @@ def extract_zh_candidates_from_story(
                 seen.add(w)
                 out.append((w, quoted))
             return
+        # 结构信号专名（后缀/拉丁形态）：一次性低频专名统计发现不了，
+        # 靠形态放行（LUMINA时间/jam音乐节/Lasting ECHO Fes）
+        if looks_like_proper_surface(w):
+            if w not in seen:
+                seen.add(w)
+                out.append((w, quoted))
+            return
         if _is_content_word(w) and w not in seen and ok_surface(w):
             seen.add(w)
             out.append((w, quoted))
@@ -552,7 +641,8 @@ def extract_zh_candidates_from_story(
         # 引号整体：裸词 + 带引号原形；只保留 ≤12 字且不似动宾短语
         for m in _QUOTE_RE.finditer(seg):
             q = m.group(1).strip("　 ")
-            if _is_content_word(q) and len(q) <= 12 and not re.search(r"[的了着过]$", q):
+            qlimit = 20 if _PROPER_LATIN.search(q) or looks_like_proper_surface(q) else 12
+            if _is_content_word(q) and len(q) <= qlimit and not re.search(r"[的了着过]$", q):
                 add(q, True)
                 add(m.group(0), True)
         # 通道 A: discovered 最长匹配（非重叠，高置信）
@@ -572,6 +662,34 @@ def extract_zh_candidates_from_story(
                     break
             if not matched:
                 i += 1
+        # 通道 D: 纯汉字专名后缀扫描（森之宫歌剧团/全向十字路口/梦想旋律庆典）。
+        # Bi-MM 会把这类词切到已知前缀（森之宫）就停；后缀锚点反查全词。
+        for suf in _PROPER_SUFFIX_HANZI:
+            start = 0
+            while True:
+                j = seg.find(suf, start)
+                if j < 0:
+                    break
+                # 回取最多 6 字前缀作为专名头；在功能字/破折号处截断，
+                # 避免 "爷爷是——森之宫歌剧团" / "关于梦想旋律庆典" 这类
+                # 把引导语吞进专名。
+                h = j
+                while h > 0 and j - h < 6:
+                    prev = seg[h - 1]
+                    if prev.isascii() and prev.isalnum():
+                        break
+                    if prev in _QUOTE_MARKS or prev.isspace() or prev in "的了是在很就还和与或从到向被把给对于至而其已正在进直播开结面前往来出上下过等因所以去吧吗呢哦啊呀嘛那这每某各——…·、，。！？":
+                        break
+                    h -= 1
+                cand = seg[h:j + len(suf)]
+                if len(cand) >= 3:
+                    add(cand, False)
+                start = j + len(suf)
+        # 通道 C: 混合形态专名直扫（Latin+汉字 / 纯 Latin 多词串）。
+        # 这类词（LUMINA时间/jam音乐节/Lasting ECHO Fes/C位）统计发现不了
+        # （低频+分词切碎），靠结构形态直接捕获；每行去重防重复。
+        for m in _MIXED_PROPER_RE.finditer(seg):
+            add(mixed_proper_surface(m), False)
         # 通道 B: 双向最大匹配（frozenset + max_len=5 优化）。
         cjk_re = re.compile(f"[{_CJK}]{{2,}}")
         bimm_vocab = frozenset(discovered) | frozenset(seed)
