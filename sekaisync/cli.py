@@ -662,6 +662,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             max_terms_per_page=args.max_terms,
             translation_memory=memory,
             cache_dir=config.store_root / "cache",
+            do_align=getattr(args, "align", False),
         )
         llm_model = "local"
     else:
