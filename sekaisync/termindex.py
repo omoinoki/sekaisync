@@ -1766,6 +1766,32 @@ def _canon_names(names: Any) -> dict[str, str]:
     return out
 
 
+def _term_stories(
+    groups: dict,
+    source_language: str,
+    source_term: str,
+    target_languages: Iterable[str],
+) -> set[str]:
+    """Stories that contain the term AND carry every target language.
+
+    Distributional alignment is only meaningful on stories where the target
+    language actually exists: a ja-only story (unreleased overseas) has no
+    counterpart line, so aligning inside it can only produce noise. Filtering
+    here also keeps `len(src_stories)` honest — it becomes "stories with
+    real cross-language evidence" instead of "stories mentioning the term".
+    """
+    targets = {language for language in (target_languages or ()) if language}
+    out: set[str] = set()
+    for sk, by in groups.items():
+        spg = _group_page(by, source_language)
+        if spg is None or source_term not in str(spg.get("text", "")):
+            continue
+        if any(_group_page(by, language) is None for language in targets):
+            continue
+        out.add(sk)
+    return out
+
+
 def _group_page(by_language: dict, lang: str) -> Optional[dict]:
     """Fetch a story's page for ``lang``, resolving language aliases.
 
@@ -1831,6 +1857,43 @@ def _discover_ko_words(texts: list[str], min_freq: int = 3) -> set[str]:
             if 2 <= len(stem) <= 12:
                 counts[stem] += 1
     return {word for word, count in counts.items() if count >= min_freq}
+
+
+def _discover_ja_words(texts: list[str], min_freq: int = 3) -> set[str]:
+    """Japanese vocabulary for alignment candidates.
+
+    Japanese has no spaces, so it needs the same unsupervised treatment as
+    Chinese (frequency x PMI cohesion x boundary entropy) — but with two
+    Japanese-specific additions:
+
+    - katakana runs are already word-like: a run of katakana (ネットパラダイス)
+      behaves like a single token, and wordseg would happily find junk inside
+      it, so runs are collected whole;
+    - the discovered set is filtered to terms containing at least one
+      kanji or katakana: hiragana-only fragments are grammar (の/に/して).
+    """
+    from sekaisync.wordseg import discover_words
+
+    words: set[str] = set()
+    for text in texts:
+        for match in _LOCAL_KATAKANA_RE.finditer(text):
+            run = match.group(0)
+            if len(run) >= 3:
+                words.add(run)
+    found = discover_words(
+        texts,
+        min_freq=min_freq,
+        max_chars=2_000_000,
+        boundary_stop_chars="",
+    )
+    for word in found:
+        if len(word) < 2:
+            continue
+        if not (any("一" <= ch <= "鿿" for ch in word)
+                or any("゠" <= ch <= "ヿ" for ch in word)):
+            continue
+        words.add(word)
+    return words
 
 
 def build_alignment_vocab(
@@ -1940,6 +2003,21 @@ def build_alignment_vocab(
             }
         _assign("ko", words)
 
+    if any(_term_language(t) == "ja" for t in targets):
+        words = set(glossary_by_lang["ja"])
+        texts = _texts("ja")
+        if texts:
+            words |= {
+                normalize_name(w) for w in _discover_ja_words(texts)
+                if normalize_name(w) not in char_names
+            }
+        _assign("ja", words)
+
+    if any(_term_language(t) == "en" for t in targets):
+        # English keeps its latin tokenizer unfiltered (documented above), but
+        # official glossary names remain an authoritative seed.
+        _assign("en", set(glossary_by_lang["en"]))
+
     return vocab
 
 
@@ -1957,6 +2035,10 @@ def build_translation_memory(
     for _story_key, by_language in groups.items():
         source_page = _group_page(by_language, source_language)
         if source_page is None:
+            continue
+        # ja-only stories have no counterpart: skip them wholesale so the TM
+        # never learns from unreleased (日服独占) text.
+        if all(_group_page(by_language, language) is None for language in targets):
             continue
         source_lines = [
             line.strip()
@@ -2103,10 +2185,7 @@ def align_term_by_frequency(
     best. ``src_stories`` is the caller-provided inverted index entry; when
     omitted it is derived by a (slow) full scan."""
     if src_stories is None:
-        src_stories = {
-            sk for sk, by in groups.items()
-            if source_language in by and source_term in str(by[source_language].get("text", ""))
-        }
+        src_stories = _term_stories(groups, source_language, source_term, {target_language})
     if not src_stories:
         return ""
     # Single-story terms cannot be validated distributionally: every rare
