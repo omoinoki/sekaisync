@@ -314,9 +314,16 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
         ),
         ToolSpec(
             "news", "sekaisync_news",
-            "Return locally synced official news and announcements by language.",
+            "Return locally synced official news and announcements, filterable by "
+            "language (ja/en/tc/kr/cn), category tag (event/gacha/music/campaign/"
+            "update/information/bug) and body availability.",
             "news",
-            (Param("limit", "int", 100),),
+            (
+                Param("limit", "int", 50),
+                Param("language", "str"),
+                Param("tag", "str"),
+                Param("body", "bool"),
+            ),
             http_path="/api/v1/news",
         ),
         ToolSpec(

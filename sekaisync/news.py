@@ -300,6 +300,19 @@ def load_news(store_root: Path) -> list[dict[str, Any]]:
         )
     return records
 
+
+def filter_news(records: list[dict[str, Any]], language: Optional[str] = None,
+                tag: Optional[str] = None, body: Optional[bool] = None) -> list[dict[str, Any]]:
+    """Structured filters over news records (language / information_tag / body)."""
+    out = records
+    if language:
+        out = [r for r in out if r.get("language") == language]
+    if tag:
+        out = [r for r in out if r.get("information_tag") == tag]
+    if body is not None:
+        out = [r for r in out if bool(r.get("body_available")) is body]
+    return out
+
 def news_available(store_root: Path) -> bool:
     return bool(load_news(store_root))
 

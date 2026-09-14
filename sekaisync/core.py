@@ -506,12 +506,14 @@ class SekaiSyncCore:
 
         return run_integrity_check(self.store_root, limit=limit)
 
-    def news(self, limit: int = 100) -> dict:
-        from sekaisync.news import load_news, news_summary
+    def news(self, limit: int = 100, language: Optional[str] = None,
+             tag: Optional[str] = None, body: Optional[bool] = None) -> dict:
+        from sekaisync.news import filter_news, load_news, news_summary
 
-        records = load_news(self.store_root)
+        records = filter_news(load_news(self.store_root), language=language, tag=tag, body=body)
         return {
             **news_summary(self.store_root),
+            "matched": len(records),
             "items": records[:limit],
         }
 
