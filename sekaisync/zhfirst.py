@@ -896,7 +896,11 @@ def extract_terms_zhfirst(
         elif canon in zh_to_official:
             tf.official = True; tf.everyday = False
             tf.names.update({k: v for k, v in zh_to_official[canon].items() if v})
-            terms[canon] = tf
+        # Assignment must NOT live inside a specific branch: every retained
+        # path (official / seed / discovered / quoted / llm-kept) has to land
+        # in the result. Nesting it under `elif canon in zh_to_official` threw
+        # away every other term and made the pipeline return 0 forever.
+        terms[canon] = tf
 
     # Alignment phase (optional; disabled by default for speed).
     if not do_align:

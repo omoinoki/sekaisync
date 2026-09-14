@@ -1345,6 +1345,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_terms_extract.add_argument("--max-terms", type=int, default=20)
     p_terms_extract.add_argument("--no-translate", action="store_true")
     p_terms_extract.add_argument(
+        "--align",
+        action="store_true",
+        help="Run four-language same-position alignment after extraction (slow, ~20min on a full store)",
+    )
+    p_terms_extract.add_argument(
         "--local",
         action="store_true",
         help="Use deterministic local extraction instead of an LLM",

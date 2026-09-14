@@ -2334,6 +2334,7 @@ def extract_terms_local(
     translation_memory: Optional[dict[tuple[str, str], str]] = None,
     glossary: Optional[Iterable[Any]] = None,
     cache_dir: Optional[Path] = None,
+    do_align: bool = False,
 ) -> list[TermRecord]:
     targets = [language for language in target_languages if language]
     memory = translation_memory or {}
@@ -2448,6 +2449,14 @@ def extract_terms_local(
         if rec.canonical in (_GENERIC_FIXED_TRANSLATIONS | _JA_ONLY_CURATED | _PROPRIETARY_FIXED_TRANSLATIONS):
             rec.everyday = False
     align_cache: dict[tuple[str, str], str] = {}
+    if not do_align:
+        # Alignment skipped: every record keeps only its source name. Honest
+        # "not covered" beats inventing translations (and it is what makes
+        # --align an actual switch instead of a no-op).
+        for record in records_by_id.values():
+            src_only = record.names.get(source_language, record.canonical)
+            record.names = {source_language: src_only}
+        return _finalize_terms(list(records_by_id.values()))
     for record in records_by_id.values():
         if record.source == "glossary" or record.official:
             continue  # authoritative names already present
@@ -2461,7 +2470,11 @@ def extract_terms_local(
                 continue
             key = (record.canonical, target_language)
             if key not in align_cache:
-                src_stories = term_stories.get(record.canonical, set())
+                # Pair-aware: only stories that also carry the target language
+                # (excludes ja-only / unreleased text — see _term_stories).
+                src_stories = _term_stories(
+                    groups, source_language, record.canonical, {target_language}
+                ) or term_stories.get(record.canonical, set())
                 # Latin-identity canonicals (STANDOUT/Amia/ReLight/RAD WEEKEND):
                 # their own surface is already the official name — translating
                 # them invents a new alias (新人舞台/MV during). Only align
@@ -2484,13 +2497,17 @@ def extract_terms_local(
             if translated:
                 record.names[target_language] = translated
 
-    result = list(records_by_id.values())
+    return _finalize_terms(list(records_by_id.values()))
+
+
+def _finalize_terms(records: list[TermRecord]) -> list[TermRecord]:
+    """Shared tail: de-pollute cross-language names, then apply curated fixes."""
     # Backstop: strip character-name / speaker-label pollution from cross-language names.
-    sanitize_translation_pollution(result)
+    sanitize_translation_pollution(records)
     # Apply fixed dictionaries for proper nouns / generic words (authoritative,
     # never per-line aligned).
-    apply_curated_translations(result)
-    return result
+    apply_curated_translations(records)
+    return records
 
 
 def lookup_terms(

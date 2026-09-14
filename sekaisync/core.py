@@ -743,7 +743,7 @@ class SekaiSyncCore:
             "official_inherited": official_inherited,
             "final_total": len(self.terms),
             "cache": str(cache_file),
-            "path": str(path),
+            "path": str(dbstore.db_file(self.store_root)),
         }
 
 
