@@ -7,14 +7,14 @@
 ## 数量基线
 
 <!-- BEGIN GENERATED:baseline (refresh via scripts/refresh_baseline.py) -->
-<!-- refreshed 2026-09-13T11:35:21+08:00 -->
+<!-- refreshed 2026-09-15T08:35:45+08:00 -->
 
 | 数据层 | 数量 | 说明 |
 | --- | --- | --- |
 | Registry（跨服实体） | 71,463 | 官方 master DB（管道 A） |
 | Glossary（官方/本地化词条） | 71,463 | 五服本地化官方词 |
 | Terms（术语索引） | 8,727 | official 标记 105；带正文证据 8,675 |
-| 术语五语齐全 | 24 | 单语言覆盖：ja 8,727、en 401、zh_hans 167、ko 148、zh_tw 28 |
+| 术语五语齐全 | 23 | 单语言覆盖：ja 8,727、en 135、zh_hans 100、ko 78、zh_tw 32 |
 | Web 正文页 | 752,372 | 含辅助页（管道 B） |
 辅助翻译参考| 4,837| auxiliary 辅助页（翻译参考/overlay） |
 | 官方公告 | 2,032 | en 640、ja 121、ko 517、zh_hans 238、zh_hant 516 |
