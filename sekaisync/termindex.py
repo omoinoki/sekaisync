@@ -2225,6 +2225,16 @@ def align_term_by_frequency(
     where the term appears, score by doc-level co-occurrence × IDF, return the
     best. ``src_stories`` is the caller-provided inverted index entry; when
     omitted it is derived by a (slow) full scan."""
+    # Source-side gate: the aligner used to accept anything the caller passed
+    # in, so interjections and sentence fragments (いえーい/えー/お～/お前……)
+    # were aligned against whatever line the position predictor landed on and
+    # produced confident-looking garbage. Reject them before spending work.
+    if source_language == "ja" and _is_ja_stopword(source_term):
+        return ""
+    if not _source_candidate_acceptable(source_term, source_language):
+        return ""
+    if len(re.findall(r"[A-Za-z]", source_term)) and len(source_term.replace(" ", "")) < 3:
+        return ""
     if src_stories is None:
         src_stories = _term_stories(groups, source_language, source_term, {target_language})
     if not src_stories:
@@ -2282,10 +2292,21 @@ def align_term_by_frequency(
     n_total_stories = max(1, len(groups))
     min_containment = 0.30
     filtered: dict[str, int] = {}
+    n_src = len(src_stories)
     for cand, co in co_docs.items():
         idf_val = idf.get((target_language, cand))
         if idf_val is None:
             continue  # candidate unseen in global stats: no evidence at all
+        # Cross-story support: the candidate must recur in at least two source
+        # stories AND in a real share of them. Single-story hits are position
+        # noise (the predictor lands on an unrelated line often enough).
+        if co < 2:
+            continue
+        # 0.34 rejected real proper nouns whose translation varies in form
+        # across stories (ジャムフェス/ストリートライブ); 0.25 keeps them while
+        # still dropping single-line position noise.
+        if co / n_src < 0.25:
+            continue
         df_global = max(1, round(n_total_stories / math.exp(idf_val)))
         if co / df_global >= min_containment or co >= df_global:
             filtered[cand] = co
