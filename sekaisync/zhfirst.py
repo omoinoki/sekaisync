@@ -53,16 +53,32 @@ _QUOTE_RE = re.compile(r"[「『“‘\"]([^」』”’\"\n]{2,40})[」』”�
 _LATIN_RE = re.compile(r"[A-Za-z][A-Za-z0-9＊*♡・·'’\-]*(?:[ &×·][A-Za-z0-9＊*♡・·'’\-]+)*")
 
 
+def _strip_speaker_impl(line: str) -> int:
+    """返回发言人标签的结束位置（0 表示无标签）。
+
+    两个模式都以字面量 ``[：:]`` 为锚点，所以**不含冒号的行永远不可能匹配**。
+    少了这个前置判断，``SPEAKER_RE_MULTI`` 的嵌套量词
+    ``(?:[^：:]{1,12}[・&、,， ])+[^：:]{1,12}`` 会在失败匹配时枚举
+    ``[^：:]`` 的每一种切分方式——145 字符的英文行实测耗时 26.3 秒，
+    而全语料有 2,536 行超过 1ms，累计 186 秒/趟。加冒号守卫后直接返回 0，
+    语义不变（含冒号的行为完全一致）。
+    """
+    if ":" not in line and "：" not in line:
+        return 0
+    m = SPEAKER_RE_MULTI.match(line) or SPEAKER_RE.match(line)
+    return m.end() if m else 0
+
+
 def strip_speaker(line: str) -> str:
     """剥掉行首发言人标签；多人连署也一并处理。返回正文部分。"""
-    m = SPEAKER_RE_MULTI.match(line) or SPEAKER_RE.match(line)
-    return line[m.end():] if m else line
+    end = _strip_speaker_impl(line)
+    return line[end:] if end else line
 
 
 def speaker_of(line: str) -> str:
     """返回行首发言人（无则空串）。"""
-    m = SPEAKER_RE_MULTI.match(line) or SPEAKER_RE.match(line)
-    return line[: m.end()].rstrip("：: ").strip() if m else ""
+    end = _strip_speaker_impl(line)
+    return line[:end].rstrip("：: ").strip() if end else ""
 
 
 # ── 数据结构 ────────────────────────────────────────────────────────
