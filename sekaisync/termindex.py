@@ -1766,29 +1766,70 @@ def _canon_names(names: Any) -> dict[str, str]:
     return out
 
 
+def build_pair_story_index(
+    groups: dict,
+    target_languages: Iterable[str],
+    source_language: str = "zh_hans",
+) -> dict[str, set[str]]:
+    """language -> stories where that language is present alongside the source.
+
+    One pass over the corpus. The per-pair question ("does this term's story
+    set also carry language L?") then becomes a set intersection instead of a
+    full rescan, which is what makes alignment tractable: the previous
+    per-(term, language) rescan cost ~860M group visits and never finished.
+    """
+    targets = [language for language in (target_languages or ()) if language]
+    index: dict[str, set[str]] = {language: set() for language in targets}
+    for sk, by in groups.items():
+        if _group_page(by, source_language) is None:
+            continue
+        for language in targets:
+            if _group_page(by, language) is not None:
+                index[language].add(sk)
+    return index
+
+
 def _term_stories(
     groups: dict,
     source_language: str,
     source_term: str,
     target_languages: Iterable[str],
+    index: Optional[dict] = None,
 ) -> set[str]:
     """Stories that contain the term AND carry every target language.
 
     Distributional alignment is only meaningful on stories where the target
-    language actually exists: a ja-only story (unreleased overseas) has no
-    counterpart line, so aligning inside it can only produce noise. Filtering
-    here also keeps `len(src_stories)` honest — it becomes "stories with
-    real cross-language evidence" instead of "stories mentioning the term".
+    language exists: a ja-only story (unreleased overseas) has no counterpart
+    line, so aligning inside it can only produce noise. When ``index`` (from
+    ``build_pair_story_index``) is given, the language restriction costs a set
+    intersection; otherwise the direct scan runs for one-off callers.
     """
     targets = {language for language in (target_languages or ()) if language}
+    if index is None:
+        eligible: Optional[set[str]] = None
+        for sk, by in groups.items():
+            spg = _group_page(by, source_language)
+            if spg is None or source_term not in str(spg.get("text", "")):
+                continue
+            if any(_group_page(by, language) is None for language in targets):
+                continue
+            if eligible is None:
+                eligible = set()
+            eligible.add(sk)
+        return eligible or set()
+    eligible: Optional[set[str]] = None
+    for language in targets:
+        lang_stories = index.get(language, set())
+        eligible = set(lang_stories) if eligible is None else (eligible & lang_stories)
+        if not eligible:
+            return set()
+    if not eligible:
+        return set()
     out: set[str] = set()
-    for sk, by in groups.items():
-        spg = _group_page(by, source_language)
-        if spg is None or source_term not in str(spg.get("text", "")):
-            continue
-        if any(_group_page(by, language) is None for language in targets):
-            continue
-        out.add(sk)
+    for sk in eligible:
+        spg = _group_page(groups.get(sk, {}), source_language)
+        if spg is not None and source_term in str(spg.get("text", "")):
+            out.add(sk)
     return out
 
 
@@ -2348,6 +2389,9 @@ def extract_terms_local(
 
     # Per-language alignment vocab (glossary ∪ discovered words) + IDF, cached.
     vocab, idf = build_alignment_resources(groups, targets, glossary, cache_dir)
+    # One-pass language index: without it every (term, language) pair rescans
+    # the whole corpus (see build_pair_story_index).
+    pair_index = build_pair_story_index(groups, targets, source_language)
 
     # Pass 1: extract records per story and build a canonical -> story-keys
     # inverted index in the same sweep. (The naive alternative — rescanning
@@ -2473,8 +2517,9 @@ def extract_terms_local(
                 # Pair-aware: only stories that also carry the target language
                 # (excludes ja-only / unreleased text — see _term_stories).
                 src_stories = _term_stories(
-                    groups, source_language, record.canonical, {target_language}
-                ) or term_stories.get(record.canonical, set())
+                    groups, source_language, record.canonical, {target_language},
+                    index=pair_index,
+                )
                 # Latin-identity canonicals (STANDOUT/Amia/ReLight/RAD WEEKEND):
                 # their own surface is already the official name — translating
                 # them invents a new alias (新人舞台/MV during). Only align
