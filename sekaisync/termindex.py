@@ -814,7 +814,24 @@ def save_terms(terms: Iterable[TermRecord], path: Path, compact_evidence: bool =
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
+_STORY_ID_RE = re.compile(
+    # web:{source}:{locale}:{kind}:{content_id} — the locale segment is what
+    # kept the five language versions of one story in separate groups.
+    r"^web:[^:]+:[^:]+:(?P<kind>[a-z_]+):(?P<content>.+)$"
+)
+
+
 def page_story_key(page: dict) -> Optional[str]:
+    """Language-independent story key.
+
+    The key must be identical for every language version of the same story,
+    otherwise cross-language alignment has no pairs to work with. The old
+    fallback ``f"{kind}:{page_id}"`` embedded the page id, which contains the
+    locale (``web:altsource_ms:zh-cn:card_story:2``), so card_story / area_talk
+    / virtual_live / self_intro key sets had ZERO intersection across
+    languages — 58k story pages looked monolingual when the corpus actually
+    carries all five versions.
+    """
     url = str(page.get("url", ""))
     page_id = str(page.get("id", ""))
     kind = str(page.get("kind", ""))
@@ -828,6 +845,10 @@ def page_story_key(page: dict) -> Optional[str]:
     match = re.search(r"event_story/(\d+)/(\d+)", url)
     if match:
         return f"event:{match.group(1)}:{match.group(2)}"
+    # Strip source + locale so language versions collapse onto one key.
+    match = _STORY_ID_RE.match(page_id)
+    if match:
+        return f"{match.group('kind')}:{match.group('content')}"
     return f"{kind}:{page_id}"
 
 
