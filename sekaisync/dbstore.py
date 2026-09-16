@@ -29,10 +29,10 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from sekaisync.layout import db_path, glossary_path, registry_path, terms_path
 from sekaisync.models import Entity, GlossaryTerm
@@ -185,6 +185,15 @@ class SchemaState:
     def is_usable(self) -> bool:
         """True only for a store this build may open without changing it."""
         return self.status in (SCHEMA_ABSENT, SCHEMA_CURRENT)
+
+
+class RevisionConflictError(RuntimeError):
+    """A conditional write lost a race with another writer.
+
+    Raised when a caller supplies ``expected_revision`` and the store has since
+    moved on.  The caller must recompute against the current state rather than
+    overwrite the newer data with a result derived from obsolete inputs.
+    """
 
 
 class SchemaVersionError(RuntimeError):
@@ -869,6 +878,358 @@ def save_terms_records(
             )
         conn.commit()
         return len(term_rows)
+
+
+# ── terms write contract (Astra P01) ──────────────────────────────
+#
+# `save_terms_records` conflates three different intentions: replace the whole
+# snapshot, update a few records, and update evidence.  Callers cannot express
+# "delete everything not in this list" or "clear this term's evidence", and a
+# light record (one whose in-memory evidence list is merely not loaded) is
+# indistinguishable from a record that genuinely has no evidence.  The three
+# operations are separated below so a write says what it means.
+
+@dataclass
+class WriteResult:
+    """What a terms write actually did, and the revision it landed at.
+
+    Counts are read back from the database rather than inferred from the input
+    length, so a caller (and a test) can compare the claim against the rows.
+    """
+
+    inserted: int = 0
+    updated: int = 0
+    deleted: int = 0
+    evidence_rows: int = 0
+    revision: int = 0
+
+
+@dataclass
+class EvidenceUpdate:
+    """An explicit evidence change for one term.
+
+    ``mode='replace'`` with ``items=[]`` clears the evidence — that is a real
+    operation, not an absence.  Omitting an id from ``evidence_updates``
+    entirely means *preserve*, which is why the two cases are distinct types
+    of statement rather than one nullable list.
+    """
+
+    mode: str  # "replace" | "append"
+    items: list[dict] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("replace", "append"):
+            raise ValueError(
+                f"EvidenceUpdate.mode must be 'replace' or 'append', got {self.mode!r}"
+            )
+
+
+def _evidence_rows_for(term_id: str, items: Sequence[Any]) -> list[tuple]:
+    rows: list[tuple] = []
+    for idx, ev in enumerate(items):
+        if not isinstance(ev, dict):
+            continue
+        known = {"story_key", "language", "term", "sentence"}
+        extra = {k: v for k, v in ev.items() if k not in known}
+        rows.append(
+            (
+                term_id, idx,
+                str(ev.get("story_key") or ""), str(ev.get("language") or ""),
+                str(ev.get("term") or ""), str(ev.get("sentence") or ""),
+                json.dumps(extra, ensure_ascii=False),
+            )
+        )
+    return rows
+
+
+def _term_row_from_record(item: dict, evidence_count: int) -> tuple:
+    return (
+        item.get("id", ""), item.get("canonical", ""),
+        item.get("source_language", ""), item.get("kind", "term"),
+        json.dumps(item.get("names") or {}, ensure_ascii=False),
+        1 if item.get("official") else 0, item.get("source", ""),
+        item.get("created_at", ""), float(item.get("confidence", 1.0)),
+        item.get("trust", ""), json.dumps(item.get("tags") or [], ensure_ascii=False),
+        int(item.get("occurrences") or 0), float(item.get("weight") or 0.0),
+        1 if item.get("everyday") else 0,
+        json.dumps(item.get("positions") or [], ensure_ascii=False),
+        evidence_count,
+    )
+
+
+#: Explicit column list.  `INSERT OR REPLACE` with a bare VALUES list silently
+#: depends on physical column order, which is exactly how a future column
+#: addition quietly corrupts writes.
+_TERM_UPSERT = """
+    INSERT INTO terms(
+        id, canonical, source_language, kind, names_json, official, source,
+        created_at, confidence, trust, tags_json, occurrences, weight,
+        everyday, positions_json, evidence_count
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+        canonical=excluded.canonical,
+        source_language=excluded.source_language,
+        kind=excluded.kind,
+        names_json=excluded.names_json,
+        official=excluded.official,
+        source=excluded.source,
+        created_at=excluded.created_at,
+        confidence=excluded.confidence,
+        trust=excluded.trust,
+        tags_json=excluded.tags_json,
+        occurrences=excluded.occurrences,
+        weight=excluded.weight,
+        everyday=excluded.everyday,
+        positions_json=excluded.positions_json,
+        evidence_count=excluded.evidence_count
+"""
+
+
+def replace_terms_snapshot(
+    store_root: Path,
+    records: Iterable[Any],
+    *,
+    evidence_by_id: Mapping[str, Sequence[dict]],
+    expected_revision: Optional[int] = None,
+) -> WriteResult:
+    """Replace the term set with exactly ``records``, evidence included.
+
+    This is the destructive full-snapshot operation.  Every id in ``records``
+    must appear in ``evidence_by_id`` (possibly with an empty sequence), which
+    forces the caller to state the evidence for each record instead of leaving
+    it to be guessed from whether a list happens to be non-empty.
+
+    ``expected_revision``, when given, makes the write conditional: if another
+    writer committed in the meantime the call fails rather than overwriting
+    their work.
+    """
+    from sekaisync.termindex import term_to_dict
+
+    _ensure_initialized(store_root)
+
+    items: list[dict] = []
+    seen: set[str] = set()
+    for rec in records:
+        item = term_to_dict(rec)
+        term_id = str(item.get("id", ""))
+        if not term_id:
+            raise ValueError("every term record needs a non-empty id")
+        if term_id in seen:
+            raise ValueError(f"duplicate term id in snapshot: {term_id!r}")
+        if term_id not in evidence_by_id:
+            raise ValueError(
+                f"snapshot is missing evidence for {term_id!r}; pass an explicit "
+                f"sequence (an empty one means 'no evidence'), so completeness is "
+                f"stated rather than inferred"
+            )
+        seen.add(term_id)
+        items.append(item)
+
+    with connect(store_root) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if expected_revision is not None:
+                actual = current_revision(conn)
+                if actual != expected_revision:
+                    raise RevisionConflictError(
+                        f"store is at revision {actual}, expected {expected_revision}; "
+                        f"another writer committed — recompute against the current state"
+                    )
+
+            before = {
+                row[0] for row in conn.execute("SELECT id FROM terms")
+            }
+            keep = seen
+
+            # Delete what the snapshot does not contain, evidence first so no
+            # orphan rows survive a mid-way failure.
+            removed = before - keep
+            for term_id in removed:
+                conn.execute("DELETE FROM term_evidence WHERE term_id=?", (term_id,))
+                conn.execute("DELETE FROM terms WHERE id=?", (term_id,))
+
+            evidence_total = 0
+            inserted = 0
+            for item in items:
+                term_id = item["id"]
+                if term_id not in before:
+                    inserted += 1
+                conn.execute("DELETE FROM term_evidence WHERE term_id=?", (term_id,))
+                rows = _evidence_rows_for(term_id, evidence_by_id.get(term_id) or [])
+                if rows:
+                    conn.executemany(
+                        "INSERT INTO term_evidence VALUES(?,?,?,?,?,?,?)", rows
+                    )
+                evidence_total += len(rows)
+                # evidence_count is derived from the rows actually written, so
+                # the advertised count and the stored rows cannot disagree.
+                conn.execute(_TERM_UPSERT, _term_row_from_record(item, len(rows)))
+
+            revision = bump_revision(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return WriteResult(
+        inserted=inserted,
+        updated=len(items) - inserted,
+        deleted=len(removed),
+        evidence_rows=evidence_total,
+        revision=revision,
+    )
+
+
+def upsert_terms(
+    store_root: Path,
+    records: Iterable[Any],
+    *,
+    evidence_updates: Optional[Mapping[str, Any]] = None,
+    expected_revision: Optional[int] = None,
+) -> WriteResult:
+    """Insert or update only the given records; touch nothing else.
+
+    Evidence handling is explicit per id:
+
+    - id absent from ``evidence_updates`` -> **preserve** existing evidence
+      (a light record whose evidence was never loaded must not wipe the store)
+    - ``{"mode": "replace", "items": [...]}`` -> replace with exactly those
+    - ``{"mode": "replace", "items": []}`` -> clear
+    - ``{"mode": "append", "items": [...]}`` -> append, de-duplicated
+
+    Records the caller did not mention are left completely alone, which is what
+    makes this safe for partial scrapes and hand corrections.
+    """
+    from sekaisync.termindex import term_to_dict
+
+    _ensure_initialized(store_root)
+    updates = dict(evidence_updates or {})
+
+    items: list[dict] = []
+    seen: set[str] = set()
+    for rec in records:
+        item = term_to_dict(rec)
+        term_id = str(item.get("id", ""))
+        if not term_id:
+            raise ValueError("every term record needs a non-empty id")
+        if term_id in seen:
+            raise ValueError(f"duplicate term id in upsert: {term_id!r}")
+        seen.add(term_id)
+        items.append(item)
+
+    with connect(store_root) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if expected_revision is not None:
+                actual = current_revision(conn)
+                if actual != expected_revision:
+                    raise RevisionConflictError(
+                        f"store is at revision {actual}, expected {expected_revision}; "
+                        f"another writer committed — recompute against the current state"
+                    )
+
+            before = {row[0] for row in conn.execute("SELECT id FROM terms")}
+            inserted = 0
+            evidence_total = 0
+
+            for item in items:
+                term_id = item["id"]
+                if term_id not in before:
+                    inserted += 1
+
+                update = updates.get(term_id)
+                if update is None:
+                    # Preserve: keep the stored count and rows untouched.
+                    row = conn.execute(
+                        "SELECT evidence_count FROM terms WHERE id=?", (term_id,)
+                    ).fetchone()
+                    stored = int(row[0]) if row else 0
+                    conn.execute(_TERM_UPSERT, _term_row_from_record(item, stored))
+                    continue
+
+                if not isinstance(update, EvidenceUpdate):
+                    if isinstance(update, dict):
+                        update = EvidenceUpdate(
+                            mode=str(update.get("mode", "")),
+                            items=list(update.get("items") or []),
+                        )
+                    else:
+                        raise ValueError(
+                            f"evidence update for {term_id!r} must be an "
+                            f"EvidenceUpdate or a mapping, got {type(update).__name__}"
+                        )
+
+                if update.mode == "replace":
+                    conn.execute("DELETE FROM term_evidence WHERE term_id=?", (term_id,))
+                    rows = _evidence_rows_for(term_id, update.items)
+                else:  # append — de-duplicate against what is already stored
+                    existing = _evidence_rows_for(
+                        term_id, list(_load_evidence_items(conn, term_id))
+                    )
+                    existing_keys = {_evidence_key(r) for r in existing}
+                    fresh = [
+                        r
+                        for r in _evidence_rows_for(term_id, update.items)
+                        if _evidence_key(r) not in existing_keys
+                    ]
+                    rows = existing + fresh
+
+                if rows:
+                    conn.execute("DELETE FROM term_evidence WHERE term_id=?", (term_id,))
+                    conn.executemany(
+                        "INSERT INTO term_evidence VALUES(?,?,?,?,?,?,?)",
+                        [
+                            (term_id, idx, r[2], r[3], r[4], r[5], r[6])
+                            for idx, r in enumerate(rows)
+                        ],
+                    )
+                evidence_total += len(rows)
+                conn.execute(_TERM_UPSERT, _term_row_from_record(item, len(rows)))
+
+            revision = bump_revision(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return WriteResult(
+        inserted=inserted,
+        updated=len(items) - inserted,
+        deleted=0,
+        evidence_rows=evidence_total,
+        revision=revision,
+    )
+
+
+def _evidence_key(row: tuple) -> str:
+    """Identity of an evidence row for append de-duplication.
+
+    Deliberately excludes ``idx``: the index is presentation order, and using
+    it as identity would let the same evidence be appended repeatedly under
+    ever-growing indices.
+    """
+    return json.dumps(
+        [str(row[2]), str(row[3]), str(row[4]), str(row[5]), str(row[6])],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _load_evidence_items(conn: sqlite3.Connection, term_id: str) -> list[dict]:
+    out: list[dict] = []
+    for row in conn.execute(
+        "SELECT story_key, language, term, sentence, extra_json "
+        "FROM term_evidence WHERE term_id=? ORDER BY idx",
+        (term_id,),
+    ):
+        entry = {"story_key": row[0], "language": row[1]}
+        if row[2]:
+            entry["term"] = row[2]
+        if row[3]:
+            entry["sentence"] = row[3]
+        entry.update(json.loads(row[4] or "{}"))
+        out.append(entry)
+    return out
 
 
 def load_terms_records(store_root: Path, include_sentences: bool = False) -> list[Any]:
