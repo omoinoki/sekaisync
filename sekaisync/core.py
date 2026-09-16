@@ -820,18 +820,24 @@ class SekaiSyncCore:
                 level = term.trust.upper()
                 if level in counts:
                     counts[level]["terms"] += 1
+            # Trust depends only on the grouping columns, so classify once per
+            # bucket and multiply.  The previous per-row loop over 752k pages
+            # was the single largest cost in status() (Astra D06).
             web_total = 0
             auxiliary_total = 0
-            for page in load_web_index(self.store_root):
-                level = trust_for_page(page).upper()
+            for bucket in dbstore.web_trust_buckets(self.store_root):
+                count = int(bucket.get("count") or 0)
+                if count <= 0:
+                    continue
+                level = trust_for_page(bucket).upper()
                 if level not in counts:
                     continue
-                if is_auxiliary_page(page):
-                    counts[level]["auxiliary"] += 1
-                    auxiliary_total += 1
+                if is_auxiliary_page(bucket):
+                    counts[level]["auxiliary"] += count
+                    auxiliary_total += count
                 else:
-                    counts[level]["web"] += 1
-                    web_total += 1
+                    counts[level]["web"] += count
+                    web_total += count
             return {
                 "levels": counts,
                 "totals": {

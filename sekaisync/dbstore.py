@@ -285,7 +285,14 @@ def _web_page_row_to_dict(row: sqlite3.Row, include_text: bool = True) -> dict[s
     for name in _PAGE_COLUMNS:
         if name == "text" and not include_text:
             continue
-        value = row[name]
+        try:
+            value = row[name]
+        except (IndexError, KeyError):
+            # Metadata projections deliberately omit `text`; a caller that
+            # asked for no text gets no text rather than an error.
+            if name == "text":
+                continue
+            raise
         if name in _PAGE_INT_COLUMNS:
             item[name] = bool(value) if name not in {"event_id", "episode_no"} else int(value or 0)
         else:
@@ -318,23 +325,88 @@ def _row_tuple_to_dict(columns: list[str], wrapped: dict[str, Any]) -> dict[str,
     return _web_page_row_to_dict(_Row())  # type: ignore[arg-type]
 
 
-def load_web_index_rows(store_root: Path) -> list[dict[str, Any]]:
-    """Merged index records (metadata only, no text) — load_web_index shape."""
-    ensure_store(store_root)
-    with connect(store_root) as conn:
-        out: list[dict[str, Any]] = []
-        cursor = conn.execute(
-            f"SELECT source, {', '.join(_PAGE_COLUMNS)}, aux_flag, derived_flag, extra_json, seq FROM web_pages ORDER BY source, seq"
-        )
+def web_trust_buckets(
+    store_root: Path,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Count pages grouped by exactly the inputs trust and category use.
+
+    Trust is a pure function of (source, kind, source_type, auxiliary,
+    overlay, derived, translation_source), so a GROUP BY over those columns
+    yields a few hundred buckets instead of 752k rows.  The caller computes
+    trust once per bucket and multiplies by the count — same answer, without
+    materialising every page in Python first (Astra D06 step 1: "聚合用
+    GROUP BY").
+
+    Returns one dict per bucket with the grouping columns plus ``count``.
+    """
+    _ensure_initialized(store_root)
+    sql = """
+        SELECT source, kind, source_type, auxiliary, overlay, derived,
+               translation_source, COUNT(*) AS count
+        FROM web_pages
+        GROUP BY source, kind, source_type, auxiliary, overlay, derived,
+                 translation_source
+    """
+
+    def _rows(active: sqlite3.Connection) -> list[dict[str, Any]]:
+        cursor = active.execute(sql)
         columns = [d[0] for d in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor]
+
+    if conn is not None:
+        return _rows(conn)
+    with connect(store_root) as owned:
+        return _rows(owned)
+
+
+def load_web_index_rows(
+    store_root: Path,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Merged index records (metadata only, no text) — load_web_index shape.
+
+    The projection is explicit: `text` is never selected.  It used to be
+    pulled for every row just to compute ``text_length`` in Python, which
+    meant a metadata-only query read the whole text layer.  SQLite computes
+    ``length(text)`` without shipping the body.  ``source_type`` / ``instance``
+    / ``trust`` are all preserved so trust still derives from identical inputs.
+
+    Rows come back as ``sqlite3.Row`` (mapped by column name) rather than via
+    a per-row shim class: the old helper built a *new class object* for every
+    one of 752k rows, which cost more than the query itself (Astra D06).
+
+    Passing ``conn`` reuses a caller's read transaction (P02 ``ReadView``) so
+    this read belongs to the same generation as the rest of a response.
+    """
+    _ensure_initialized(store_root)
+    index_columns = tuple(c for c in _PAGE_COLUMNS if c != "text")
+    sql = (
+        f"SELECT source, {', '.join(index_columns)}, aux_flag, derived_flag, "
+        f"extra_json, seq, length(text) AS text_length "
+        f"FROM web_pages ORDER BY source, seq"
+    )
+
+    def _rows(active: sqlite3.Connection) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        cursor = active.execute(sql)
+        cursor.row_factory = sqlite3.Row
         for row in cursor:
-            wrapped = dict(zip(columns, row))
-            item = _row_tuple_to_dict(columns, wrapped)
-            record = {field: item.get(field) for field in _INDEX_RECORD_FIELDS if field in item}
-            record["text_length"] = len(str(item.get("text") or ""))
-            record["source"] = wrapped["source"]
+            item = _web_page_row_to_dict(row, include_text=False)
+            record = {
+                field: item.get(field)
+                for field in _INDEX_RECORD_FIELDS
+                if field in item
+            }
+            record["text_length"] = int(row["text_length"] or 0)
+            record["source"] = row["source"]
             out.append(record)
         return out
+
+    if conn is not None:
+        return _rows(conn)
+    with connect(store_root) as owned:
+        return _rows(owned)
 
 
 def web_category_counts(store_root: Path, source: Optional[str] = None) -> dict[str, dict[str, int]]:
