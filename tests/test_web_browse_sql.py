@@ -202,6 +202,28 @@ class WebBrowseSqlTest(unittest.TestCase):
                         got["snippet"], " ".join(full[:300].split())
                     )
 
+    def test_include_text_returns_real_bodies(self):
+        """Regression: the SQL projection omits `text`, so include_text
+        initially returned empty strings for every row."""
+        items = web_browse(self.store, limit=10, include_text=True)
+        self.assertTrue(items)
+        for item in items:
+            self.assertIn("text", item)
+            self.assertTrue(
+                item["text"],
+                f"{item['id']} returned empty text with include_text=True",
+            )
+            self.assertEqual(len(item["text"]), item["text_length"])
+
+    def test_text_absent_when_not_requested(self):
+        """The body must not be shipped when the caller did not ask for it."""
+        for item in web_browse(self.store, limit=10):
+            self.assertNotIn(
+                "text",
+                item,
+                "full body leaked into a metadata-only browse result",
+            )
+
     def test_overlay_pages_excluded_by_default(self):
         save_web_pages(
             self.store,

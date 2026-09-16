@@ -889,7 +889,7 @@ def web_browse(
             if page_category(page) != kind and page.get("kind") != kind:
                 continue
         # `text_head` is the SQL-side first 300 chars; fall back to `text` when
-        # a caller supplied full rows (e.g. include_text or a non-SQL path).
+        # a caller supplied full rows (e.g. a non-SQL path).
         head = page.get("text_head")
         if head is None:
             head = str(page.get("text", ""))[:300]
@@ -938,7 +938,21 @@ def web_browse(
     # priority ascending (earlier profile entries first).
     items.sort(key=lambda item: str(item.get("crawled_at", "")), reverse=True)
     items.sort(key=lambda item: source_rank(item.get("source", ""), priority))
-    return items[:limit]
+    items = items[:limit]
+
+    if include_text and items:
+        # Bodies are fetched only for the rows actually being returned — the
+        # whole point of the SQL projection is that text does not cross the
+        # boundary for candidates that get filtered out or truncated.
+        bodies = dbstore.web_page_texts(
+            store_root,
+            [(item.get("source", ""), item.get("id", "")) for item in items],
+        )
+        for item in items:
+            item["text"] = bodies.get(
+                (item.get("source", ""), item.get("id", "")), ""
+            )
+    return items
 
 
 def _make_snippet(text: str, query: str, radius: int = 140) -> str:

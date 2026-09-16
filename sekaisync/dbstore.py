@@ -685,6 +685,45 @@ def browse_web_rows(
         return _rows(owned)
 
 
+def web_page_texts(
+    store_root: Path,
+    keys: Sequence[tuple[str, str]],
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[tuple[str, str], str]:
+    """Full bodies for the named (source, id) pairs only.
+
+    Used by callers that genuinely need the text (``include_text=True``) after
+    the candidate set has been narrowed, so bodies are read for the rows being
+    returned rather than for every row considered.
+    """
+    _ensure_initialized(store_root)
+    if not keys:
+        return {}
+    out: dict[tuple[str, str], str] = {}
+
+    def _read(active: sqlite3.Connection) -> None:
+        # Chunked so the placeholder count stays well under SQLite's limit.
+        for start in range(0, len(keys), 400):
+            chunk = keys[start:start + 400]
+            placeholders = ",".join("(?,?)" for _ in chunk)
+            params: list[Any] = []
+            for source_id, page_id in chunk:
+                params.extend([source_id, page_id])
+            for row in active.execute(
+                f"SELECT source, id, text FROM web_pages "
+                f"WHERE (source, id) IN (VALUES {placeholders})",
+                params,
+            ):
+                out[(row[0], row[1])] = str(row[2] or "")
+
+    if conn is not None:
+        _read(conn)
+        return out
+    with connect(store_root) as owned:
+        _read(owned)
+    return out
+
+
 def load_web_index_rows(
     store_root: Path,
     conn: Optional[sqlite3.Connection] = None,
