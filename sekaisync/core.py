@@ -942,6 +942,28 @@ class SekaiSyncCore:
                 "description": "characterMissions table absent in the CN master repo (present in jp/en/tc/kr); CN character mission facts are not covered",
                 "agent_guidance": "Character mission details for CN are not available from the local master data.",
             },
+            {
+                # Astra B2/P13: until raw/news publish as immutable generations
+                # with a single active pointer, a response that combines several
+                # raw/news files can mix two generations.  This gap is declared
+                # rather than left implicit: a *single* SQL read is consistent
+                # (revision-pinned), but a multi-file aggregate is not.
+                "domain": "multi_file_generation_consistency",
+                "scope": "raw master tables + kb/news",
+                "severity": "partial",
+                "description": (
+                    "raw/ region master tables and kb/news are written in place, "
+                    "not published as immutable generations with an active pointer. "
+                    "An aggregate that reads several of those files can therefore "
+                    "mix content from before and after a concurrent sync."
+                ),
+                "agent_guidance": (
+                    "SQL-backed reads (entities/terms/web pages) are revision-pinned "
+                    "and self-consistent. Do not present a multi-region or "
+                    "master+news aggregate as a single consistent snapshot until "
+                    "generation publishing lands (Astra P13)."
+                ),
+            },
         ]
 
     def query(
