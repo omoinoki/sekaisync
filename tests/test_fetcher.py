@@ -1,16 +1,29 @@
 """Regression tests for the destructive-update safety fixes in fetcher.py."""
 
+import io
 import json
+import tarfile
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 from sekaisync.config import SekaiSyncConfig
 from sekaisync.fetcher import (
+    BUDGET_ARCHIVE_MEMBERS,
+    BUDGET_HTML_BYTES,
+    BudgetExceededError,
+    FetchError,
+    UnsafeArchiveError,
     _region_versions,
+    download_file,
+    extract_tarball,
     fetch_region_from_local,
     fetch_region_from_tarball,
+    read_bounded,
+    validate_fetch_url,
     write_freshness,
 )
 from sekaisync.layout import freshness_path, region_source_dir
