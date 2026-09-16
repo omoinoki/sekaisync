@@ -10,7 +10,7 @@ from sekaisync.config import SekaiSyncConfig
 from sekaisync.core import SekaiSyncCore
 from sekaisync.fetcher import sync
 from sekaisync.layout import terms_path
-from sekaisync.mcp_server import McpServer
+from sekaisync.mcp_server import MAX_STDIO_LINE_BYTES, McpServer
 from sekaisync.models import WebPage
 from sekaisync.termindex import save_terms, seed_from_glossary
 from sekaisync.webindex import save_web_pages
@@ -370,7 +370,10 @@ class McpStdioTest(unittest.TestCase):
 
     def _run(self, payload):
         stdout = io.StringIO()
-        self.server.run(stdin=io.StringIO(payload), stdout=stdout)
+        # Odd frames are expected in these tests; keep the server's
+        # stderr diagnostics out of the test runner's output.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.server.run(stdin=io.StringIO(payload), stdout=stdout)
         return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
 
     def test_blank_lines_are_ignored(self):
@@ -448,6 +451,18 @@ class McpStdioTest(unittest.TestCase):
                 continue
             parsed = json.loads(line)
             self.assertEqual(parsed["jsonrpc"], "2.0")
+
+    def test_overlong_frame_is_logged_to_stderr_not_stdout(self):
+        oversize = "x" * (MAX_STDIO_LINE_BYTES + 32) + "\n"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.server.run(stdin=io.StringIO(oversize), stdout=stdout)
+        for line in stdout.getvalue().splitlines():
+            if line.strip():
+                self.assertEqual(json.loads(line)["jsonrpc"], "2.0")
+        self.assertIn("discarded", stderr.getvalue())
+        self.assertNotIn("xxx", stdout.getvalue())
 
 
 class McpToolSchemaTest(unittest.TestCase):

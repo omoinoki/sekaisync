@@ -329,6 +329,10 @@ class McpServer:
             if line is _OVERSIZE:
                 # The over-long frame is discarded whole: the rest of the
                 # line is consumed, never re-parsed as a new request.
+                log_stderr(
+                    f"sekaisync: discarded an over-long request frame "
+                    f"(> {MAX_STDIO_LINE_BYTES} bytes)"
+                )
                 response = self._error(
                     None,
                     INVALID_REQUEST,
