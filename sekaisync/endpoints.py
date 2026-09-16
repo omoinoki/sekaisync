@@ -13,6 +13,7 @@ behaviour-preserving migration.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from dataclasses import dataclass, field, replace
 from typing import Optional
@@ -55,9 +56,39 @@ _current = SourceEndpoints()
 _lock = threading.Lock()
 _UNSET = object()
 
+#: Per-context endpoint override (Astra P14/D14).
+#:
+#: The module-level ``_current`` snapshot is process-global, so two callers with
+#: different configurations overwrite each other and "the last one configured
+#: wins" for everybody — including work already in flight. A
+#: :class:`~sekaisync.runtime.RuntimeContext` installs its own snapshot here for
+#: the duration of its scope, so interleaved callers each see their own
+#: endpoints. A ContextVar (not a global) is used so concurrent threads and
+#: asyncio tasks keep separate values.
+_override: "contextvars.ContextVar[Optional[SourceEndpoints]]" = (
+    contextvars.ContextVar("sekaisync_endpoints_override", default=None)
+)
+
 
 def current_endpoints() -> SourceEndpoints:
-    return _current
+    """The endpoints in effect for the current context.
+
+    Returns the context-scoped override when one is active (an explicit
+    :class:`RuntimeContext` scope), otherwise the process-wide configured
+    snapshot.
+    """
+    scoped = _override.get()
+    return scoped if scoped is not None else _current
+
+
+def _set_override(snapshot: SourceEndpoints):
+    """Install a context-scoped snapshot; returns the reset token."""
+    return _override.set(snapshot)
+
+
+def _reset_override(token) -> None:
+    """Restore the previous context-scoped snapshot."""
+    _override.reset(token)
 
 
 def configure_endpoints(

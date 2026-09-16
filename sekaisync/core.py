@@ -8,7 +8,10 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
+    from sekaisync.runtime import RuntimeContext
 
 from sekaisync.config import REGIONS
 from sekaisync import dbstore
@@ -115,8 +118,18 @@ class SekaiSyncCore:
     #: A serialized result above this is not worth caching.
     _cache_max_bytes = 512 * 1024
 
-    def __init__(self, store_root: Path):
+    def __init__(self, store_root: Path, *, runtime: "Optional[RuntimeContext]" = None):
+        """Open a Core over a store.
+
+        ``runtime`` is optional: pure local reads need no external
+        configuration, and requiring one would break every local caller. Pass
+        it when the Core will perform network work, so those calls read their
+        endpoints from the runtime instead of the process-global snapshot
+        (Astra P14/D14). A network method invoked without one reports that
+        clearly rather than silently using another caller's configuration.
+        """
         self.store_root = store_root
+        self.runtime = runtime
         dbstore.ensure_store(store_root)
         self.registry = dbstore.load_entities(store_root)
         self.glossary = dbstore.load_glossary_terms(store_root)

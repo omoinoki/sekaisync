@@ -164,6 +164,49 @@ def _sv_aux() -> str:
     return auxiliary_source_for_instance(_current_sv_instance(), BACKEND_SEKAI_VIEWER)
 
 
+@contextlib.contextmanager
+def _runtime_scope(
+    *,
+    moesekai: Optional[MoesekaiSettings] = None,
+    viewer: Optional[ViewerSettings] = None,
+    instance: Optional[str] = None,
+):
+    """Scope endpoints to this call's settings for the duration of the block.
+
+    Astra P14/D14. The endpoint snapshot used to be process-global, so a crawl
+    configured with one set of settings replaced the endpoints every other
+    crawl observed — two interleaved crawls shared one endpoint set and the
+    last configured won for both.
+
+    Deriving an endpoint snapshot from *this* call's settings and installing it
+    as a context-scoped override means each crawl sees its own, concurrent
+    crawls cannot interfere, and the previous value is restored on exit even
+    when the body raises. Reads still go through the existing
+    ``_EP()``/``current_endpoints()`` call sites, so nothing else changes.
+    """
+    from sekaisync.endpoints import _reset_override, _set_override, current_endpoints
+    from sekaisync.runtime import endpoints_from_sites
+
+    if moesekai is None and viewer is None:
+        # Nothing configured for this call: leave the ambient snapshot alone.
+        yield current_endpoints()
+        return
+
+    from sekaisync.config import SiteSettings
+
+    entry = SiteSettings(
+        id=instance or (SOURCE_MS if moesekai is not None else SOURCE_SV),
+        backend=BACKEND_MOESEKAI if moesekai is not None else BACKEND_SEKAI_VIEWER,
+        moesekai=moesekai,
+        viewer=viewer,
+    )
+    token = _set_override(endpoints_from_sites((entry,)))
+    try:
+        yield current_endpoints()
+    finally:
+        _reset_override(token)
+
+
 def apply_source_settings(
     moesekai: Optional[MoesekaiSettings] = None,
     viewer: Optional[ViewerSettings] = None,
@@ -2283,7 +2326,12 @@ def crawl_altsource_ms(
     # Taken at the public entry point (not the CLI) so programmatic callers get
     # the same protection, and acquired before any connection is opened so lock
     # ordering stays uniform (Astra P13).
-    with store_writer_lock(store_root), _ms_instance_scope(instance):
+    # Endpoint scope comes from THIS call's settings (Astra P14/D14). Without
+    # it, a second crawl configured with different settings would overwrite the
+    # process-global snapshot and both crawls would share one set of endpoints.
+    with store_writer_lock(store_root), _ms_instance_scope(instance), _runtime_scope(
+        moesekai=settings, instance=instance or SOURCE_MS
+    ):
         return _crawl_altsource_ms_impl(
             store_root, depth=depth, locales=locales, limit=limit,
             accept_tos=accept_tos, delay=delay, fetcher=fetcher,
@@ -3330,7 +3378,9 @@ def crawl_altsource_sv(
     instance: Optional[str] = None,
 ) -> dict[str, Any]:
     # See crawl_altsource_ms: lease first, then any connection (Astra P13).
-    with store_writer_lock(store_root), _sv_instance_scope(instance):
+    with store_writer_lock(store_root), _sv_instance_scope(instance), _runtime_scope(
+        viewer=settings, instance=instance or SOURCE_SV
+    ):
         _sv_cache_root.set(Path(store_root))
         return _crawl_altsource_sv_impl(
             store_root, regions=regions, tables=tables, limit=limit,
