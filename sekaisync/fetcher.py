@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -87,6 +89,168 @@ class BudgetExceededError(FetchError):
 
 class UnsafeArchiveError(FetchError):
     """An archive member would escape the staging directory or is disallowed."""
+
+
+class StoreBusyError(RuntimeError):
+    """Another writer already holds this store's writer lease."""
+
+
+# In-process guards: a file lock alone does not stop two threads in one
+# process from both acquiring (POSIX flock is per file description, and
+# Windows msvcrt locking is per handle).  Keyed by resolved store path so two
+# different stores never block each other.
+_PROCESS_LEASES: dict[str, threading.Lock] = {}
+_PROCESS_LEASES_GUARD = threading.Lock()
+
+
+def _process_lease_for(store_root: Path) -> threading.Lock:
+    key = str(Path(store_root).resolve())
+    with _PROCESS_LEASES_GUARD:
+        lock = _PROCESS_LEASES.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PROCESS_LEASES[key] = lock
+        return lock
+
+
+class WriterLease:
+    """Exclusive write access to one store, across threads and processes.
+
+    Every write entry point (sync, crawl, migration, postprocess, review)
+    takes this before opening its transaction, so two writers cannot
+    interleave a read-modify-write against the same store.  Callers acquire
+    the lease *first* and only then open a connection, so lock ordering is
+    uniform and cannot deadlock.
+
+    The lock is a file beside the store (``kb/.writer.lock``) held open for
+    the duration: ``msvcrt.locking`` on Windows, ``fcntl.flock`` elsewhere.
+    Possession of the file is NOT the lock — a stale file left by a crashed
+    process must not block future writers, which is why liveness is decided by
+    whether the OS granted the lock, never by the file's existence.
+    """
+
+    def __init__(self, store_root: Path, *, timeout: float = 0.0):
+        self.store_root = Path(store_root)
+        self.timeout = timeout
+        self._thread_lock: Optional[threading.Lock] = None
+        self._handle = None
+
+    @property
+    def lock_path(self) -> Path:
+        from sekaisync.layout import kb_dir
+
+        return kb_dir(self.store_root) / ".writer.lock"
+
+    def __enter__(self) -> "WriterLease":
+        self._thread_lock = _process_lease_for(self.store_root)
+        acquired = (
+            self._thread_lock.acquire(blocking=False)
+            if self.timeout <= 0
+            else self._thread_lock.acquire(timeout=self.timeout)
+        )
+        if not acquired:
+            raise StoreBusyError(
+                f"another writer holds the lease for {self.store_root} "
+                f"(in-process lock) — refusing to write concurrently"
+            )
+        try:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = open(self.lock_path, "a+b")
+            _lock_file_exclusive(self._handle, self.timeout)
+        except Exception:
+            if self._handle is not None:
+                self._handle.close()
+                self._handle = None
+            self._release_thread_lock()
+            raise
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        try:
+            if self._handle is not None:
+                _unlock_file(self._handle)
+                self._handle.close()
+        finally:
+            self._handle = None
+            self._release_thread_lock()
+
+    def _release_thread_lock(self) -> None:
+        if self._thread_lock is not None:
+            try:
+                self._thread_lock.release()
+            except RuntimeError:
+                pass
+            self._thread_lock = None
+
+
+def _lock_file_exclusive(handle, timeout: float) -> None:
+    """Take an OS-level exclusive lock on an open file handle."""
+    if os.name == "nt":
+        import msvcrt
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if timeout <= 0 or time.monotonic() >= deadline:
+                    raise StoreBusyError(
+                        "another process holds this store's writer lease"
+                    ) from None
+                time.sleep(0.05)
+    import fcntl
+
+    if timeout <= 0:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise StoreBusyError(
+                "another process holds this store's writer lease"
+            ) from None
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise StoreBusyError(
+                    "another process holds this store's writer lease"
+                ) from None
+            time.sleep(0.05)
+
+
+def _unlock_file(handle) -> None:
+    """Release only the lock this lease took.
+
+    Deliberately does not delete the lock file: removing it while another
+    process waits on the same path would let a third writer in.
+    """
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # The handle is closing anyway; a failure here must not mask the
+        # body's result.
+        pass
+
+
+@contextlib.contextmanager
+def store_writer_lock(store_root: Path, *, timeout: float = 0.0):
+    """Acquire this store's writer lease for the duration of the block."""
+    lease = WriterLease(store_root, timeout=timeout)
+    with lease:
+        yield lease
 
 
 def validate_fetch_url(

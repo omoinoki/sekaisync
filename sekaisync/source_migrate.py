@@ -285,6 +285,16 @@ def rename_legacy_source_ids(
                 dbstore.delete_source_pages(store_root, legacy)
             dbstore.reimport_pages(store_root)
             summary["rebuild"] = rebuild_web_index(store_root)
-        except Exception as exc:  # keep the migration usable even if index rebuild fails
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            # A failed rebuild means the migration did NOT reach a usable
+            # state: rows referencing legacy ids were already deleted and the
+            # re-import did not complete.  Recording that only inside
+            # ``summary["rebuild"]`` let a caller read a normal-looking summary
+            # and treat a half-applied migration as success, so it is also
+            # appended to ``errors`` — which was previously always empty here.
             summary["rebuild"] = {"error": str(exc)}
+            summary["errors"].append(
+                {"stage": "rebuild", "error": f"{type(exc).__name__}: {exc}"}
+            )
+    summary["ok"] = not summary["errors"]
     return summary
