@@ -78,8 +78,62 @@ def _iso(ts: Optional[int]) -> Optional[str]:
 
 
 def _news_key(language: str, title: str, url: str, source_id: str) -> str:
+    """Deprecated: a title-derived key.
+
+    Kept only so old snapshots still read. It cannot be an identity — many
+    distinct announcements share a title ("メンテナンスのお知らせ"), so two
+    different items collided and one was silently dropped. See
+    :func:`news_identity`.
+    """
     title_key = normalize_name(title) or normalize_name(url)
     return f"{language}:{title_key or source_id}"
+
+
+def news_identity(item: dict[str, Any]) -> tuple[str, str, str]:
+    """Stable identity for a news item: (namespace, upstream id, language).
+
+    Astra P17/D17: identity is "upstream namespace / official source id or
+    canonical URL / language". The title is a display field only — deriving
+    identity from it merged genuinely distinct announcements that happened to
+    share a heading, silently dropping one. That is the record-loss bug this
+    replaces.
+
+    **Namespace.** Two instances of the same backend are known mirrors of one
+    upstream (``altsource_sv`` and a self-hosted viewer both serve Sekai
+    Viewer), so the namespace is the backend and mirrors deduplicate. Different
+    *backends* are different upstreams with unrelated id spaces; Astra requires
+    "无证据不跨站合并", so they are never merged on title alone — id 1 from
+    Moesekai and id 1 from Sekai Viewer are different announcements.
+    """
+    raw_source = str(item.get("source") or "").strip().lower()
+    namespace = str(item.get("source_type") or "").strip().lower()
+    if not namespace:
+        namespace = backend_of(raw_source)
+    if not namespace:
+        # Unknown backend: fall back to the instance id, which at least keeps
+        # one instance's records together without inventing a cross-site link.
+        namespace = raw_source
+    upstream = str(item.get("source_id") or "").strip()
+    language = str(item.get("language") or "").strip().lower()
+
+    # The upstream id is the primary identity. The canonical URL is only used
+    # when there is no id at all — preferring it over a present id would merge
+    # genuinely distinct posts that a fixture happens to give the same URL.
+    if not upstream:
+        canonical = str(item.get("page_url") or item.get("url") or "").strip()
+        upstream = canonical
+    if not upstream:
+        # Last resort, and the only case where the title participates.
+        upstream = normalize_name(str(item.get("title") or "")) or str(
+            item.get("id") or ""
+        )
+    return (namespace, upstream, language)
+
+
+def news_identity_key(item: dict[str, Any]) -> str:
+    """``news_identity`` as a single stable string."""
+    namespace, upstream, language = news_identity(item)
+    return f"{namespace}|{upstream}|{language}"
 
 
 def _is_website_announcement(record: dict[str, Any]) -> bool:
@@ -233,19 +287,47 @@ def merge_news(
     records: Iterable[dict[str, Any]],
     source_priority: Iterable[str] = DEFAULT_SOURCE_PRIORITY,
 ) -> list[dict[str, Any]]:
+    """Merge news by stable upstream identity, newest revision first.
+
+    Identity comes from :func:`news_identity` (namespace / upstream id /
+    language), so two announcements that share a title but have different
+    upstream ids are both kept (Astra D17: "同标题不同 ID 均保留").
+    """
     priority = tuple(normalize_source_id(item) for item in source_priority)
     merged: dict[str, dict[str, Any]] = {}
     for record in records:
         if _is_website_announcement(record):
             continue
-        key = str(record.get("canonical_key") or record.get("id") or "")
+        key = news_identity_key(record)
         existing = merged.get(key)
         if existing is None:
             merged[key] = dict(record)
             continue
         if _prefer_record(existing, record, priority):
             merged[key] = dict(record)
-    return sorted(merged.values(), key=lambda item: (item.get("language", ""), item.get("start_at") or ""))
+    return sorted(
+        merged.values(),
+        key=lambda item: (item.get("language", ""), item.get("start_at") or ""),
+    )
+
+
+def _revision_time(record: dict[str, Any]) -> str:
+    """Best available upstream revision time for a news record.
+
+    Astra P17: prefer the source's own update time/version, then the fetch
+    time. Never infer recency from body length — a revision can shorten text.
+    """
+    for field in (
+        "updated_at",
+        "source_updated_at",
+        "published_at",
+        "start_at",
+        "fetched_at",
+    ):
+        value = str(record.get(field) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _prefer_record(
@@ -253,18 +335,27 @@ def _prefer_record(
     record: dict[str, Any],
     priority: tuple[str, ...],
 ) -> bool:
+    """Whether ``record`` should replace ``existing`` for the same identity."""
     existing_source = str(existing.get("source") or "")
     record_source = str(record.get("source") or "")
     existing_rank = source_rank(existing_source, priority)
     record_rank = source_rank(record_source, priority)
     if record_rank != existing_rank:
         return record_rank < existing_rank
-    old_text, new_text = str(existing.get("text") or ""), str(record.get("text") or "")
-    if len(new_text) != len(old_text):
-        return len(new_text) > len(old_text)
-    # Tie (same summary text): prefer the record with structured category
-    # fields and an absolute URL over legacy link-only snapshots.
-    return bool(record.get("information_type")) and not existing.get("information_type")
+
+    # Same source: the newer *revision* wins, keyed on upstream time.
+    existing_rev = _revision_time(existing)
+    record_rev = _revision_time(record)
+    if existing_rev and record_rev and existing_rev != record_rev:
+        return record_rev > existing_rev
+
+    # No usable revision time on either side: do NOT use body length (a shorter
+    # body can be the newer revision — Astra rejects that heuristic). Fall back
+    # to source priority so the choice is deterministic and explainable rather
+    # than dependent on input order.
+    existing_rank = source_rank(existing_source, priority)
+    record_rank = source_rank(record_source, priority)
+    return record_rank < existing_rank
 
 
 def save_news(records: Iterable[dict[str, Any]], store_root: Path) -> Path:
