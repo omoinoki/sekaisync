@@ -28,6 +28,22 @@ def mark_untranslated_pages(
     store_root: Path,
     placeholder: str = DEFAULT_PLACEHOLDER,
 ) -> dict[str, Any]:
+    """Annotate placeholder-only translations and persist the flags.
+
+    Holds the store's writer lease: this reads every page, derives flags from
+    the whole set, and writes rows back — a read-modify-write that must not
+    interleave with a sync, crawl or another postprocess run (Astra P13).
+    """
+    from sekaisync.fetcher import store_writer_lock
+
+    with store_writer_lock(store_root):
+        return _mark_untranslated_pages_locked(store_root, placeholder=placeholder)
+
+
+def _mark_untranslated_pages_locked(
+    store_root: Path,
+    placeholder: str = DEFAULT_PLACEHOLDER,
+) -> dict[str, Any]:
     pages = flatten_web_pages(store_root)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for page in pages:

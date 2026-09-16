@@ -415,27 +415,35 @@ def sync_news(
         priority = tuple(entry[0] for entry in entries)
     else:
         priority = DEFAULT_SOURCE_PRIORITY
-    # Also purge any previously imported Sekai Viewer site announcements on disk.
-    stored = [
-        record
-        for record in load_news(store_root)
-        if not _is_website_announcement(record)
-    ]
-    # Complete relative URLs on legacy stored entries (fetch functions now
-    # emit absolute URLs; older snapshots predate the web-domain mapping).
-    for record in stored:
-        url = str(record.get("url") or "")
-        if url and not url.startswith(("http://", "https://", "weixin://")):
-            language = str(record.get("language") or "")
-            region = {"ja": "jp", "en": "en", "ko": "kr", "zh_hant": "tc", "zh_hans": "cn"}.get(language)
-            web_base = _NEWS_WEB_BASES.get(region)
-            if web_base:
-                record["url"] = f"{web_base}/{url.lstrip('/')}"
-    records.extend(stored)
-    merged = merge_news(records, source_priority=priority)
-    save_news(merged, store_root)
+    # Purge/build/merge/write is a read-modify-write over the shared news
+    # files, so it holds the store writer lease.  The network fetches above run
+    # *outside* the lease: they are slow and touch nothing shared, and holding
+    # the lease across them would block other writers for no benefit.
+    from sekaisync.fetcher import store_writer_lock
+
+    with store_writer_lock(store_root):
+        # Also purge any previously imported Sekai Viewer site announcements on disk.
+        stored = [
+            record
+            for record in load_news(store_root)
+            if not _is_website_announcement(record)
+        ]
+        # Complete relative URLs on legacy stored entries (fetch functions now
+        # emit absolute URLs; older snapshots predate the web-domain mapping).
+        for record in stored:
+            url = str(record.get("url") or "")
+            if url and not url.startswith(("http://", "https://", "weixin://")):
+                language = str(record.get("language") or "")
+                region = {"ja": "jp", "en": "en", "ko": "kr", "zh_hant": "tc", "zh_hans": "cn"}.get(language)
+                web_base = _NEWS_WEB_BASES.get(region)
+                if web_base:
+                    record["url"] = f"{web_base}/{url.lstrip('/')}"
+        records.extend(stored)
+        merged = merge_news(records, source_priority=priority)
+        save_news(merged, store_root)
+        summary = news_summary(store_root)
     return {
         "fetched": len(records),
         "merged": len(merged),
-        "summary": news_summary(store_root),
+        "summary": summary,
     }

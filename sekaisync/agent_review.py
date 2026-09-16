@@ -934,6 +934,19 @@ def submit_judgments(store_root: Path, judgments: list[dict]) -> dict:
     **幂等**：同一条判断重复提交不会产生重复方法论条目——第一靠 ``(family, key)``
     原地更新，第二靠队列项 id 已在方法论 provenance 中留痕（``item_id``）时直接跳过。
     """
+    from sekaisync.fetcher import store_writer_lock
+
+    # A submission both drains queue items and rewrites the methodology file.
+    # Two concurrent submissions could read the same queue snapshot and each
+    # drop the other's decisions, so the whole read-modify-write holds the
+    # store's writer lease (Astra P13: the lease must cover every write path).
+    # The same-transaction property P10 asks for is not implemented yet, so the
+    # lease is the strongest consistency boundary available today.
+    with store_writer_lock(store_root):
+        return _submit_judgments_locked(store_root, judgments)
+
+
+def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
     accepted = rejected = replaced = 0
     methodology_added = 0
     methodology_updated = 0
