@@ -1122,7 +1122,10 @@ class SekaiSyncCore:
             if is_official:
                 official_inherited += 1
 
-        dbstore.save_terms_records(self.store_root, self.terms, replace_evidence=False)
+        # Astra P01: names update + evidence preserve is exactly `upsert_terms`
+        # with no evidence_updates. The old `save_terms_records(replace_evidence=
+        # False)` relied on the ambiguous flag; the new call states the intent.
+        dbstore.upsert_terms(self.store_root, self.terms)
         self._bump_data_version()
         return {
             "zhfirst_candidates": len(zh_data),

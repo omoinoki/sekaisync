@@ -1083,6 +1083,21 @@ def save_terms_records(
     records: Iterable[Any],
     replace_evidence: bool = True,
 ) -> int:
+    """Deprecated legacy write — superseded by the P01 write contract.
+
+    Astra P01/D01: this single entry cannot express the three distinct
+    intentions (snapshot replace / partial update / evidence patch), so callers
+    could not state whether a record absent from the list should be *removed*
+    or *kept*, and a record whose evidence was merely not loaded was
+    indistinguishable from one with no evidence. All product callers now use:
+
+    - :func:`replace_terms_snapshot` — full snapshot, absent ids are removed
+    - :func:`upsert_terms` — touches only the ids given; evidence per id is
+      preserved unless an explicit ``evidence_updates`` entry says otherwise
+
+    Kept only because Astra's offline verifier probes this function to record
+    the baseline defect; new code must not call it.
+    """
     from sekaisync.termindex import term_to_dict
 
     _ensure_initialized(store_root)
@@ -1817,8 +1832,16 @@ def import_legacy_domains(store_root: Path, domains: list[str]) -> dict[str, int
         save_glossary_terms(store_root, load_glossary(sources["glossary"][0]))
         counts["glossary_terms"] = count_rows(store_root)["glossary_terms"]
     if "terms" in domains and "terms" in sources:
+        # Astra P01: the legacy terms JSON is a full snapshot, so its import is
+        # a snapshot replace (per-id evidence comes from the same records).
         records = load_terms(sources["terms"][0])
-        save_terms_records(store_root, records, replace_evidence=True)
+        replace_terms_snapshot(
+            store_root,
+            records,
+            evidence_by_id={
+                record.id: list(record.evidence or []) for record in records
+            },
+        )
         counts["terms"] = count_rows(store_root)["terms"]
         counts["term_evidence"] = count_rows(store_root)["term_evidence"]
     if "pages" in domains and "pages" in sources:

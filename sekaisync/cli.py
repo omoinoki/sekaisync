@@ -598,7 +598,16 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     existing = [] if args.reset else dbstore.load_terms_records(config.store_root, include_sentences=True)
     seeded = seed_from_glossary(config.store_root)
     merged = merge_terms([*existing, *seeded])
-    dbstore.save_terms_records(config.store_root, merged, replace_evidence=True)
+    # Astra P01: terms init/reset publishes a full snapshot — records absent
+    # from `merged` are removed, and evidence travels with each record. The
+    # snapshot contract requires evidence to be *stated* for every id, which is
+    # what makes "this record has no evidence" different from "its evidence was
+    # not loaded".
+    dbstore.replace_terms_snapshot(
+        config.store_root,
+        merged,
+        evidence_by_id={rec.id: list(rec.evidence or []) for rec in merged},
+    )
     path = dbstore.db_file(config.store_root)
     print(
         json.dumps(
@@ -910,7 +919,18 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         )
         llm_model = llm.config.model
     records = merge_terms(records)
-    dbstore.save_terms_records(config.store_root, records, replace_evidence=True)
+    # Astra P01: an extraction pass is a partial upsert, not a snapshot —
+    # terms the pass did not touch must stay exactly as they are, and each
+    # touched term's evidence is replaced with what this pass saw (records
+    # were loaded with sentences, so their evidence lists are authoritative).
+    dbstore.upsert_terms(
+        config.store_root,
+        records,
+        evidence_updates={
+            rec.id: {"mode": "replace", "items": list(rec.evidence or [])}
+            for rec in records
+        },
+    )
     print(
         json.dumps(
             {
