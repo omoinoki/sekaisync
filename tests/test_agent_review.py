@@ -901,3 +901,62 @@ class CliTests(AgentReviewTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecisionLogTest(AgentReviewTestBase):
+    """Astra P10/D10 — a judgment is persisted even when it does not generalize.
+
+    The old flow counted a plain accept and wrote nothing, so `consult` could
+    never reuse it and every later scrape asked the same question again (Astra's
+    `ordinary_reused: null` evidence). Decisions now live in their own log,
+    deliberately separate from methodology: the log holds what was decided, the
+    methodology holds reusable *rules*.
+    """
+
+    def test_plain_accept_is_reusable_without_generalize(self):
+        item = ar.make_review_item("SEKAI", "en", ["SEKAI", "SEKAI2"], kind="conflict")
+        ar.enqueue(self.store, [item])
+        result = ar.submit_judgments(
+            self.store,
+            [{"id": item.id, "decision": "accept", "value": "SEKAI", "rationale": "x"}],
+        )
+        self.assertEqual(result["decisions_added"], 1)
+        self.assertEqual(result["methodology_added"], 0)
+        hit = ar.consult(self.store, "SEKAI", "en", ["SEKAI", "SEKAI2"])
+        self.assertIsNotNone(hit, "the decision was not reusable")
+        self.assertEqual(hit["decision"], "accept")
+        self.assertEqual(hit["value"], "SEKAI")
+        # One-off only: no rule was invented from a single example.
+        self.assertEqual(ar.load_methodology(self.store), [])
+
+    def test_decision_is_scoped_to_the_exact_term(self):
+        item = ar.make_review_item("SEKAI", "en", ["SEKAI"], kind="conflict")
+        ar.enqueue(self.store, [item])
+        ar.submit_judgments(
+            self.store,
+            [{"id": item.id, "decision": "accept", "value": "SEKAI", "rationale": "x"}],
+        )
+        self.assertIsNone(
+            ar.consult(self.store, "OTHER", "en", ["SEKAI"]),
+            "a one-off decision leaked to a different term",
+        )
+
+    def test_repeated_submit_does_not_duplicate_decisions(self):
+        item = ar.make_review_item("SEKAI", "en", ["SEKAI"], kind="conflict")
+        ar.enqueue(self.store, [item])
+        judgment = [{"id": item.id, "decision": "accept", "value": "SEKAI", "rationale": "x"}]
+        ar.submit_judgments(self.store, judgment)
+        # Same decision id again: idempotent.
+        result = ar.submit_judgments(self.store, judgment)
+        self.assertEqual(result["decisions_added"], 0)
+
+    def test_reenqueued_item_is_skipped_as_settled(self):
+        """Astra P10: 重新 enqueue 同项不打扰."""
+        item = ar.make_review_item("SEKAI", "en", ["SEKAI"], kind="conflict")
+        ar.enqueue(self.store, [item])
+        ar.submit_judgments(
+            self.store,
+            [{"id": item.id, "decision": "accept", "value": "SEKAI", "rationale": "x"}],
+        )
+        again = ar.enqueue(self.store, [item])
+        self.assertEqual(again["skipped_settled"], 1)

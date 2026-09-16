@@ -78,6 +78,7 @@ __all__ = [
     # 路径
     "queue_path",
     "methodology_path",
+    "decisions_path",
     # 队列
     "item_id",
     "make_review_item",
@@ -227,6 +228,20 @@ def queue_path(store_root: Path) -> Path:
 def methodology_path(store_root: Path) -> Path:
     """方法论库：``store/kb/terms/methodology.json``。"""
     return _terms_dir(store_root) / "methodology.json"
+
+
+def decisions_path(store_root: Path) -> Path:
+    """一次性裁决日志：``store/kb/terms/review_decisions.json``。
+
+    Astra P10/D10 keeps three things apart: the queue (still待审), the
+    methodology (可复用规则), and the decision log (裁决本身). A judgment
+    without ``generalize`` is a one-off decision — it must be **persisted**
+    ("持久化一次性裁决（即使 generalize 为空）") and reusable for the same
+    term/language/evidence, but it must NOT become a general rule. Without this
+    log such a decision was counted and then dropped, so the same question came
+    back on every scrape (Astra's ``ordinary_reused: null``).
+    """
+    return _terms_dir(store_root) / "review_decisions.json"
 
 
 # ── 数据结构 ───────────────────────────────────────────────────────────
@@ -414,6 +429,146 @@ def _read_queue(store_root: Path) -> list[ReviewItem]:
     return items
 
 
+def _read_decisions(store_root: Path) -> list[dict]:
+    """Persisted one-off decisions, newest last.
+
+    Keyed by ``(term, language, candidate)`` so a decision can be looked up the
+    same way `consult` looks up methodology.
+    """
+    data = _read_json(decisions_path(store_root))
+    raw = data.get("decisions")
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _write_decisions(store_root: Path, decisions: list[dict]) -> Path:
+    path = decisions_path(store_root)
+    _write_json(
+        path,
+        {
+            "version": SCHEMA_VERSION,
+            "updated_at": now_iso(),
+            "decisions": decisions,
+        },
+    )
+    return path
+
+
+def _decision_id(term: str, language: str, decision: str, value: str) -> str:
+    """Idempotent identity for a one-off decision.
+
+    Astra P10: a decision has an idempotent ``decision_id`` so re-submitting the
+    same judgment does not append a duplicate.
+    """
+    material = f"{_pipe_safe(term)}|{_pipe_safe(language)}|{decision}|{_pipe_safe(value)}"
+    return "rd:" + hashlib.sha1(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_decisions(
+    store_root: Path,
+    item: ReviewItem,
+    decision: str,
+    value: str,
+    rationale: str,
+) -> int:
+    """Append the one-off decisions implied by a judgment. Returns count added.
+
+    Astra P10/D10: "持久化一次性裁决（即使 generalize 为空）". A judgment that
+    does not generalize is still a decision and must survive, so that
+    ``consult`` can reuse it for the same term/language instead of re-asking.
+    It is deliberately **not** written to the methodology: methodology is for
+    rules, and a single example is not a rule.
+    """
+    existing = _read_decisions(store_root)
+    seen = {str(entry.get("decision_id") or "") for entry in existing}
+    added = 0
+    targets: list[tuple[str, str]] = []
+    if decision in ("accept", "replace"):
+        targets.append((value, decision))
+    else:  # reject — record each refused candidate
+        targets.extend((cand, "reject") for cand in _dedupe(item.candidates))
+    for target_value, kind in targets:
+        if not target_value and kind != "reject":
+            continue
+        did = _decision_id(item.term, item.language, kind, target_value)
+        if did in seen:
+            continue
+        seen.add(did)
+        existing.append(
+            {
+                "decision_id": did,
+                "item_id": item.id,
+                "term": item.term,
+                "language": item.language,
+                "candidate": target_value,
+                "decision": kind,
+                "value": target_value if kind != "reject" else "",
+                "rationale": rationale,
+                "created_at": now_iso(),
+            }
+        )
+        added += 1
+    if added:
+        _write_decisions(store_root, existing)
+    return added
+
+
+def _lookup_decision(
+    store_root: Path,
+    term: str,
+    language: str,
+    candidates: Iterable[str],
+) -> Optional[dict]:
+    """A previously recorded one-off decision covering these candidates.
+
+    Only an exact ``(term, language, candidate)`` match counts — a one-off
+    decision carries no generalisation, so it must not be applied to anything
+    wider than what was actually judged.
+
+    Callers must not invoke this when a methodology file exists: methodology
+    owns the outcome there (a live rule already had its chance in ``_lookup``,
+    a retired rule means the judgment was withdrawn, and a corrupt file must
+    fail closed rather than be bypassed by older decisions).
+    """
+    cands = _dedupe(candidates)
+    if not cands:
+        return None
+    decisions = _read_decisions(store_root)
+    if not decisions:
+        return None
+    by_key = {
+        str(entry.get("decision_id") or ""): entry for entry in decisions
+    }
+    for cand in cands:
+        entry = by_key.get(_decision_id(term, language, "accept", cand))
+        if entry is None:
+            entry = by_key.get(_decision_id(term, language, "replace", cand))
+        if entry is not None and str(entry.get("value") or ""):
+            return {
+                "decision": str(entry.get("decision") or "accept"),
+                "value": str(entry.get("value") or ""),
+                "entry": entry,
+                "candidate": cand,
+                "source": "decision",
+                "rejected": [],
+            }
+    # All candidates rejected?
+    rejects = [
+        by_key.get(_decision_id(term, language, "reject", cand)) for cand in cands
+    ]
+    if all(entry is not None for entry in rejects):
+        return {
+            "decision": "reject",
+            "value": "",
+            "entry": rejects[0],
+            "candidate": "",
+            "source": "decision",
+            "rejected": list(cands),
+        }
+    return None
+
+
 def _write_queue(store_root: Path, items: list[ReviewItem]) -> Path:
     path = queue_path(store_root)
     _write_json(
@@ -506,6 +661,13 @@ def enqueue(store_root: Path, items: list[ReviewItem]) -> dict:
             skipped_dup += 1
             continue
         settled = _lookup(pair_index, pattern_index, item.term, item.language, item.candidates)
+        if settled is None and not methodology_path(store_root).exists():
+            # No methodology file: a persisted one-off decision still settles
+            # the item, so re-enqueueing it must not re-ask the agent (Astra
+            # P10: 重新 enqueue 同项不打扰).
+            settled = _lookup_decision(
+                store_root, item.term, item.language, item.candidates
+            )
         if settled is not None:
             skipped_settled += 1
             continue
@@ -540,7 +702,9 @@ def _read_methodology(store_root: Path) -> list[MethodologyEntry]:
     if cached is not None and cached[0] == stamp:
         return list(cached[1])
     entries = _load_methodology_entries(store_root)
-    _METHOD_CACHE[key] = (stamp, entries, _build_pair_index(entries), _build_pattern_index(entries))
+    pair_i = _build_pair_index(entries)
+    pattern_i = _build_pattern_index(entries)
+    _METHOD_CACHE[key] = (stamp, entries, pair_i, pattern_i)
     return list(entries)
 
 
@@ -750,10 +914,29 @@ def consult(store_root: Path, term: str, language: str, candidates: list[str]) -
     # _METHOD_CACHE，否则文件被别的进程改写后这里会一直用旧索引。
     _read_methodology(store_root)
     cached = _METHOD_CACHE.get(path_key)
-    if cached is None:
+    # The one-off decision log below applies ONLY to a store with no
+    # methodology file. Once methodology exists it owns the outcome:
+    # - a live rule already had its chance in `_lookup`;
+    # - a retired rule means the judgment was deliberately withdrawn;
+    # - a corrupt/unreadable file must fail closed, not be bypassed by older
+    #   decisions. (_read_json swallows the parse error and yields an empty
+    #   index, so the file-existence check — not the cache state — is the gate.)
+    methodology_exists = methodology_path(store_root).exists()
+    if cached is None and methodology_exists:
         return None
-    _, _, pair_index, pattern_index = cached
+    if cached is None:
+        pair_index: dict[str, MethodologyEntry] = {}
+        pattern_index: list[tuple[MethodologyEntry, Any, str]] = []
+    else:
+        _, _, pair_index, pattern_index = cached
     hit = _lookup(pair_index, pattern_index, term, language, candidates)
+    if hit is None and not methodology_exists:
+        # No methodology rule (no methodology file at all): fall back to the
+        # persisted one-off decision log (Astra P10/D10: "普通 accept/reject
+        # 即使不泛化也能在同 scope 复用"). Without this a non-generalizing
+        # decision was counted and dropped, so the same question returned on
+        # every scrape.
+        hit = _lookup_decision(store_root, term, language, candidates)
     if hit is None:
         return None
     key = hit["entry"].get("key", "")
@@ -950,6 +1133,7 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
     accepted = rejected = replaced = 0
     methodology_added = 0
     methodology_updated = 0
+    decisions_added = 0
     unknown = 0
     errors: list[str] = []
 
@@ -1026,6 +1210,14 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
             methodology_added += added
             methodology_updated += updated
 
+        # Astra P10/D10: persist the one-off decision regardless of whether the
+        # judgment generalized. Methodology holds rules; this log holds the
+        # decisions themselves, so `consult` can reuse them for the same
+        # term/language instead of re-asking on every scrape.
+        decisions_added += _record_decisions(
+            store_root, runtime, decision, value, rationale
+        )
+
         resolved_ids.add(runtime.id)
 
     if resolved_ids:
@@ -1042,6 +1234,8 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
         "replaced": replaced,
         "methodology_added": methodology_added,
         "methodology_updated": methodology_updated,
+        # One-off decisions persisted separately from methodology (Astra P10).
+        "decisions_added": decisions_added,
         "unknown": unknown,
         "errors": errors,
         "remaining": len(remaining),
