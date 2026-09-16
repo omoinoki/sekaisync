@@ -1026,6 +1026,28 @@ def translate_terms_for_story(
 
 
 def merge_terms(records: Iterable[TermRecord]) -> list[TermRecord]:
+    """Merge same-id records, keeping per-language evidence distinct.
+
+    Astra P09/D09: an official input may promote only what it actually
+    supplies, and the term's source must follow the value that was kept. The
+    old rules produced exactly the WrongName/A combination Astra rejects: an
+    official record merged into one already holding a community value left the
+    community name in its slot (first-writer-wins) while the *whole term* was
+    stamped official/A — so the unverified name inherited A-grade authority.
+
+    Rules now:
+
+    - an official record **overrides** the unofficial value in the language
+      slot it actually speaks for; the displaced value survives in evidence
+      (Astra: 冲突保留两边证据), so no information is destroyed
+    - ``official``/``source``/``trust`` follow the values that remain: the term
+      is official only if the official record's slot value was kept
+    - a first-seen record is taken as-is (no behaviour change for fresh terms)
+
+    Per-language provenance is still term-level here — the v2 ``term_slots``
+    model (P08) is what makes it fully explicit; this change only stops the
+    merge from *minting* authority for values the official source never gave.
+    """
     by_id: dict[str, TermRecord] = {}
     for record in records:
         existing = by_id.get(record.id)
@@ -1036,9 +1058,23 @@ def merge_terms(records: Iterable[TermRecord]) -> list[TermRecord]:
             _refresh_term_weight(record)
             by_id[record.id] = record
             continue
+
+        displaced_by_official = False
         for language, name in record.names.items():
-            if name and not existing.names.get(language):
+            if not name:
+                continue
+            current = existing.names.get(language)
+            if current is None or current == name:
+                if current is None:
+                    existing.names[language] = name
+            elif record.official and not existing.official:
+                # Official wins the slot it speaks for; the displaced value is
+                # preserved as evidence, not destroyed.
+                displaced_by_official = True
                 existing.names[language] = name
+            # else: keep the existing value (first-writer-wins between two
+            # unofficial sources is unchanged behaviour).
+
         for evidence in record.evidence:
             if evidence not in existing.evidence:
                 existing.evidence.append(evidence)
@@ -1052,10 +1088,23 @@ def merge_terms(records: Iterable[TermRecord]) -> list[TermRecord]:
         for pos in record.positions:
             if pos not in existing.positions:
                 existing.positions.append(pos)
+
+        was_official = existing.official
         existing.official = existing.official or record.official
-        if record.official and not existing.official:
-            existing.source = record.source
-        if trust_rank(record.trust) > trust_rank(existing.trust):
+        if record.official and not was_official:
+            # Source follows the official identity only when official values
+            # were actually kept — not when the official record lost every slot.
+            if record.names and all(
+                existing.names.get(lang) == name
+                for lang, name in record.names.items()
+                if name
+            ) or displaced_by_official:
+                existing.source = record.source
+        if record.official and not was_official and displaced_by_official:
+            existing.trust = record.trust
+        elif trust_rank(record.trust) > trust_rank(existing.trust) and not (
+            record.official and not displaced_by_official and was_official
+        ):
             existing.trust = record.trust
         existing.confidence = max(existing.confidence, record.confidence)
         if not existing.created_at and record.created_at:

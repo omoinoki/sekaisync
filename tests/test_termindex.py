@@ -1,4 +1,5 @@
-﻿import tempfile
+﻿import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -431,3 +432,95 @@ class TermIndexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MergeTermsOfficialPromotionTest(unittest.TestCase):
+    """Astra P09/D09 — official input promotes only what it actually supplies.
+
+    The old merge stamped the *whole term* official/A while the first-seen
+    community value kept the language slot, producing the exact WrongName/A
+    combination Astra rejects.
+    """
+
+    def _wrong(self):
+        return TermRecord(
+            id="t:1",
+            canonical="ニーゴ",
+            source_language="ja",
+            names={"ja": "ニーゴ", "en": "WrongName"},
+            official=False,
+            source="community_x",
+            trust="C",
+            confidence=0.5,
+            evidence=[
+                {"story_key": "s1", "language": "en", "term": "WrongName", "sentence": "x"}
+            ],
+        )
+
+    def _official(self):
+        return TermRecord(
+            id="t:1",
+            canonical="ニーゴ",
+            source_language="ja",
+            names={"ja": "ニーゴ", "en": "CorrectName"},
+            official=True,
+            source="official_db",
+            trust="A",
+            confidence=1.0,
+            evidence=[
+                {"story_key": "s2", "language": "en", "term": "CorrectName", "sentence": "y"}
+            ],
+        )
+
+    def test_official_value_wins_its_slot(self):
+        merged = merge_terms([self._wrong(), self._official()])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].names["en"], "CorrectName")
+
+    def test_no_wrongname_a_combination(self):
+        """Astra: WrongName+C 与 CorrectName+A 合并后，不存在 WrongName/A."""
+        merged = merge_terms([self._wrong(), self._official()])
+        record = merged[0]
+        wrongname_with_a = (
+            record.names.get("en") == "WrongName"
+            and record.trust in ("A", "B")
+        )
+        self.assertFalse(
+            wrongname_with_a,
+            f"unverified name retained A-grade authority: {record.names} {record.trust}",
+        )
+
+    def test_displaced_value_survives_in_evidence(self):
+        """Astra: 冲突保留两边证据 — the displaced name must stay auditable."""
+        merged = merge_terms([self._wrong(), self._official()])
+        evidence_text = json.dumps(merged[0].evidence, ensure_ascii=False)
+        self.assertIn("WrongName", evidence_text)
+        self.assertIn("CorrectName", evidence_text)
+
+    def test_official_source_follows_kept_value(self):
+        merged = merge_terms([self._wrong(), self._official()])
+        self.assertEqual(merged[0].source, "official_db")
+
+    def test_order_independent(self):
+        """Merging in the other order must reach the same outcome."""
+        merged = merge_terms([self._official(), self._wrong()])
+        self.assertEqual(merged[0].names["en"], "CorrectName")
+        self.assertFalse(
+            merged[0].names.get("en") == "WrongName" and merged[0].trust in ("A", "B")
+        )
+
+    def test_unofficial_merge_unchanged(self):
+        """Two community records: first-writer-wins behaviour is unchanged."""
+        a = TermRecord(
+            id="t:2", canonical="X", source_language="ja",
+            names={"ja": "X", "en": "First"}, official=False,
+            source="src_a", trust="C", confidence=0.5,
+        )
+        b = TermRecord(
+            id="t:2", canonical="X", source_language="ja",
+            names={"ja": "X", "en": "Second"}, official=False,
+            source="src_b", trust="C", confidence=0.5,
+        )
+        merged = merge_terms([a, b])
+        self.assertEqual(merged[0].names["en"], "First")
+        self.assertFalse(merged[0].official)
