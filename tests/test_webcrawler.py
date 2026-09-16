@@ -1516,7 +1516,7 @@ class RateLimitBackoffTest(unittest.TestCase):
 
 
 class _FakeResponse:
-    """Minimal context-manager response for urlopen mocks."""
+    """Minimal context-manager response for the injected transport."""
 
     def __init__(self, status: int = 200):
         self.status = status
@@ -1529,49 +1529,65 @@ class _FakeResponse:
 
 
 class InstanceHealthProbeTest(unittest.TestCase):
+    """Probe tests assert the injected transport is the only one used.
+
+    ``urlopen`` is patched to explode in every case, so a probe that reached
+    for the real network would fail the test instead of quietly succeeding.
+    """
+
+    def _no_real_network(self):
+        patcher = patch(
+            "urllib.request.urlopen",
+            side_effect=AssertionError("probe must not reach the real network"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_ms_probe_healthy_when_site_base_responds(self):
+        self._no_real_network()
         calls: list[str] = []
 
-        def fake_open(request, timeout):
-            calls.append(request.full_url)
+        def fake_open(url, headers):
+            calls.append(url)
             return _FakeResponse(200)
 
-        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
-            ok = crawler_mod.probe_instance_health(
-                "altsource_ms",
-                BACKEND_MOESEKAI,
-                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
-            )
+        ok = crawler_mod.probe_instance_health(
+            "altsource_ms",
+            BACKEND_MOESEKAI,
+            settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            opener=fake_open,
+        )
         self.assertTrue(ok)
         self.assertEqual(calls, ["https://pjsk.moe"])
 
     def test_ms_probe_unhealthy_on_http_error(self):
-        def fake_open(request, timeout):
-            raise urllib.error.HTTPError(
-                request.full_url, 503, "Unavailable", None, None
-            )
+        self._no_real_network()
 
-        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
-            ok = crawler_mod.probe_instance_health(
-                "altsource_ms",
-                BACKEND_MOESEKAI,
-                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
-            )
+        def fake_open(url, headers):
+            raise urllib.error.HTTPError(url, 503, "Unavailable", None, None)
+
+        ok = crawler_mod.probe_instance_health(
+            "altsource_ms",
+            BACKEND_MOESEKAI,
+            settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            opener=fake_open,
+        )
         self.assertFalse(ok)
 
     def test_sv_probe_hits_versions_json(self):
+        self._no_real_network()
         calls: list[str] = []
 
-        def fake_open(request, timeout):
-            calls.append(request.full_url)
+        def fake_open(url, headers):
+            calls.append(url)
             return _FakeResponse(200)
 
-        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
-            ok = crawler_mod.probe_instance_health(
-                "altsource_sv",
-                BACKEND_SEKAI_VIEWER,
-                settings=ViewerSettings(master_base="https://sekai-world.github.io"),
-            )
+        ok = crawler_mod.probe_instance_health(
+            "altsource_sv",
+            BACKEND_SEKAI_VIEWER,
+            settings=ViewerSettings(master_base="https://sekai-world.github.io"),
+            opener=fake_open,
+        )
         self.assertTrue(ok)
         self.assertEqual(
             calls,
@@ -1579,21 +1595,24 @@ class InstanceHealthProbeTest(unittest.TestCase):
         )
 
     def test_unconfigured_instance_counts_healthy(self):
+        self._no_real_network()
         ok = crawler_mod.probe_instance_health(
             "altsource_ms", BACKEND_MOESEKAI, settings=MoesekaiSettings()
         )
         self.assertTrue(ok)
 
     def test_network_error_counts_unhealthy(self):
-        def fake_open(request, timeout):
+        self._no_real_network()
+
+        def fake_open(url, headers):
             raise TimeoutError("timed out")
 
-        with patch("sekaisync.crawler.urllib.request.urlopen", side_effect=fake_open):
-            ok = crawler_mod.probe_instance_health(
-                "altsource_ms",
-                BACKEND_MOESEKAI,
-                settings=MoesekaiSettings(site_base="https://pjsk.moe"),
-            )
+        ok = crawler_mod.probe_instance_health(
+            "altsource_ms",
+            BACKEND_MOESEKAI,
+            settings=MoesekaiSettings(site_base="https://pjsk.moe"),
+            opener=fake_open,
+        )
         self.assertFalse(ok)
 
 

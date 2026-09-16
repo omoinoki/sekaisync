@@ -26,6 +26,12 @@ from sekaisync.config import (
     ViewerSettings,
     require_endpoint,
 )
+from sekaisync import fetcher as fetcher_transport
+from sekaisync.fetcher import (
+    BUDGET_HTML_BYTES,
+    BUDGET_JSON_BYTES,
+    FetchError,
+)
 from sekaisync.layout import web_category_dir, web_consent_path, web_pages_path
 from sekaisync.models import WebPage
 from sekaisync.endpoints import configure_endpoints, current_endpoints
@@ -53,6 +59,7 @@ _NETWORK_ERRORS = (
     OSError,
     ValueError,
     json.JSONDecodeError,
+    FetchError,
 )
 
 
@@ -271,17 +278,24 @@ def release_crawl_lock(store_root: Path) -> None:
 def fetch_http_text_with_headers(
     url: str,
     timeout: int = 30,
+    max_bytes: int = BUDGET_HTML_BYTES,
 ) -> tuple[str, dict[str, str]]:
-    request = urllib.request.Request(
+    """Fetch a page through the shared bounded transport in ``fetcher``.
+
+    Scheme/userinfo policy, hop-by-hop redirect validation and the byte
+    budget live in ``sekaisync.fetcher`` so that every fetch path (sitemap,
+    details, probes, master tables) shares one boundary instead of each
+    caller re-implementing - or forgetting - its own.
+    """
+    with fetcher_transport.open_validated(
         url,
+        timeout=timeout,
         headers={
-            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xml,application/json;q=0.9,*/*;q=0.8",
             "Cache-Control": "no-cache",
         },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read()
+    ) as response:
+        raw = fetcher_transport.read_bounded(response, max_bytes, what=f"page {url!r}")
         charset = response.headers.get_content_charset() or "utf-8"
         try:
             text = raw.decode(charset, errors="replace")
@@ -293,8 +307,21 @@ def fetch_http_text_with_headers(
         }
 
 
-def fetch_http_text(url: str, timeout: int = 30) -> str:
-    return fetch_http_text_with_headers(url, timeout=timeout)[0]
+def fetch_http_text(
+    url: str,
+    timeout: int = 30,
+    max_bytes: Optional[int] = None,
+) -> str:
+    """Fetch a URL as text under the shared byte budget.
+
+    Master tables are single JSON documents and get the larger JSON budget;
+    every other target (pages, sitemaps, scenario text) gets the HTML budget.
+    Both constants are provisional ceilings, see ``sekaisync.fetcher``.
+    """
+    if max_bytes is None:
+        path = url.split("?", 1)[0].split("#", 1)[0].lower()
+        max_bytes = BUDGET_JSON_BYTES if path.endswith(".json") else BUDGET_HTML_BYTES
+    return fetch_http_text_with_headers(url, timeout=timeout, max_bytes=max_bytes)[0]
 
 
 def _retry_after_seconds(exc: BaseException) -> float:
@@ -513,6 +540,7 @@ def probe_instance_health(
     backend: str,
     settings: Optional[Any] = None,
     timeout: float = 10.0,
+    opener: Optional[Callable[[str, dict[str, str]], Any]] = None,
 ) -> bool:
     """Lightweight reachability probe for one crawl instance.
 
@@ -522,26 +550,29 @@ def probe_instance_health(
     per-instance settings object (``MoesekaiSettings`` / ``ViewerSettings``);
     an unconfigured instance cannot be probed and counts as healthy — the
     crawl itself reports the missing endpoint.
+
+    ``opener`` lets a caller (or a test) supply the transport instead of the
+    module-level one, so an injected fetcher is never silently bypassed by a
+    real network call.
     """
+    open_target = opener or (
+        lambda url, headers: fetcher_transport.open_validated(
+            url, timeout=timeout, headers=headers
+        )
+    )
     try:
         if backend == BACKEND_MOESEKAI:
             base = getattr(settings, "site_base", "") if settings is not None else ""
             if not base:
                 return True
-            request = urllib.request.Request(
-                base, headers={"User-Agent": USER_AGENT, "Accept": "*/*"}
-            )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with open_target(base, {"Accept": "*/*"}) as response:
                 return response.status == 200
         if backend == BACKEND_SEKAI_VIEWER:
             base = getattr(settings, "master_base", "") if settings is not None else ""
             if not base:
                 return True
             url = f"{str(base).rstrip('/')}/sekai-master-db-diff/versions.json"
-            request = urllib.request.Request(
-                url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
-            )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with open_target(url, {"Accept": "application/json"}) as response:
                 return response.status == 200
     except (
         urllib.error.URLError,
@@ -549,6 +580,7 @@ def probe_instance_health(
         http.client.HTTPException,
         TimeoutError,
         OSError,
+        FetchError,
     ):
         return False
     return True
@@ -2924,10 +2956,13 @@ def _crawl_altsource_sv_mysekai(
         record_id = talk.get("id", _sha1(lua_name))
         page_id = f"web:{_current_sv_instance()}:{region}:mysekai_talk:{record_id}"
         probe_tasks.append((page_id, f"{assetbundle_name}/{lua_name}.lua.txt", record_id))
+        # The availability probe must use the caller's fetcher: falling back
+        # to the module default here would make a real network call even when
+        # the caller injected a fake transport.
         _url, content = fetch_altsource_sv_asset(
             region,
             (f"{assetbundle_name}/{lua_name}.lua.txt",),
-            lambda url: fetch_http_text(url, timeout=8),
+            fetcher,
             as_json=False,
         )
         if content is not None:
