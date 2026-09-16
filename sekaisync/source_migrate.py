@@ -170,7 +170,29 @@ def rename_legacy_source_ids(
 
     ``dry_run=True`` reports every planned change without modifying the store.
     A corrupt individual file is recorded under ``errors`` and skipped.
+
+    A real (non-dry-run) migration takes the store's writer lease: it rewrites
+    source ids across files and then deletes/re-imports rows, so it must not
+    interleave with a sync or crawl.  A dry run changes nothing and therefore
+    takes no lease (Astra P13).
     """
+    if dry_run:
+        return _rename_legacy_source_ids_impl(
+            store_root, rebuild_index=rebuild_index, dry_run=True
+        )
+    from sekaisync.fetcher import store_writer_lock
+
+    with store_writer_lock(store_root):
+        return _rename_legacy_source_ids_impl(
+            store_root, rebuild_index=rebuild_index, dry_run=False
+        )
+
+
+def _rename_legacy_source_ids_impl(
+    store_root: Path,
+    rebuild_index: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     store_root = Path(store_root)
     summary: dict[str, Any] = {
         "store": str(store_root.resolve()),
