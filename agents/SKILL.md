@@ -24,6 +24,33 @@ Use this skill whenever the conversation involves Project Sekai characters, song
 - Use `sekaisync_web_lookup` for crawled text from altsource_sv / altsource_ms. Crawling itself stays a CLI action with TOS consent.
 - Base secondary creation on fact packs and avoid redistributing copyrighted assets.
 
+## 术语刮削干预（可选，需要时使用）
+
+SekaiSync 的术语刮削是确定性的；遇到它无法判定的译名，会把条目放进本地待裁决队列。
+**你（智能体）可以直接介入——不需要任何 API Key**：用你自己的推理判断，SekaiSync 只提供
+队列与存储。判断会沉淀为本地方法论，后续刮削自动套用，于是需要你裁决的条数逐轮下降。
+
+```bash
+# 1. 导出待裁决队列（自包含：每条含 term/候选/证据，无需回读语料）
+sekaisync terms review export --out queue.txt --limit 20
+
+# 2. 读 queue.txt，逐条给出判断：
+#    decision: accept（采纳 hint）| reject（否定）| replace（补正确译名，需填 value）
+#    每条写一句中文 rationale（会沉淀进方法论），并指定 generalize: pair（仅该术语）或 pattern（泛化）
+
+# 3. 写回
+sekaisync terms review submit --file judgments.txt
+
+# 查看沉淀与复用率
+sekaisync terms review stats
+sekaisync terms review methodology
+```
+
+介入时的判据建议：
+- 片假名术语优先想"它是不是英语外来语的音译"（セカイ→SEKAI、カイト→KAITO），音译对应关系明确即可采纳
+- 拿不准就 `reject`——错误的译名会污染知识库，`reject` 只是保留待后续证据
+- 能确定正确译名时用 `replace` 并写清理由，这是最有价值的干预（SekaiSync 抓不到，但你知道）
+
 ## Deployment
 
 Copy this file to the platform's skill directory:
