@@ -26,6 +26,7 @@ from sekaisync.webindex import (
     page_category,
     save_web_pages,
     web_browse,
+    web_search,
 )
 from sekaisync.sources import source_rank
 
@@ -252,6 +253,118 @@ class WebBrowseSqlTest(unittest.TestCase):
             for i in web_browse(self.store, limit=50, include_overlay=True)
         }
         self.assertIn("web:tr:event_story:1:1:ja", with_overlay)
+
+
+class WebSearchStreamingTest(unittest.TestCase):
+    """P06 — search streams the scoring window instead of loading every body.
+
+    The score still comes from the Python fuzzy matcher, so these tests pin
+    that the *inputs* to scoring are unchanged (same 20000-char window) and
+    that a fixed-size heap returns the same winners a full sort would.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="test_search_")
+        self.store = Path(self._tmp.name) / "store"
+        pages = []
+        for index in range(1, 13):
+            pages.append(
+                WebPage(
+                    id=f"web:ms:event_story:{index}:1",
+                    source="altsource_ms",
+                    url=f"https://pjsk.moe/zh-cn/story/event/{index}/1/",
+                    title=f"活动 {index}",
+                    language="zh_hans",
+                    kind="event_story",
+                    # Only some pages contain the target term.
+                    text=("目标词出现了" if index % 4 == 0 else "无关内容") + "。" * 5,
+                    crawled_at=f"2026-08-{index:02d}T00:00:00+00:00",
+                    hash=f"h{index}",
+                )
+            )
+        save_web_pages(self.store, "altsource_ms", pages)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_search_finds_matching_pages(self):
+        results = web_search(self.store, "目标词", limit=10)
+        ids = sorted(
+            item["id"] for item in results
+        )
+        # Sorted lexically, so :12: precedes :4: — the point is the membership.
+        self.assertEqual(
+            ids,
+            [
+                "web:ms:event_story:12:1",
+                "web:ms:event_story:4:1",
+                "web:ms:event_story:8:1",
+            ],
+        )
+
+    def test_text_length_populated_from_sql_not_zero(self):
+        for item in web_search(self.store, "目标词", limit=10):
+            self.assertGreater(item["text_length"], 0)
+
+    def test_limit_bounds_the_result_not_the_candidates(self):
+        """A small limit must still consider every candidate."""
+        few = web_search(self.store, "目标词", limit=1)
+        many = web_search(self.store, "目标词", limit=10)
+        self.assertEqual(len(few), 1)
+        # The single winner must also be present when more are returned.
+        self.assertIn(few[0]["id"], [item["id"] for item in many])
+
+    def test_include_text_returns_bodies(self):
+        results = web_search(self.store, "目标词", limit=3, include_text=True)
+        self.assertTrue(results)
+        for item in results:
+            self.assertTrue(item["text"])
+            self.assertEqual(len(item["text"]), item["text_length"])
+
+    def test_text_absent_when_not_requested(self):
+        for item in web_search(self.store, "目标词", limit=3):
+            self.assertNotIn("text", item)
+
+    def test_scoring_window_is_still_20000_chars(self):
+        """The scorer must see the same window as before the SQL change."""
+        from sekaisync import dbstore
+
+        long_text = "前" * 19990 + "尾目标词"
+        save_web_pages(
+            self.store,
+            "altsource_sv",
+            [
+                WebPage(
+                    id="web:sv:event_story:99:1",
+                    source="altsource_sv",
+                    url="https://storage.sekai.best/event_story/99/1.asset",
+                    title="长正文",
+                    language="ja",
+                    kind="event_story",
+                    text=long_text,
+                    crawled_at="2026-08-20T00:00:00+00:00",
+                    hash="long",
+                )
+            ],
+        )
+        with dbstore.connect(self.store) as conn:
+            starts = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT instr(text, '目标词') FROM web_pages WHERE id='web:sv:event_story:99:1'"
+                )
+            ]
+        self.assertEqual(starts, [19992], "fixture not built as expected")
+
+        # The term sits at index 19990, inside the 20000-char window, so the
+        # streamed window must contain it.
+        results = web_search(self.store, "目标词", limit=10)
+        self.assertIn(
+            "web:sv:event_story:99:1",
+            [item["id"] for item in results],
+            "the term is within the first 20000 chars but was not scored — the "
+            "streamed window is not the baseline window",
+        )
 
 
 if __name__ == "__main__":

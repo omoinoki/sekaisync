@@ -32,7 +32,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 from sekaisync.layout import db_path, glossary_path, registry_path, terms_path
 from sekaisync.models import Entity, GlossaryTerm
@@ -683,6 +683,71 @@ def browse_web_rows(
         return _rows(conn)
     with connect(store_root) as owned:
         return _rows(owned)
+
+
+def iter_web_search_rows(
+    store_root: Path,
+    *,
+    source_ids: Optional[Sequence[str]] = None,
+    language: Optional[str] = None,
+    include_overlay: bool = False,
+    score_chars: int = 20000,
+    batch_size: int = 512,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Iterator[dict[str, Any]]:
+    """Stream the columns search needs to score a page, one batch at a time.
+
+    Only ``title`` and the first ``score_chars`` of ``text`` are read — the
+    same window the baseline scorer used (``text[:20000]``) — so scoring sees
+    identical inputs while the body stays in SQLite.  Rows are fetched in
+    batches and yielded immediately, so peak memory is O(batch) rather than
+    O(pages).
+
+    Deliberately does **not** order or limit: the caller keeps a fixed-size
+    top-K heap because ranking depends on a Python-side fuzzy score that SQL
+    cannot reproduce (Astra P06 explicitly rejects replacing it with
+    ``LIKE '%query%' LIMIT K``, which changes recall and source priority).
+    """
+    _ensure_initialized(store_root)
+    where = ["NOT (derived_flag = 1 AND aux_flag = 0)"]
+    params: list[Any] = []
+    if not include_overlay:
+        where.append("aux_flag = 0")
+    if source_ids:
+        where.append(f"source IN ({','.join('?' * len(source_ids))})")
+        params.extend(source_ids)
+    if language:
+        where.append("language = ?")
+        params.append(language)
+
+    index_columns = tuple(c for c in _PAGE_COLUMNS if c != "text")
+    sql = (
+        f"SELECT source, {', '.join(index_columns)}, aux_flag, derived_flag, "
+        f"extra_json, seq, length(text) AS text_length, "
+        f"substr(text, 1, ?) AS text_head "
+        f"FROM web_pages WHERE {' AND '.join(where)} ORDER BY source, seq"
+    )
+    bound = [score_chars] + params
+
+    def _iterate(active: sqlite3.Connection) -> Iterator[dict[str, Any]]:
+        cursor = active.execute(sql, bound)
+        cursor.row_factory = sqlite3.Row
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                return
+            for row in batch:
+                item = _web_page_row_to_dict(row, include_text=False)
+                item["text_length"] = int(row["text_length"] or 0)
+                item["source"] = row["source"]
+                item["text_head"] = str(row["text_head"] or "")
+                yield item
+
+    if conn is not None:
+        yield from _iterate(conn)
+        return
+    with connect(store_root) as owned:
+        yield from _iterate(owned)
 
 
 def web_page_texts(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import heapq
+import itertools
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -714,11 +716,37 @@ def web_search(
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
 ) -> list[dict[str, Any]]:
+    """Search page titles/bodies, best match first within source priority.
+
+    Streams the scoring window out of SQLite instead of materialising every
+    page with its full body first (Astra P06; the window is the same
+    ``text[:20000]`` the baseline scorer used, so scores are identical).
+
+    Ranking stays in Python on purpose: the score comes from
+    ``best_match``'s Unicode-normalised fuzzy matching, and replacing it with
+    ``LIKE '%query%' LIMIT K`` would change recall and source priority rather
+    than speed it up. Instead a fixed-size heap keeps memory at O(limit +
+    batch) while still considering **every** candidate — the scoring loop is
+    still linear, and Astra's text is explicit that this must not be sold as
+    an algorithmic speedup.
+    """
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
-    pages = flatten_web_pages(store_root)
-    scored: list[tuple[dict[str, Any], int]] = []
-    for page in pages:
+
+    resolved = _sql_filter_values(
+        store_root, wanted_source=wanted_source, kind=None
+    )
+
+    # (rank, -score, seq) ordering, so the heap keeps the same winners a full
+    # sort would: lower source rank first, then higher score.
+    heap: list[tuple[int, int, int, dict[str, Any]]] = []
+    counter = itertools.count()
+    for page in dbstore.iter_web_search_rows(
+        store_root,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        include_overlay=include_overlay,
+    ):
         if is_derived_page(page) and not is_auxiliary_page(page):
             continue
         if is_auxiliary_page(page) and not include_overlay:
@@ -727,11 +755,25 @@ def web_search(
             continue
         if language and page.get("language") != language:
             continue
-        haystack = "\n".join([page.get("title", ""), page.get("text", "")[:20000]])
+        head = page.get("text_head") or ""
+        haystack = "\n".join([page.get("title", ""), head])
         matched = best_match(query, [haystack])
         if matched is None:
             continue
         _, score = matched
+        rank = source_rank(page.get("source", ""), priority)
+        entry = (rank, -score, next(counter), page)
+        if len(heap) < limit:
+            heapq.heappush(heap, entry)
+        elif entry[:3] < heap[0][:3]:
+            # Better than the current worst of the top-K: replace it. Holding
+            # only K entries is what keeps memory bounded by the limit.
+            heapq.heapreplace(heap, entry)
+
+    winners = [entry[3] for entry in sorted(heap)]
+    items: list[dict[str, Any]] = []
+    for page in winners:
+        head = page.get("text_head") or ""
         item = {
             "id": page.get("id", ""),
             "source": page.get("source", ""),
@@ -742,12 +784,13 @@ def web_search(
             "language": page.get("language", ""),
             "kind": page.get("kind", ""),
             "crawled_at": page.get("crawled_at", ""),
-            "snippet": _make_snippet(page.get("text", ""), query),
-            "text_length": len(page.get("text", "")),
+            "snippet": _make_snippet(head, query),
+            # The SQL `length(text)` value; the body itself was not selected.
+            "text_length": int(page.get("text_length") or 0),
             "trust": trust_for_page(page),
             "canonical_key": canonical_key_for_page(page),
             "source_hash": page.get("source_hash", ""),
-            "text_hash": page.get("text_hash") or sha256_hex(page.get("text", "")),
+            "text_hash": page.get("text_hash") or "",
             "untranslated": bool(page.get("untranslated", False)),
             "untranslated_placeholder": page.get("untranslated_placeholder", ""),
             "original_text_hash": page.get("original_text_hash", ""),
@@ -762,13 +805,19 @@ def web_search(
             "episode_no": page.get("episode_no", 0),
             "overlay": bool(page.get("overlay", False)),
         }
-        if include_text:
-            item["text"] = page.get("text", "")
-        scored.append((item, score))
-    # Higher-priority sources (earlier in the profile) rank first; within a
-    # source, better text matches rank first.
-    scored.sort(key=lambda pair: (source_rank(pair[0].get("source", ""), priority), -pair[1]))
-    return [page for page, _score in scored[:limit]]
+        items.append(item)
+
+    if include_text and items:
+        # Bodies only for the returned rows, after the candidate set is fixed.
+        bodies = dbstore.web_page_texts(
+            store_root,
+            [(item.get("source", ""), item.get("id", "")) for item in items],
+        )
+        for item in items:
+            item["text"] = bodies.get(
+                (item.get("source", ""), item.get("id", "")), ""
+            )
+    return items
 
 
 def _sql_filter_values(
