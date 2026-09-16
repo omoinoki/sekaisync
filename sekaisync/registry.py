@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from sekaisync.config import REGIONS
-from sekaisync.layout import region_master_dir
+from sekaisync.layout import generation_master_dir, region_master_dir
 from sekaisync.models import Entity
 from sekaisync.normalize import best_match, normalize_name
 from sekaisync.trust import trust_for_source
@@ -138,8 +138,59 @@ _KIND_ALIASES = {
 REGISTRY_TABLES = frozenset(_KIND_ALIASES)
 
 
-def data_files_for_region(store_root: Path, region: str) -> list[Path]:
-    base = region_master_dir(store_root, region)
+def _active_or_legacy_dir(store_root: Path, region: str) -> Path:
+    """The region's active generation dir, or the legacy in-place dir.
+
+    Never raises and never creates anything: a store with no database (or an
+    unreadable one) simply has no published pointer yet, so it resolves to the
+    pre-generation layout. That keeps path resolution safe to call before the
+    store is initialized.
+    """
+    from sekaisync import dbstore
+
+    try:
+        active = dbstore.active_generations(store_root).get(region)
+    except Exception:  # noqa: BLE001 - absence of a store means "no pointer"
+        active = None
+    if active:
+        candidate = generation_master_dir(store_root, region, active)
+        if candidate.exists():
+            return candidate
+    return region_master_dir(store_root, region)
+
+
+def master_dir_for(
+    store_root: Path,
+    region: str,
+    generation: Optional[str] = None,
+) -> Path:
+    """Resolve the master-table directory for a region.
+
+    ``generation`` selects a specific immutable generation. If that generation
+    does not actually contain this region (a publish only copies the regions it
+    fetched), fall back to the region's own active/legacy tree rather than
+    returning an empty directory — otherwise a publish that syncs one region
+    would silently make every other region's data disappear.
+
+    ``generation=None`` means "the active one", resolved from the store's
+    pointer. A server request must pass an explicit generation so it cannot
+    read two generations across tables (Astra P13).
+    """
+    if generation:
+        candidate = generation_master_dir(store_root, region, generation)
+        if candidate.exists():
+            return candidate
+        # Not part of that generation: keep serving this region's own data.
+        return _active_or_legacy_dir(store_root, region)
+    return _active_or_legacy_dir(store_root, region)
+
+
+def data_files_for_region(
+    store_root: Path,
+    region: str,
+    generation: Optional[str] = None,
+) -> list[Path]:
+    base = master_dir_for(store_root, region, generation)
     candidates = [
         base / "versions" / "**" / "*.json",
         base / "master" / "*.json",
@@ -273,11 +324,15 @@ def _enrich_event_stories(entities: list[Entity], metadata: dict[str, list[dict]
                 story.names.setdefault(language, str(title))
 
 
-def build_registry(store_root: Path, regions: Iterable[str]) -> list[Entity]:
+def build_registry(
+    store_root: Path,
+    regions: Iterable[str],
+    generation: Optional[str] = None,
+) -> list[Entity]:
     grouped: dict[str, Entity] = {}
 
     for region in regions:
-        for path in data_files_for_region(store_root, region):
+        for path in data_files_for_region(store_root, region, generation):
             table = path.name.removesuffix(".json")
             if table not in REGISTRY_TABLES:
                 continue

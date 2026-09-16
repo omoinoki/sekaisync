@@ -56,8 +56,51 @@ def cache_dir(store_root: Path) -> Path:
     return store_root / CACHE
 
 
+LEGACY_RAW_DIRNAME = "source"
+#: Sentinel generation for the pre-generation in-place layout.  A store that
+#: has never run a generation publish keeps reading ``raw/<region>/source``.
+LEGACY_GENERATION = "legacy"
+
+#: Meta key holding the per-region active generation pointer.
+ACTIVE_GENERATION_KEY = "active_raw_generation"
+
+
 def raw_dir(store_root: Path) -> Path:
     return store_root / RAW
+
+
+def generations_root(store_root: Path) -> Path:
+    """Root of the immutable raw generations.
+
+    Each published generation is a complete, self-contained copy of every
+    region's master tables under ``raw/generations/<id>/<region>/source``.
+    Generations are never mutated after they are published; a new publish
+    writes a new directory and moves the pointer (Astra P13).
+    """
+    return raw_dir(store_root) / "generations"
+
+
+def generation_dir(store_root: Path, generation: str) -> Path:
+    """Directory of one immutable generation."""
+    return generations_root(store_root) / generation
+
+
+def generation_region_dir(store_root: Path, generation: str, region: str) -> Path:
+    return generation_dir(store_root, generation) / region
+
+
+def generation_master_dir(
+    store_root: Path,
+    region: str,
+    generation: str,
+) -> Path:
+    """Master-table directory for one region inside one generation.
+
+    Unlike :func:`region_master_dir` this never resolves "current" — callers
+    must have already fixed the generation for the request, so a response
+    cannot mix two generations (Astra P13: "一次请求固定同一指针集合").
+    """
+    return generation_region_dir(store_root, generation, region) / LEGACY_RAW_DIRNAME
 
 
 def registry_path(store_root: Path) -> Path:

@@ -34,7 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
-from sekaisync.layout import db_path, glossary_path, registry_path, terms_path
+from sekaisync.layout import (
+    ACTIVE_GENERATION_KEY,
+    db_path,
+    glossary_path,
+    registry_path,
+    terms_path,
+)
 from sekaisync.models import Entity, GlossaryTerm
 from sekaisync.trust import trust_for_page
 
@@ -961,9 +967,19 @@ def delete_source_pages(store_root: Path, source: str) -> None:
 
 # ── entities / glossary ───────────────────────────────────────────
 
-def save_entities(store_root: Path, entities: Iterable[Entity]) -> int:
-    _ensure_initialized(store_root)
-    with connect(store_root) as conn:
+def save_entities(
+    store_root: Path,
+    entities: Iterable[Entity],
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Replace the entity table.
+
+    ``conn`` lets a caller run this inside its own transaction. A publish must
+    commit the derived indexes and the generation pointer together, and
+    opening a second connection while a write transaction is open would
+    deadlock on the store's own lock.
+    """
+    def _write(active: sqlite3.Connection) -> int:
         rows = [
             (
                 e.id, e.type, e.region or "", json.dumps(e.regions, ensure_ascii=False),
@@ -972,12 +988,20 @@ def save_entities(store_root: Path, entities: Iterable[Entity]) -> int:
             )
             for seq, e in enumerate(entities, start=1)
         ]
-        conn.execute("DELETE FROM entities")
-        conn.executemany(
-        "INSERT OR REPLACE INTO entities VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows
+        active.execute("DELETE FROM entities")
+        active.executemany(
+            "INSERT OR REPLACE INTO entities VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows
         )
-        conn.commit()
+        # Only commit when this call owns the connection.
+        if conn is None:
+            active.commit()
         return len(rows)
+
+    if conn is not None:
+        return _write(conn)
+    _ensure_initialized(store_root)
+    with connect(store_root) as owned:
+        return _write(owned)
 
 
 def load_entities(store_root: Path) -> list[Entity]:
@@ -1006,9 +1030,18 @@ def load_entity_keys(store_root: Path) -> list[tuple[str, str, list[str], str]]:
         ]
 
 
-def save_glossary_terms(store_root: Path, terms: Iterable[GlossaryTerm]) -> int:
-    _ensure_initialized(store_root)
-    with connect(store_root) as conn:
+def save_glossary_terms(
+    store_root: Path,
+    terms: Iterable[GlossaryTerm],
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Replace the glossary table.
+
+    ``conn`` lets a caller run this inside its own transaction — a publish must
+    commit indexes and the generation pointer together, and a second
+    connection would deadlock against the open write transaction.
+    """
+    def _write(active: sqlite3.Connection) -> int:
         rows = [
             (
                 g.id, g.kind, g.canonical, json.dumps(g.names, ensure_ascii=False),
@@ -1016,12 +1049,19 @@ def save_glossary_terms(store_root: Path, terms: Iterable[GlossaryTerm]) -> int:
             )
             for seq, g in enumerate(terms, start=1)
         ]
-        conn.execute("DELETE FROM glossary_terms")
-        conn.executemany(
-        "INSERT OR REPLACE INTO glossary_terms VALUES(?,?,?,?,?,?,?,?,?)", rows
+        active.execute("DELETE FROM glossary_terms")
+        active.executemany(
+            "INSERT OR REPLACE INTO glossary_terms VALUES(?,?,?,?,?,?,?,?,?)", rows
         )
-        conn.commit()
+        if conn is None:
+            active.commit()
         return len(rows)
+
+    if conn is not None:
+        return _write(conn)
+    _ensure_initialized(store_root)
+    with connect(store_root) as owned:
+        return _write(owned)
 
 
 def load_glossary_terms(store_root: Path) -> list[GlossaryTerm]:
@@ -1676,6 +1716,72 @@ def bump_revision(conn: sqlite3.Connection) -> int:
     next_revision = current_revision(conn) + 1
     _meta_set(conn, "data_revision", str(next_revision))
     return next_revision
+
+
+# ── raw generation pointers (Astra P13) ────────────────────────────
+#
+# `raw/` region master tables are published as immutable generations.  The
+# per-region "which generation is live" pointer lives in the same SQL
+# transaction as the rest of a publish, so moving the pointer and committing
+# the derived indexes is one atomic event: a reader sees either the complete
+# old generation or the complete new one, never a mix.
+
+def active_generations(
+    store_root: Path,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, str]:
+    """Per-region active raw generation id (``{}`` when none is published).
+
+    A store that has never run a generation publish returns ``{}``, which
+    readers interpret as "use the legacy in-place layout".
+    """
+    def _read(active: sqlite3.Connection) -> dict[str, str]:
+        raw = None
+        with contextlib.suppress(sqlite3.Error):
+            raw = _meta_get(active, ACTIVE_GENERATION_KEY)
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): str(v) for k, v in parsed.items()}
+
+    if conn is not None:
+        return _read(conn)
+    # A read must never create the database. `connect()` would create an empty
+    # file, and a store that exists but has no `meta` table is then classified
+    # as unusable rather than absent — so merely asking "which generation is
+    # active?" could turn a valid absent store into an unopenable one.
+    if not db_path(store_root).exists():
+        return {}
+    state = inspect_schema(store_root)
+    if state.status not in (SCHEMA_ABSENT, SCHEMA_CURRENT):
+        # Unknown/failed schema: report "no pointer" rather than raising, so
+        # path resolution stays side-effect free. The write and server paths
+        # still enforce the gate.
+        return {}
+    _ensure_initialized(store_root)
+    with connect(store_root) as owned:
+        return _read(owned)
+
+
+def set_active_generations(
+    conn: sqlite3.Connection,
+    pointers: Mapping[str, str],
+) -> None:
+    """Write the active-generation pointers. Caller owns the transaction.
+
+    Written in the *same* transaction as the indexes it belongs to, so the
+    pointer flip and the publish commit together or not at all.
+    """
+    _meta_set(
+        conn,
+        ACTIVE_GENERATION_KEY,
+        json.dumps(dict(pointers), ensure_ascii=False, sort_keys=True),
+    )
 
 
 def pending_legacy_domains(store_root: Path) -> list[str]:

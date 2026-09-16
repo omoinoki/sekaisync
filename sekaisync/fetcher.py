@@ -12,15 +12,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from sekaisync.config import REGIONS, SekaiSyncConfig
 from sekaisync.layout import (
     factpack_path,
     freshness_path,
+    generation_dir,
+    generation_master_dir,
     glossary_path,
     region_master_dir,
     registry_path,
@@ -30,6 +33,7 @@ from sekaisync.layout import (
 from sekaisync import dbstore
 from sekaisync.coverage import build_region_coverage, build_source_manifest
 from sekaisync.factpacks import build_fact_packs, save_fact_packs
+from sekaisync.filecache import write_json_atomic
 from sekaisync.glossary import merge_glossary, save_glossary
 from sekaisync.registry import build_registry, data_files_for_region, save_registry
 
@@ -940,6 +944,7 @@ def write_freshness(
     regions: Iterable[str],
     web_status: Optional[dict] = None,
     news_available: bool = False,
+    generation: Optional[str] = None,
 ) -> Path:
     region_info = {}
     for region in regions:
@@ -964,6 +969,11 @@ def write_freshness(
     freshness = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "regions": region_info,
+        # Which raw generation this report describes. Without it a consumer
+        # cannot tell whether the coverage above and the raw files on disk come
+        # from the same publish (Astra P13: manifest/cache are projections of a
+        # committed state and must not claim success earlier than the pointer).
+        "raw_generation": generation,
         "coverage": build_region_coverage(
             regions,
             web_status=web_status,
@@ -980,25 +990,40 @@ def write_freshness(
     }
     path = freshness_path(config.store_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(freshness, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_atomic(path, freshness)
     return path
 
 
-def rebuild_indexes(config: SekaiSyncConfig, regions: Iterable[str]) -> dict:
+def rebuild_indexes(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    generation: Optional[str] = None,
+    conn: Optional[object] = None,
+) -> dict:
     """Rebuild registry / glossary / factpacks from the local master source tree.
 
     Shared by ``sync`` (full baseline) and the incremental new-event check, so
     both paths produce indexes from the same source data with the same
     semantics.  Returns entity/term counts for callers that report them.
+
+    ``generation`` pins which raw generation to read. Leave it ``None`` only
+    for one-shot CLI work; a publish must pass the generation it prepared so
+    the indexes it commits describe exactly the files it is about to make
+    visible.
+
+    ``conn`` lets a publish run the SQL writes inside its own BEGIN IMMEDIATE
+    transaction, so the indexes and the generation pointer commit atomically.
     """
-    entities = build_registry(config.store_root, regions)
-    dbstore.save_entities(config.store_root, entities)
+    entities = build_registry(config.store_root, regions, generation)
+    dbstore.save_entities(config.store_root, entities, conn=conn)
     seed = []
     seed_path = seed_glossary_path(config.store_root)
     if seed_path.exists():
         seed = json.loads(seed_path.read_text(encoding="utf-8"))
     terms = merge_glossary(entities, seed)
-    dbstore.save_glossary_terms(config.store_root, terms)
+    dbstore.save_glossary_terms(config.store_root, terms, conn=conn)
+    # Fact packs are JSON projections, not authoritative state; they are
+    # rewritten here and can always be rebuilt from the committed indexes.
     for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
         packs = build_fact_packs(entities, language=language)
         save_fact_packs(packs, factpack_path(config.store_root, language))
@@ -1016,9 +1041,186 @@ def sync(
     read-merge-write over shared state, so a second writer interleaving it
     would let one run's baseline clobber the other's.  The lease is acquired
     *before* any connection is opened so lock ordering is uniform (Astra P13).
+
+    Raw master tables are prepared into a **new immutable generation
+    directory** and only become visible when the SQL transaction that commits
+    the derived indexes also moves the active-generation pointer. Readers
+    therefore see either the complete old generation or the complete new one
+    (see :func:`_sync_locked`).
     """
     with store_writer_lock(config.store_root):
         return _sync_locked(config, regions, local_mirrors)
+
+
+def _new_generation_id(regions: Iterable[str]) -> str:
+    """A unique, sortable id for a raw generation."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}"
+
+
+def prepare_raw_generation(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    local_mirrors: Optional[dict[str, Path]] = None,
+) -> dict[str, Any]:
+    """Download/validate every region into a new immutable generation dir.
+
+    Nothing published so far is touched: the previous active generation keeps
+    serving readers while this runs.  Returns a ``PreparedGeneration``-shaped
+    dict naming the id and the regions actually prepared.
+
+    A failure here leaves the store exactly as it was — the new directory is
+    removed, the pointer never moves, the DB is not written.
+    """
+    generation = _new_generation_id(regions)
+    target_root = generation_dir(config.store_root, generation)
+    local_mirrors = local_mirrors or {}
+    prepared: list[str] = []
+
+    try:
+        for region_key in regions:
+            if region_key == "demo":
+                continue
+            # Same filesystem as the generation root, so the final rename is a
+            # directory move and not a cross-device copy.
+            staging = target_root.parent / f".{generation}.{region_key}.staging"
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            staging.mkdir(parents=True, exist_ok=True)
+            region_target = generation_master_dir(
+                config.store_root, region_key, generation
+            )
+            try:
+                _fetch_region_into(
+                    region_key,
+                    config,
+                    staging,
+                    local_mirror=local_mirrors.get(region_key),
+                )
+                region_target.parent.mkdir(parents=True, exist_ok=True)
+                staging.rename(region_target)
+                prepared.append(region_key)
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+        return {
+            "generation": generation,
+            "regions": tuple(prepared),
+            "root": target_root,
+        }
+    except Exception:
+        shutil.rmtree(target_root, ignore_errors=True)
+        raise
+
+
+def _fetch_region_into(
+    region_key: str,
+    config: SekaiSyncConfig,
+    staging: Path,
+    local_mirror: Optional[Path] = None,
+) -> None:
+    """Materialise one region's master tables into ``staging``."""
+    if local_mirror is not None:
+        if not local_mirror.exists():
+            raise FileNotFoundError(f"Local mirror not found: {local_mirror}")
+        _assert_tree_has_no_links(local_mirror)
+        shutil.copytree(local_mirror, staging, dirs_exist_ok=True)
+        return
+
+    region = REGIONS[region_key]
+    repo = region.repo_slug
+    if not repo:
+        raise ValueError(f"Region {region_key} has no GitHub repository configured")
+    url = f"{config.github_tarball_base}/{repo}/archive/refs/heads/main.tar.gz"
+    with tempfile.TemporaryDirectory() as tmp:
+        tarball = Path(tmp) / "master.tar.gz"
+        download_file(url, tarball, allowed_hosts=_tarball_allowed_hosts(config))
+        extract_tarball(tarball, staging)
+
+
+def _rebuild_indexes_for_generation(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    generation: str,
+    conn: Optional[object] = None,
+) -> dict:
+    """Indexes built from exactly the files in ``generation``.
+
+    Reads only the prepared generation directory, never the active one, so the
+    committed indexes cannot describe a half-published tree.
+    """
+    return rebuild_indexes(config, regions, generation=generation, conn=conn)
+
+
+def _write_freshness_for_generation(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    generation: str,
+    conn: Optional[object] = None,
+) -> None:
+    """Freshness record for the generation being published.
+
+    Written inside the publish transaction, because freshness is part of what
+    makes the generation visible: a freshness record claiming a generation the
+    pointer does not name (or the reverse) is a mixed-generation report.
+    """
+    write_freshness(config, regions, generation=generation)
+
+
+def publish_generation(
+    config: SekaiSyncConfig,
+    prepared: Mapping[str, Any],
+    all_regions: Sequence[str],
+) -> dict[str, Any]:
+    """Commit a prepared generation and the derived indexes atomically.
+
+    One SQL transaction holds everything that makes the generation visible:
+
+    - the derived indexes (registry / glossary / factpacks)
+    - the per-region ``active_raw_generation`` pointer
+    - the freshness record and the revision bump
+
+    So a reader sees the old generation with old indexes, or the new
+    generation with new indexes — never new indexes pointing at old raw files
+    or the reverse. A failure before COMMIT changes nothing; a failure after
+    COMMIT leaves a complete, internally-consistent new generation.
+    """
+    generation = str(prepared["generation"])
+    prepared_regions = tuple(prepared.get("regions") or ())
+
+    # Initialize *before* opening the publish connection. `connect()` creates
+    # the database file, and an existing file with no `meta` table is then
+    # classified as unusable rather than absent — so letting the publish
+    # connection create the file would make its own store unopenable.
+    dbstore.ensure_store(config.store_root)
+    with dbstore.connect(config.store_root) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            index_stats = _rebuild_indexes_for_generation(
+                config, all_regions, generation, conn=conn
+            )
+            pointers = dbstore.active_generations(config.store_root, conn=conn)
+            # Only the regions actually prepared in this run move; syncing one
+            # region must not disturb another region's pointer (Astra P13).
+            for region_key in prepared_regions:
+                pointers[region_key] = generation
+            dbstore.set_active_generations(conn, pointers)
+            _write_freshness_for_generation(
+                config, all_regions, generation, conn=conn
+            )
+            revision = dbstore.bump_revision(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "generation": generation,
+        "regions": prepared_regions,
+        "entities": index_stats["entities"],
+        "terms": index_stats["terms"],
+        "revision": revision,
+    }
 
 
 def _sync_locked(
@@ -1028,10 +1230,10 @@ def _sync_locked(
 ) -> dict:
     regions = tuple(regions)
     local_mirrors = local_mirrors or {}
-    for region_key in regions:
-        if region_key == "demo":
-            continue
-        fetch_region(region_key, config, local_mirror=local_mirrors.get(region_key))
+
+    # Phase 1 — prepare a complete new generation. Nothing live is touched, so
+    # a failure here needs no rollback of published state.
+    prepared = prepare_raw_generation(config, regions, local_mirrors)
 
     all_regions: list[str] = []
     for region_key in regions:
@@ -1043,13 +1245,14 @@ def _sync_locked(
         if region_key == "demo" or data_files_for_region(config.store_root, region_key):
             all_regions.append(region_key)
 
-    index_stats = rebuild_indexes(config, all_regions)
+    # Phase 2 — one transaction commits indexes + pointer + freshness.
+    published = publish_generation(config, prepared, all_regions)
 
-    write_freshness(config, all_regions)
     return {
         "regions": all_regions,
-        "entities": index_stats["entities"],
-        "terms": index_stats["terms"],
+        "generation": published["generation"],
+        "entities": published["entities"],
+        "terms": published["terms"],
         "coverage": build_region_coverage(all_regions),
         "registry_db": str(dbstore.db_file(config.store_root)),
         "glossary_db": str(dbstore.db_file(config.store_root)),
