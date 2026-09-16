@@ -201,52 +201,87 @@ def build_fact_pack_at(
     as_of: int | None = None,
     as_of_iso: str | None = None,
 ) -> dict:
-    """截止 ``as_of`` 的时序分段事实包（防剧透）。
+    """截止 ``as_of`` 的时序分段事实包（公开时间过滤）。
 
     动机（来自 Sekai Viewer Graph RAG 的做法）：给 LLM 喂上下文时，"第 N 集
     时应该知道什么"与"最终会知道什么"必须分开——否则模型会提前写出后续剧情
-    的结局。它把事实按剧情位置切成 Past/Future 两栏注入 prompt；这里提供
-    等价能力的通用版本。
+    的结局。
 
-    ``as_of`` 为毫秒时间戳，``as_of_iso`` 为 ISO 字符串（二者取一，都不给
-    则视为"现在"）。返回::
+    **能力边界（重要）**：当前只有**实体级**发布时间，因此这里实现的是
+    **公开时间过滤**（release-time filtering），不是剧情进度防剧透。要实现
+    后者需要逐章节/逐事实的 ``knowledge_at`` 证据，尚未建模。不要把它宣传为
+    "任意剧集进度防剧透"。
+
+    ``as_of`` 为毫秒时间戳，``as_of_iso`` 为 ISO 字符串（二者互斥，都不给则
+    视为"现在"）。返回::
 
         {
           "entity_id": ..., "entity_type": ..., "language": ...,
           "as_of": <ms>, "as_of_iso": ...,
-          "past":   {"text": ..., "fact_pack_tokens": ...},
-          "future": {"text": ..., "fact_pack_tokens": ...},
           "state":  "past" | "future" | "undated",
+          "past":   {"text": ..., "fact_pack_tokens": ...},
+          "future": {"text": "", "fact_pack_tokens": 0},   # 始终为空
+          "withheld": {...},
         }
 
-    ``state`` 表明该实体本身相对 as_of 的位置：尚未发生的实体其全部事实都在
-    ``future``（Agent 据此不该把它当作既成事实）；无时间字段的实体标
-    ``undated``，两栏都可能为空、完整内容仍以 :func:`build_fact_pack` 为准。
+    **future / undated 不携带实体内容。** 未到公开时间的实体，其标题、名称、
+    正文与任何可泄漏的内容摘要都不序列化——只保留身份、状态与"被扣下了什么"
+    的计数。此前 ``future`` 栏会返回完整文本，等于把未公开内容原样交给调用方，
+    这是一个真实的泄露（Astra 实测 ``future_payload_contains_unreleased_name:
+    true``）。
 
-    这是**纯增量能力**：不改变 :func:`build_fact_pack` 的任何行为。
+    ``undated``（无时间字段）同样扣下内容：无法证明某实体"已经公开"时，不能
+    默认它安全。这是保守选择——宁可少给，不可剧透。
+
+    ``build_fact_pack``（不传 as_of 的普通用法）不受影响，仍是当前的完整快照。
     """
-    if as_of is None:
-        if as_of_iso:
-            as_of = _parse_iso_ms(as_of_iso)
-        else:
-            as_of = _now_ms()
+    if as_of is not None and as_of_iso is not None:
+        raise ValueError(
+            "pass either as_of or as_of_iso, not both — refusing to pick one "
+            "silently"
+        )
+    if as_of is None and as_of_iso is None:
+        as_of = _now_ms()
+    elif as_of_iso is not None:
+        as_of = _parse_iso_ms(as_of_iso)
+    else:
+        raw_as_of = as_of
+        as_of = _to_ms(raw_as_of)
+        if as_of is None:
+            raise ValueError(
+                f"as_of must be a positive epoch-millisecond integer, got {raw_as_of!r}"
+            )
 
     ts = entity_timestamp(entity)
     if ts is None:
         state = "undated"
-        past_entity, future_entity = entity, None
     elif ts <= as_of:
         state = "past"
-        past_entity, future_entity = entity, None
     else:
         state = "future"
-        past_entity, future_entity = None, entity
 
-    def pack_text(target: Entity | None) -> dict:
-        if target is None:
-            return {"text": "", "fact_pack_tokens": 0}
-        pack = build_fact_pack(target, language=language)
-        return {"text": pack.text, "fact_pack_tokens": pack.fact_pack_tokens}
+    if state == "past":
+        pack = build_fact_pack(entity, language=language)
+        past = {"text": pack.text, "fact_pack_tokens": pack.fact_pack_tokens}
+        future = {"text": "", "fact_pack_tokens": 0}
+        withheld = {
+            "reason": None,
+            "fields": [],
+            "fact_pack_tokens": 0,
+        }
+    else:
+        # Withhold everything: no text, no name, no summary.  Count what was
+        # held back so callers can report coverage without seeing content.
+        held = build_fact_pack(entity, language=language)
+        past = {"text": "", "fact_pack_tokens": 0}
+        future = {"text": "", "fact_pack_tokens": 0}
+        withheld = {
+            "reason": (
+                "entity_not_public_at_as_of" if state == "future" else "entity_undated"
+            ),
+            "fields": ["text"],
+            "fact_pack_tokens": held.fact_pack_tokens,
+        }
 
     return {
         "entity_id": entity.id,
@@ -256,8 +291,10 @@ def build_fact_pack_at(
         "as_of_iso": _ms_to_iso(as_of),
         "state": state,
         "entity_at": _ms_to_iso(ts) if ts is not None else None,
-        "past": pack_text(past_entity),
-        "future": pack_text(future_entity),
+        "content_status": "available" if state == "past" else "withheld",
+        "past": past,
+        "future": future,
+        "withheld": withheld,
     }
 
 
@@ -265,10 +302,22 @@ def _parse_iso_ms(value: str) -> int:
     from datetime import datetime, timezone
 
     text = str(value).strip().replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"as_of_iso is not a valid ISO-8601 timestamp: {value!r}") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1000)
+        # Silently assuming UTC moves the cutoff by up to 14 hours, which can
+        # flip an entity across the as_of boundary.  Make the caller state the
+        # offset instead of guessing.
+        raise ValueError(
+            f"as_of_iso must include a timezone offset (e.g. '2026-09-16T12:00:00+08:00' "
+            f"or '...Z'); got {value!r}"
+        )
+    ms = int(parsed.timestamp() * 1000)
+    if ms <= 0:
+        raise ValueError(f"as_of_iso is out of range: {value!r}")
+    return ms
 
 
 def _ms_to_iso(value: int | None) -> str | None:
