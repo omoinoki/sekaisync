@@ -618,17 +618,40 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
 
 
 def _names_from_conflict(conflict: dict) -> dict:
-    """冲突项 → 各语言的候选集合（取每个语言的首个候选作为提案）。"""
-    names = {}
-    for lang, values in (conflict.get("candidates") or {}).items():
-        cand_values = list(values.keys()) if isinstance(values, dict) else list(values)
-        if cand_values:
-            names[str(lang)] = cand_values[0]
-    return names
+    """冲突项 → ``{language: [candidates]}`` 待审提案。
+
+    真实结构（``trinity.py`` arbitrate 的返回）是::
+
+        {"lang": "en", "candidates": {candidate_value: [channels]}, ...}
+
+    语言在**外层** ``lang``，``candidates`` 的键是**候选译名**、值是给出它的通道。
+
+    旧实现把 ``candidates`` 当成 ``{language: candidates}`` 遍历，于是候选译名被当成语言键、
+    通道被当成译名，产出 ``{"SEKAI": "translit"}`` 这种假语言 —— 真正的语言槽 ``en`` 丢失，
+    下游 ``apply_methodology_batch`` 也就无从按 ``(term, language)`` 结算。
+    """
+    lang = str(conflict.get("lang") or "").strip()
+    candidates = conflict.get("candidates") or {}
+    values: list[str] = []
+    if isinstance(candidates, dict):
+        # {candidate_value: [channels]} — the shape arbitrate actually returns.
+        values = [str(value) for value in candidates.keys() if str(value)]
+    elif isinstance(candidates, (list, tuple)):
+        # Tolerate a plain candidate list from other callers.
+        values = [str(value) for value in candidates if str(value)]
+    if not lang or not values:
+        return {}
+    return {lang: values}
 
 
 def _proposals_from_rows(rows: list) -> dict:
-    """待裁决行 → apply_methodology_batch 需要的 {term: {lang: [candidates]} 结构。"""
+    """待裁决行 → ``apply_methodology_batch`` 需要的 ``{term: {lang: [candidates]}}``。
+
+    ``row["names"]`` 可能是 ``{lang: value}``（待裁决行）或 ``{lang: [values]}``
+    （冲突项，见 :func:`_names_from_conflict`）。两种都接受：冲突本来就有多个并列候选，
+    只取首个会丢掉其余候选，而入队判定用的是完整候选集合 —— 二者必须一致
+    （Astra P11：consult/enqueue 使用同一候选集合，不能一处取首候选、另一处用全候选）。
+    """
     proposals = {}
     for row in rows:
         term = str(row.get("term") or "")
@@ -639,8 +662,10 @@ def _proposals_from_rows(rows: list) -> dict:
             if not value:
                 continue
             values_list = slot.setdefault(str(lang), [])
-            if str(value) not in values_list:
-                values_list.append(str(value))
+            incoming = value if isinstance(value, (list, tuple)) else [value]
+            for candidate in incoming:
+                if candidate and str(candidate) not in values_list:
+                    values_list.append(str(candidate))
     return proposals
 
 def _review_item_id(term: str, language: str, values: tuple) -> str:
