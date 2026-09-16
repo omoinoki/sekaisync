@@ -97,24 +97,62 @@ _CN_DIGITS = {
     "九": 9,
 }
 
+# Ordinals are community shorthand for a handful of rounds / boxes, so they are
+# bounded tightly: at most 4 accepted characters (three significant digits plus
+# cosmetic zero padding) and a value of 1..999.  The bound is applied *before*
+# ``int()`` ever runs, so an adversarial input (a 4000-digit run, or a Unicode
+# "digit" such as ``²`` that ``str.isdigit`` accepts but ``int`` rejects)
+# returns ``None`` instead of raising or tripping the interpreter's own
+# integer-string conversion limit.
+_MAX_ORDINAL = 999
+_MAX_ORDINAL_DIGITS = len(str(_MAX_ORDINAL))
+_MAX_ORDINAL_INPUT_LEN = _MAX_ORDINAL_DIGITS + 1
+
+
+def _normalize_numeral(text: str) -> str:
+    """Strip and fold full-width digits exactly once for all ordinal paths."""
+    return text.strip().translate(_ARABIC_DIGITS)
+
+
+def _bounded_digits(text: str) -> Optional[int]:
+    """Bounded decimal conversion; ``text`` must already be normalised.
+
+    Accepted: at most :data:`_MAX_ORDINAL_INPUT_LEN` ASCII decimal characters
+    holding 1..999 once leading zeros are dropped.  Everything else -- ``0``,
+    values above 999, over-long runs, non-ASCII "digits" -- returns ``None``.
+    ``int()`` only ever sees at most three characters, whatever the input.
+    """
+    if not (text.isascii() and text.isdigit()):
+        return None
+    if len(text) > _MAX_ORDINAL_INPUT_LEN:
+        return None
+    significant = text.lstrip("0")
+    if not significant or len(significant) > _MAX_ORDINAL_DIGITS:
+        return None
+    value = int(significant)
+    return value if 1 <= value <= _MAX_ORDINAL else None
+
 
 def _numeral_to_int(text: str) -> Optional[int]:
-    """Convert an ordinal like ``3`` / ``三`` / ``二十三`` to an integer."""
-    text = text.strip().translate(_ARABIC_DIGITS)
+    """Convert an ordinal like ``3`` / ``三`` / ``二十三`` to an integer.
+
+    Total: malformed or out-of-range input returns ``None``.
+    """
+    text = _normalize_numeral(text)
     if not text:
         return None
-    if text.isdigit():
-        value = int(text)
-        return value if 1 <= value <= 999 else None
+    value = _bounded_digits(text)
+    if value is not None:
+        return value
     if text in _CN_DIGITS:
         return _CN_DIGITS[text]
     if text == "十":
         return 10
     if text.startswith("十"):
         tail = text[1:]
-        if not tail:
-            return None
-        return 10 + _CN_DIGITS.get(tail, 0)
+        if tail in _CN_DIGITS:
+            return 10 + _CN_DIGITS[tail]
+        return None
     head, sep, tail = text.partition("十")
     if sep and head in _CN_DIGITS and tail in _CN_DIGITS:
         return _CN_DIGITS[head] * 10 + _CN_DIGITS[tail]
@@ -124,7 +162,13 @@ def _numeral_to_int(text: str) -> Optional[int]:
 
 
 def _normalize_unit_keys() -> dict[str, str]:
-    out: dict[str, str] = {}
+    """Accepted unit inputs: canonical unit keys plus community shorthand.
+
+    The canonical keys (``street``, ``school_refusal``, ...) are included
+    because :func:`resolve_wl` *emits* them as ``"<unit> wlN"`` input aliases;
+    an emitted alias that the parser cannot read back would be a dead alias.
+    """
+    out: dict[str, str] = {unit.lower(): unit for unit in UNIT_ORDER}
     for key, unit in UNIT_ALIASES.items():
         out.setdefault(key.lower(), unit)
     return out
@@ -134,13 +178,21 @@ _UNIT_LOOKUP = _normalize_unit_keys()
 
 
 def _parse_ordinal(text: str) -> Optional[int]:
-    text = text.translate(_ARABIC_DIGITS)
-    if not text:
-        return None
-    if text.isdigit():
-        value = int(text)
-        return value if 1 <= value <= 999 else None
-    return None
+    """Parse a plain decimal ordinal (``3`` / ``３``), bounded before ``int``."""
+    return _bounded_digits(_normalize_numeral(text))
+
+
+def _ordinal_or_default(raw: str, default: int = 1) -> Optional[int]:
+    """Distinguish an *omitted* ordinal from an *explicitly invalid* one.
+
+    A syntax that completely omits the ordinal (``wl`` / ``vs wl``) means the
+    first round.  An explicitly written but invalid ordinal (``0``, ``1000``,
+    a 4000-digit run) is rejected with ``None`` -- it is never coerced to the
+    default by an ``or``-style fallback.
+    """
+    if not raw:
+        return default
+    return _parse_ordinal(raw)
 
 
 def parse_wl_query(query: str) -> Optional[tuple[str, str, int]]:
@@ -201,7 +253,9 @@ def parse_wl_query(query: str) -> Optional[tuple[str, str, int]]:
 
     vs_match = re.fullmatch(r"(?:wl)?(?:vs|virtualsinger|虚拟歌手|バーチャルシンガー)(?:wl)?([0-9０-９]*)", normalized)
     if vs_match:
-        ordinal = _parse_ordinal(vs_match.group(1) or "1") or 1
+        ordinal = _ordinal_or_default(vs_match.group(1))
+        if ordinal is None:
+            return None
         return "virtual_singer", "", ordinal
 
     for key in sorted(_UNIT_LOOKUP, key=len, reverse=True):
@@ -209,16 +263,30 @@ def parse_wl_query(query: str) -> Optional[tuple[str, str, int]]:
             continue
         rest = normalized[len(key):]
         if rest.startswith("wl"):
-            rest = rest[2:]
-        ordinal = _parse_ordinal(rest) if rest else 1
+            # "<unit> wl" / "<unit> wlN": the WL marker is present, so the
+            # ordinal is either omitted or explicit -- never inferred.  An
+            # explicit invalid ordinal ("vbs wl0") is rejected rather than
+            # folded onto round 1.
+            ordinal = _ordinal_or_default(rest[2:])
+            if ordinal is None:
+                return None
+            return "unit_wl", _UNIT_LOOKUP[key], ordinal
+        # "<unit>N" shorthand: the remainder is itself the ordinal.
+        ordinal = _ordinal_or_default(rest)
         if ordinal is None:
+            # The remainder is not an ordinal; a shorter alias may still match
+            # the whole query, so keep looking (longest keys are tried first).
             continue
         return "unit_wl", _UNIT_LOOKUP[key], ordinal
 
     # wlN means the Nth round as a whole (matching the community's "WL3").
+    # Only a completely omitted ordinal defaults to round 1; "wl0" / "wl1000"
+    # are rejected instead of being quietly folded onto the first round.
     round_match = re.fullmatch(r"wl([0-9０-９]*)", normalized)
     if round_match:
-        ordinal = _parse_ordinal(round_match.group(1) or "1") or 1
+        ordinal = _ordinal_or_default(round_match.group(1))
+        if ordinal is None:
+            return None
         return "round", "", ordinal
 
     return None
@@ -471,8 +539,11 @@ def resolve_wl(
         }
 
     if kind == "code":
-        round_no = int(value)
-        if round_no > len(rounds):
+        # ``value`` arrives as a digit string; bound it here as well so the
+        # code path stays total even if a future producer hands over an
+        # oversized or non-decimal string.  Never call ``int()`` unchecked.
+        round_no = _parse_ordinal(value)
+        if round_no is None or round_no > len(rounds):
             return None
         round_events = rounds[round_no - 1]["events"]
         if ordinal > len(round_events):

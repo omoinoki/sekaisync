@@ -4,9 +4,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sekaisync.cli import main as cli_main
 from sekaisync.eventalias import (
+    CHARACTER_ALIASES,
     _build_jp_box_map,
     build_event_alias_map,
     numeral_text_to_int,
@@ -14,6 +16,10 @@ from sekaisync.eventalias import (
     resolve_activity,
     resolve_event_alias,
 )
+
+# The bound is part of the contract; see the same note in test_worldlink.py.
+_MAX_ORDINAL = 999
+_MAX_ORDINAL_INPUT_LEN = len(str(_MAX_ORDINAL)) + 1
 
 # A box event in the community sense is determined by its first rarity_4 card:
 # the event is attributed to that character, even when the same band or a
@@ -251,6 +257,79 @@ class ParseQueryTest(unittest.TestCase):
         self.assertEqual(numeral_text_to_int("十一"), 11)
         self.assertEqual(numeral_text_to_int("二十"), 20)
 
+    def test_numeral_converter_is_bounded(self):
+        # Out-of-range / malformed numerals return None instead of raising.
+        self.assertEqual(numeral_text_to_int("3"), 3)
+        self.assertEqual(numeral_text_to_int("３"), 3)  # full-width
+        self.assertEqual(numeral_text_to_int("007"), 7)
+        self.assertEqual(numeral_text_to_int("0003"), 3)
+        for bad in ("0", "000", "1000", "9999", "00009", "", "²", "٣", "三三"):
+            self.assertIsNone(numeral_text_to_int(bad), bad)
+
+    def test_very_long_digit_string_returns_none_without_raising(self):
+        for digits in ("9" * 4000, "9" * 5000, "0" * 5000):
+            self.assertIsNone(numeral_text_to_int(digits))
+            for alias in ("khn", "豆", "小豆泽心羽"):
+                self.assertIsNone(parse_query(alias + digits), alias)
+
+    def test_explicit_zero_and_overflow_are_rejected(self):
+        # "khn" alone is not a valid box query, and an explicit 0 / 1000 is
+        # rejected rather than being treated as box 1.
+        self.assertIsNone(parse_query("khn0"))
+        self.assertIsNone(parse_query("khn1000"))
+        self.assertIsNone(parse_query("khn00"))
+        self.assertIsNone(parse_query("khn9999"))
+        self.assertIsNone(parse_query("豆0"))
+        self.assertIsNone(parse_query("豆1000"))
+
+    def test_leading_whitespace_is_normalized_once(self):
+        # Whitespace handling must match between the parser and the resolver;
+        # a leading space used to make parse_query and resolve_event_alias
+        # disagree (the alias lookup raised StopIteration).
+        expected = (9, 3)
+        for query in ("khn3", " khn3", "khn3 ", "  khn3  ", "k h n 3", "小豆泽 心羽3"):
+            parsed = parse_query(query)
+            self.assertIsNotNone(parsed, repr(query))
+            self.assertEqual((parsed[0].id, parsed[1]), expected, repr(query))
+
+    def test_int_never_receives_an_over_long_string(self):
+        lengths: list[int] = []
+        real_int = int
+
+        def recording_int(value=0, *args, **kwargs):
+            if isinstance(value, str):
+                lengths.append(len(value))
+            return real_int(value, *args, **kwargs)
+
+        inputs = ["3", "007", "0003", "0", "1000", "9" * 4000, "0" * 4000, "²"]
+        with mock.patch("builtins.int", side_effect=recording_int):
+            for text in inputs:
+                numeral_text_to_int(text)
+        self.assertTrue(lengths)
+        self.assertLessEqual(max(lengths), _MAX_ORDINAL_INPUT_LEN)
+
+    def test_ordinal_bound_is_999(self):
+        self.assertEqual(numeral_text_to_int("999"), 999)
+        self.assertIsNone(numeral_text_to_int("1000"))
+        self.assertIsNone(numeral_text_to_int("1001"))
+
+    def test_every_generated_alias_round_trips(self):
+        # Astra: tokens the module generates internally must be parseable by
+        # the public parser, i.e. every advertised alias is a usable input.
+        checked = 0
+        for info in CHARACTER_ALIASES.values():
+            for alias in info.aliases:
+                for ordinal_text in ("1", "2", "3", "三", "十"):
+                    query = alias + ordinal_text
+                    parsed = parse_query(query)
+                    self.assertIsNotNone(parsed, f"advertised alias {query!r} does not parse")
+                    self.assertEqual(parsed[0].id, info.id, query)
+                    checked += 1
+        self.assertGreater(checked, 0)
+        for query in ("khn3", "豆3", "豆宝3", "小豆泽心羽3", "心羽3箱"):
+            parsed = parse_query(query)
+            self.assertEqual((parsed[0].id, parsed[1]), (9, 3), query)
+
 
 class EventAliasMapTest(unittest.TestCase):
     def setUp(self):
@@ -333,6 +412,36 @@ class EventAliasMapTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["mapping"]["jp"]["event_id"], 8)
         self.assertEqual(result["character"]["id"], 9)
+
+    def test_resolver_accepts_every_query_the_parser_accepts(self):
+        # D20: " khn3" parsed fine but raised StopIteration in the resolver.
+        # Every advertised alias must survive the full input pipeline.
+        queries = ["khn3", " khn3", "khn3 ", "  khn3  ", "小豆泽 心羽3", " 豆宝3 "]
+        for alias in CHARACTER_ALIASES["khn"].aliases:
+            queries.append(alias + "3")
+            queries.append(" " + alias + "3")
+            queries.append(" " + alias + "3 ")
+        for query in queries:
+            result = resolve_event_alias(self.root, query, regions=["jp"])
+            self.assertIsNotNone(result, repr(query))
+            self.assertEqual(result["character"]["id"], 9, repr(query))
+            self.assertEqual(result["ordinal"], 3, repr(query))
+            self.assertEqual(result["mapping"]["jp"]["event_id"], 10, repr(query))
+
+    def test_resolver_does_not_raise_on_hostile_ordinals(self):
+        for query in ("khn" + "9" * 4000, "khn" + "0" * 5000, "khn²",
+                      "khn0", "khn1000", " khn" + "9" * 4000):
+            self.assertIsNone(resolve_event_alias(self.root, query, regions=["jp"]), query[:16])
+
+    def test_activity_dispatch_does_not_raise_on_hostile_input(self):
+        for query in (" khn3", "khn3 "):
+            result = resolve_activity(self.root, query, regions=["jp"])
+            self.assertEqual(result["kind"], "box", repr(query))
+            self.assertEqual(result["character"]["id"], 9, repr(query))
+        for query in ("vbs wl0", "wl0", "wl" + "9" * 4000, "khn" + "9" * 4000,
+                      "round" + "9" * 4000):
+            result = resolve_activity(self.root, query, regions=["jp"])
+            self.assertEqual(result["kind"], "unresolved", query[:16])
 
 
 class NewOwnerRuleTest(unittest.TestCase):
