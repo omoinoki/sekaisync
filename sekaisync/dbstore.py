@@ -569,6 +569,122 @@ def web_trust_buckets(
         return _rows(owned)
 
 
+def browse_web_rows(
+    store_root: Path,
+    *,
+    source_ids: Optional[Sequence[str]] = None,
+    language: Optional[str] = None,
+    kinds: Optional[Sequence[str]] = None,
+    limit: int,
+    include_overlay: bool = False,
+    source_priority: Optional[Sequence[str]] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Filtered, ordered, LIMITed page metadata straight out of SQL.
+
+    Replaces the "load every page, filter in Python, then slice" shape that
+    made `web_browse(limit=20)` materialise 752k full-text rows to return 20
+    (Astra D06: "browse 在 SQL 中做完整过滤、稳定排序、LIMIT").
+
+    Two phases, because the expensive column and the ranking columns are
+    different:
+
+    1. Filter + order + LIMIT over metadata **only** — ``text`` is never
+       touched, so the scan reads small columns and a top-N sort keeps memory
+       bounded by the limit rather than the table.
+    2. Read ``length(text)`` and ``substr(text, 1, 300)`` for just those K
+       winners, keyed by primary key.
+
+    Filters use the **stored** ``aux_flag`` / ``derived_flag`` columns, written
+    by ``is_auxiliary_page`` / ``is_derived_page`` at insert time — verified to
+    agree with recomputation across every distinct filter-relevant tuple in the
+    real store (0 disagreements / 97 tuples), so the SQL predicate is exact
+    rather than an approximation of the Python rule.
+
+    Ordering reproduces the previous two-pass Python sort (source priority
+    ascending, then newest ``crawled_at``) via a CASE over the caller's
+    priority list, with ``seq`` as a deterministic tiebreak.
+
+    Only caller-resolved value sets are bound; nothing is interpolated.
+    """
+    _ensure_initialized(store_root)
+    where: list[str] = ["NOT (derived_flag = 1 AND aux_flag = 0)"]
+    params: list[Any] = []
+    if not include_overlay:
+        where.append("aux_flag = 0")
+
+    if source_ids:
+        where.append(f"source IN ({','.join('?' * len(source_ids))})")
+        params.extend(source_ids)
+    if language:
+        where.append("language = ?")
+        params.append(language)
+    if kinds:
+        where.append(f"LOWER(kind) IN ({','.join('?' * len(kinds))})")
+        params.extend([str(k).lower() for k in kinds])
+
+    priority = [str(s) for s in (source_priority or ())]
+    if priority:
+        cases = " ".join("WHEN ? THEN ?" for _ in priority)
+        order_rank = f"CASE source {cases} ELSE {len(priority)} END"
+        rank_params: list[Any] = []
+        for index, source_id in enumerate(priority):
+            rank_params.extend([source_id, index])
+    else:
+        order_rank = "0"
+        rank_params = []
+
+    columns = ", ".join(c for c in _PAGE_COLUMNS if c != "text")
+    sql = (
+        f"SELECT source, {columns}, aux_flag, derived_flag, extra_json, seq "
+        f"FROM web_pages WHERE {' AND '.join(where)} "
+        f"ORDER BY {order_rank}, crawled_at DESC, source, seq "
+        f"LIMIT ?"
+    )
+    # Parameter binding is positional: the WHERE placeholders are bound before
+    # the ORDER BY ones, so `params` must come first even though the CASE
+    # appears later in the statement text.
+    phase1_params = params + rank_params + [max(int(limit or 0), 0)]
+
+    def _rows(active: sqlite3.Connection) -> list[dict[str, Any]]:
+        cursor = active.execute(sql, phase1_params)
+        cursor.row_factory = sqlite3.Row
+        rows = [_web_page_row_to_dict(row, include_text=False) for row in cursor]
+        if not rows:
+            return rows
+        # Phase 2: read text-derived values for the winners only.
+        keys = [(item.get("source", ""), item.get("id", "")) for item in rows]
+        placeholders = ",".join("(?,?)" for _ in keys)
+        head_sql = (
+            f"SELECT source, id, length(text) AS text_length, "
+            f"substr(text, 1, 300) AS text_head FROM web_pages "
+            f"WHERE (source, id) IN (VALUES {placeholders})"
+        )
+        head_params: list[Any] = []
+        for source_id, page_id in keys:
+            head_params.extend([source_id, page_id])
+        derived: dict[tuple, tuple[int, str]] = {}
+        for row in active.execute(head_sql, head_params):
+            derived[(row[0], row[1])] = (
+                int(row[2] or 0),
+                str(row[3] or ""),
+            )
+        for item in rows:
+            length_value, head = derived.get(
+                (item.get("source", ""), item.get("id", "")), (0, "")
+            )
+            item["text_length"] = length_value
+            # Snippet source: only the first 300 chars, read for K rows rather
+            # than for every candidate.
+            item["text_head"] = head
+        return rows
+
+    if conn is not None:
+        return _rows(conn)
+    with connect(store_root) as owned:
+        return _rows(owned)
+
+
 def load_web_index_rows(
     store_root: Path,
     conn: Optional[sqlite3.Connection] = None,

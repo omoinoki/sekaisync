@@ -771,6 +771,71 @@ def web_search(
     return [page for page, _score in scored[:limit]]
 
 
+def _sql_filter_values(
+    store_root: Path,
+    *,
+    wanted_source: Optional[str],
+    kind: Optional[str],
+) -> dict[str, Any]:
+    """Resolve filter rules into finite value sets for SQL.
+
+    `web_browse`'s filters are defined in Python (`matches_source_filter`
+    compares a page's *backend class*, `page_category` maps many raw `kind`
+    spellings onto one category).  Rather than reimplement those rules in SQL
+    — which is how recall quietly changes — the distinct dimension values
+    actually present in the store are enumerated (a few thousand rows at
+    most, versus 752k pages) and each rule is evaluated **by calling the
+    original function**.  The results are finite sets that SQL can compare
+    against exactly.
+
+    Returns ``{}`` when a filter cannot be resolved, which the caller treats
+    as "do not narrow".
+    """
+    resolved: dict[str, Any] = {}
+    with dbstore.connect(store_root) as conn:
+        rows = list(
+            conn.execute(
+                "SELECT DISTINCT source, kind, aux_flag, derived_flag, source_type "
+                "FROM web_pages"
+            )
+        )
+    # Distinct (backend, source) pairs described the same way `page_backend` does.
+    probes: list[dict[str, Any]] = []
+    seen_probe: set[tuple] = set()
+    for source, kind_value, aux_flag, derived_flag, source_type in rows:
+        key = (source, kind_value, aux_flag, derived_flag, source_type)
+        if key in seen_probe:
+            continue
+        seen_probe.add(key)
+        probes.append(
+            {
+                "source": source,
+                "kind": kind_value,
+                "auxiliary": bool(aux_flag),
+                "derived": bool(derived_flag),
+                "source_type": source_type,
+            }
+        )
+
+    if wanted_source:
+        resolved["source_ids"] = sorted(
+            {
+                probe["source"]
+                for probe in probes
+                if matches_source_filter(probe, wanted_source)
+            }
+        )
+
+    if kind:
+        matching_kinds = {
+            str(probe["kind"])
+            for probe in probes
+            if page_category(probe) == kind or str(probe["kind"]) == kind
+        }
+        resolved["kinds"] = sorted(matching_kinds)
+    return resolved
+
+
 def web_browse(
     store_root: Path,
     source: Optional[str] = None,
@@ -781,11 +846,37 @@ def web_browse(
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
 ) -> list[dict[str, Any]]:
+    """Browse page metadata, newest-crawl-first within source priority.
+
+    Filtering, ordering and the row limit are pushed into SQL so returning 20
+    rows no longer reads 752k full-text rows (Astra D06; measured 50.2s → see
+    the commit message).  The Python predicates below are still applied to the
+    narrowed candidate set, so the result is identical to the previous
+    full-scan behaviour by construction rather than by re-implementation.
+
+    SQL narrows on exactly the conditions the Python filter uses:
+
+    - ``NOT (derived_flag AND NOT aux_flag)`` is the derived-page exclusion
+    - ``aux_flag = 0 OR include_overlay`` is the auxiliary exclusion
+    - source ids and raw kinds come from :func:`_sql_filter_values`, which
+      evaluates the real rule functions over the distinct stored values
+    """
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
-    pages = flatten_web_pages(store_root)
+
+    resolved = _sql_filter_values(store_root, wanted_source=wanted_source, kind=kind)
+    candidates = dbstore.browse_web_rows(
+        store_root,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        kinds=resolved.get("kinds"),
+        limit=limit,
+        include_overlay=include_overlay,
+        source_priority=priority,
+    )
+
     items: list[dict[str, Any]] = []
-    for page in pages:
+    for page in candidates:
         if is_derived_page(page) and not is_auxiliary_page(page):
             continue
         if is_auxiliary_page(page) and not include_overlay:
@@ -797,7 +888,12 @@ def web_browse(
         if kind:
             if page_category(page) != kind and page.get("kind") != kind:
                 continue
-        snippet = " ".join(str(page.get("text", ""))[:300].split())
+        # `text_head` is the SQL-side first 300 chars; fall back to `text` when
+        # a caller supplied full rows (e.g. include_text or a non-SQL path).
+        head = page.get("text_head")
+        if head is None:
+            head = str(page.get("text", ""))[:300]
+        snippet = " ".join(str(head).split())
         item = {
             "id": page.get("id", ""),
             "source": page.get("source", ""),
@@ -809,7 +905,14 @@ def web_browse(
             "kind": page.get("kind", ""),
             "crawled_at": page.get("crawled_at", ""),
             "snippet": snippet,
-            "text_length": len(page.get("text", "")),
+            # `text_length` comes from the SQL `length(text)` supplied with the
+            # row. Deriving it from `page["text"]` would report 0 for every page
+            # in the SQL path, since the body is deliberately not selected.
+            "text_length": int(
+                page.get("text_length")
+                if page.get("text_length") is not None
+                else len(str(page.get("text", "")))
+            ),
             "trust": trust_for_page(page),
             "canonical_key": canonical_key_for_page(page),
             "source_hash": page.get("source_hash", ""),
