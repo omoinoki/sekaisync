@@ -193,6 +193,12 @@ def similarity(katakana: str, english: str) -> float:
       罗马音一致 → 至少 0.6。这是 `ニーゴ→N25` 这类片假名简称与拉丁缩写
       配对的通道，也是唯一会放行非音译对的规则——它的误报面被"同点位候选"
       限制，接受这个风险以换取该类缩写对的召回。
+
+      Astra P08/D08：这条规则给出的是**候选资格**（进池、参与排序），不是
+      实体同一性证据。`ニーゴ→N25` 与 `ニーゴ→N99` 在它底下得分相同——它
+      无法区分正确别名与任意同首字母缩写。因此 :func:`is_abbrev_form_only`
+      单独暴露"此匹配仅由缩写形态规则抬到当前分数"这一事实，让调用方
+      （trinity 的 translit 确认门槛）不把这类匹配当作已确认音译。
     """
     r = _romaji_key(katakana_to_romaji(katakana))
     e = _english_key(english)
@@ -210,6 +216,31 @@ def similarity(katakana: str, english: str) -> float:
     if _ABBREV_FORM_RE.match(e) and len(r) >= 2 and r[0] == e[0]:
         score = max(score, 0.6)
     return round(min(1.0, score), 4)
+
+
+def is_abbrev_form_only(katakana: str, english: str) -> bool:
+    """匹配分数是否**仅由缩写形态规则**支撑（Astra P08/D08）。
+
+    True 表示：去掉缩写形态抬分后，romaji 相似度本身达不到 0.6 —— 即这对
+    匹配的"已确认音译"身份完全来自"同首字母+数字形态"，而不是任何音译或
+    包含关系。`ニーゴ→N25` 与 `ニーゴ→N99` 在这条规则下等价，因此它不能
+    区分正确别名与邻近负例；调用方应把它当候选资格处理，而非已确认证据。
+    """
+    r = _romaji_key(katakana_to_romaji(katakana))
+    e = _english_key(english)
+    if not r or not e:
+        return False
+    if r == e:
+        return False  # 完全相等是真音译，与缩写规则无关
+    score = difflib.SequenceMatcher(None, r, e).ratio()
+    if r in e or e in r:
+        shorter, longer = (r, e) if len(r) <= len(e) else (e, r)
+        len_ratio = len(shorter) / len(longer)
+        if len(shorter) >= 2 and len_ratio >= 0.6:
+            score = max(score, 0.7 + 0.3 * (len_ratio - 0.6) / 0.4)
+    if score >= 0.6:
+        return False  # 非缩写规则已独立达标
+    return bool(_ABBREV_FORM_RE.match(e) and len(r) >= 2 and r[0] == e[0])
 
 
 def is_plausible_translation(katakana: str, english: str, threshold: float = 0.5) -> bool:

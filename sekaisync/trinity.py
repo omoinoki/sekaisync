@@ -108,7 +108,12 @@ from sekaisync.penetrate_channels import (  # noqa: E402
     register_glossary_names,
     verify_triangle,
 )
-from sekaisync.romaji import is_generic_katakana, is_plausible_translation, similarity  # noqa: E402
+from sekaisync.romaji import (  # noqa: E402
+    is_abbrev_form_only,
+    is_generic_katakana,
+    is_plausible_translation,
+    similarity,
+)
 from sekaisync.zhfirst import strip_speaker  # noqa: E402
 
 
@@ -1510,6 +1515,16 @@ def _merge_channels(
                         sim_value = float(payload.get("sim", 0.0) or 0.0)
                         if sim_value < _TRANSLIT_CONFIRMED_SIM:
                             label = "translit_low"
+                        elif is_abbrev_form_only(term, value):
+                            # Astra P08/D08: a match whose score comes only
+                            # from the abbreviation form rule (same initial +
+                            # digit shape) is candidate eligibility, not
+                            # identity evidence — `ニーゴ→N25` and
+                            # `ニーゴ→N99` are indistinguishable under it. It
+                            # must not count as confirmed translit; the pair
+                            # still enters the pool as translit_low and needs
+                            # the same corroboration as any weak candidate.
+                            label = "translit_low"
                     bucket = lang_row.setdefault(value, [])
                     if label not in bucket:
                         bucket.append(label)
@@ -1618,6 +1633,29 @@ def _merge_channels(
                 promoted.append("主干同点证据支持（" + ", ".join(hits) + "）")
 
         if not merged_names and not term_conflicts:
+            if edge_notes:
+                # Astra P08/D08: this continue used to swallow terms whose only
+                # candidates were edge-tier (sim 0.5-0.6) and got dropped in the
+                # per-slot check. The term then vanished from the output entirely
+                # — neither accepted, nor pending, nor conflicted — so the
+                # summary counts no longer summed to the per-slot decisions.
+                # Record it as pending: "we saw candidates but could not confirm
+                # any" is exactly what the review queue exists for.
+                pending.append(
+                    {
+                        "term": term,
+                        "names": {},
+                        "confidence": 0.0,
+                        "channels": ["translit"],
+                        "reason": (
+                            "仅 translit 边缘档候选（sim 0.5-0.6），无跨语言字面"
+                            "命中或主干背书 → 不足以采纳，交智能体裁决（"
+                            + "; ".join(edge_notes)
+                            + "）"
+                        ),
+                    }
+                )
+                stats_counter["edge_only_pending"] += 1
             continue
 
         # ── 诚实边界 ①：未评测语言的槽需要交叉验证或背书 ─────────────────
