@@ -148,6 +148,143 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
     )
 
 
+# 各实体类型用于时序判定的时间字段（毫秒时间戳）。按优先级取第一个可用的：
+# 一个实体可能同时有 startAt（活动开始）与 releaseAt（卡牌实装）。
+_TIME_FIELDS: dict[str, tuple[str, ...]] = {
+    "event": ("startAt",),
+    "card": ("releaseAt",),
+    "gacha": ("startAt",),
+    "virtual_live": ("startAt",),
+    "song": ("publishedAt",),
+    "music": ("publishedAt",),
+    "area": ("startAt",),
+    "billing_shop_item": ("startAt",),
+    "shop_item": ("startAt",),
+}
+
+
+def entity_timestamp(entity: Entity) -> int | None:
+    """实体的时间戳（毫秒）；无时间字段则返回 None。
+
+    用途是时序分段："在某个时点，Agent 应该知道什么"。取字段的优先级由
+    ``_TIME_FIELDS`` 决定，未知类型退回扫描 facts 里第一个 ``*At`` 键。
+    """
+    facts = entity.facts or {}
+    for field in _TIME_FIELDS.get(entity.type, ()):
+        value = facts.get(field)
+        ts = _to_ms(value)
+        if ts is not None:
+            return ts
+    for key, value in facts.items():
+        if key.endswith("At"):
+            ts = _to_ms(value)
+            if ts is not None:
+                return ts
+    return None
+
+
+def _to_ms(value: object) -> int | None:
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    # 秒级时间戳（某些表用秒）统一升到毫秒
+    return number * 1000 if number < 10_000_000_000 else number
+
+
+def build_fact_pack_at(
+    entity: Entity,
+    language: str = "en",
+    *,
+    as_of: int | None = None,
+    as_of_iso: str | None = None,
+) -> dict:
+    """截止 ``as_of`` 的时序分段事实包（防剧透）。
+
+    动机（来自 Sekai Viewer Graph RAG 的做法）：给 LLM 喂上下文时，"第 N 集
+    时应该知道什么"与"最终会知道什么"必须分开——否则模型会提前写出后续剧情
+    的结局。它把事实按剧情位置切成 Past/Future 两栏注入 prompt；这里提供
+    等价能力的通用版本。
+
+    ``as_of`` 为毫秒时间戳，``as_of_iso`` 为 ISO 字符串（二者取一，都不给
+    则视为"现在"）。返回::
+
+        {
+          "entity_id": ..., "entity_type": ..., "language": ...,
+          "as_of": <ms>, "as_of_iso": ...,
+          "past":   {"text": ..., "fact_pack_tokens": ...},
+          "future": {"text": ..., "fact_pack_tokens": ...},
+          "state":  "past" | "future" | "undated",
+        }
+
+    ``state`` 表明该实体本身相对 as_of 的位置：尚未发生的实体其全部事实都在
+    ``future``（Agent 据此不该把它当作既成事实）；无时间字段的实体标
+    ``undated``，两栏都可能为空、完整内容仍以 :func:`build_fact_pack` 为准。
+
+    这是**纯增量能力**：不改变 :func:`build_fact_pack` 的任何行为。
+    """
+    if as_of is None:
+        if as_of_iso:
+            as_of = _parse_iso_ms(as_of_iso)
+        else:
+            as_of = _now_ms()
+
+    ts = entity_timestamp(entity)
+    if ts is None:
+        state = "undated"
+        past_entity, future_entity = entity, None
+    elif ts <= as_of:
+        state = "past"
+        past_entity, future_entity = entity, None
+    else:
+        state = "future"
+        past_entity, future_entity = None, entity
+
+    def pack_text(target: Entity | None) -> dict:
+        if target is None:
+            return {"text": "", "fact_pack_tokens": 0}
+        pack = build_fact_pack(target, language=language)
+        return {"text": pack.text, "fact_pack_tokens": pack.fact_pack_tokens}
+
+    return {
+        "entity_id": entity.id,
+        "entity_type": entity.type,
+        "language": language,
+        "as_of": as_of,
+        "as_of_iso": _ms_to_iso(as_of),
+        "state": state,
+        "entity_at": _ms_to_iso(ts) if ts is not None else None,
+        "past": pack_text(past_entity),
+        "future": pack_text(future_entity),
+    }
+
+
+def _parse_iso_ms(value: str) -> int:
+    from datetime import datetime, timezone
+
+    text = str(value).strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _ms_to_iso(value: int | None) -> str | None:
+    if value is None:
+        return None
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+
+
+def _now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+
+
 def build_fact_packs(entities: Iterable[Entity], language: str = "en") -> list[FactPack]:
     return [build_fact_pack(entity, language=language) for entity in entities]
 
