@@ -762,15 +762,30 @@ def web_search(
             continue
         _, score = matched
         rank = source_rank(page.get("source", ""), priority)
-        entry = (rank, -score, next(counter), page)
+        # Quality order is (rank asc, score desc, arrival asc) — arrival
+        # ascending because the previous implementation used a *stable* sort
+        # over store order, so equal-quality rows kept their store position.
+        # This is a MIN-heap whose root must be the WORST entry, which means
+        # the key must decrease as quality decreases:
+        #   -rank     -> a worse (higher-rank) source is smaller
+        #   +score    -> a worse (lower) score is smaller
+        #   -arrival  -> a LATER arrival is smaller, so ties evict the newest
+        #                rather than the oldest
+        # The arrival sign is easy to get backwards and silent when wrong: with
+        # mostly-tied scores, the result still looks reasonable while picking
+        # different rows than a stable sort would.
+        entry = (-rank, score, -next(counter), page)
         if len(heap) < limit:
             heapq.heappush(heap, entry)
-        elif entry[:3] < heap[0][:3]:
-            # Better than the current worst of the top-K: replace it. Holding
-            # only K entries is what keeps memory bounded by the limit.
+        elif entry > heap[0]:
+            # Better than the current worst of the top-K: evict the root.
             heapq.heapreplace(heap, entry)
 
-    winners = [entry[3] for entry in sorted(heap)]
+    # Best first: invert the heap key back into quality order.
+    winners = [
+        entry[3]
+        for entry in sorted(heap, key=lambda e: (-e[0], -e[1], -e[2]))
+    ]
     items: list[dict[str, Any]] = []
     for page in winners:
         head = page.get("text_head") or ""

@@ -314,6 +314,108 @@ class WebSearchStreamingTest(unittest.TestCase):
         # The single winner must also be present when more are returned.
         self.assertIn(few[0]["id"], [item["id"] for item in many])
 
+    def test_top_k_keeps_the_best_not_the_first(self):
+        """The heap must retain the *best* K, not the first K encountered.
+
+        `heapq` is a min-heap, so keying it by the quality order makes the root
+        the best entry and every replacement evicts a winner. Here a
+        high-priority source's matches appear later in `source, seq` order, so
+        an inverted heap shows up as the earlier low-priority rows surviving.
+        """
+        from sekaisync.webindex import DEFAULT_SOURCE_PRIORITY
+
+        # altsource_sv outranks altsource_ms.
+        high_priority = DEFAULT_SOURCE_PRIORITY[0]
+        save_web_pages(
+            self.store,
+            high_priority,
+            [
+                WebPage(
+                    id=f"web:high:wordings:{index}",
+                    source=high_priority,
+                    url=f"https://example.invalid/w{index}",
+                    title=f"w{index}",
+                    language="ja",
+                    kind="wordings",
+                    text="目标词出现在这里。",
+                    crawled_at="2026-08-01T00:00:00+00:00",
+                    hash=f"h{index}",
+                )
+                for index in range(6)
+            ],
+        )
+        results = web_search(self.store, "目标词", limit=3)
+        self.assertEqual(len(results), 3)
+        self.assertTrue(
+            all(item["source"] == high_priority for item in results),
+            "top-K returned lower-priority rows because the heap kept the "
+            f"first matches instead of the best: {[i['source'] for i in results]}",
+        )
+
+    def test_limit_one_returns_the_highest_priority_match(self):
+        """With one slot, the heap must still end up holding the best match.
+
+        Self-contained: it adds its own high-priority page rather than relying
+        on another test having run first.
+        """
+        from sekaisync.webindex import DEFAULT_SOURCE_PRIORITY
+
+        high_priority = DEFAULT_SOURCE_PRIORITY[0]
+        save_web_pages(
+            self.store,
+            high_priority,
+            [
+                WebPage(
+                    id="web:high:wordings:solo",
+                    source=high_priority,
+                    url="https://example.invalid/solo",
+                    title="solo",
+                    language="ja",
+                    kind="wordings",
+                    text="目标词出现在这里。",
+                    crawled_at="2026-08-01T00:00:00+00:00",
+                    hash="solo",
+                )
+            ],
+        )
+        results = web_search(self.store, "目标词", limit=1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], high_priority)
+
+    def test_tied_scores_keep_store_order(self):
+        """Ties must resolve like the stable sort the old code used.
+
+        The real store is tie-heavy: 26 of 30 matches for a common query score
+        identically, so the tiebreak decides the result. An inverted arrival
+        tiebreak still returns plausible-looking rows — just different ones —
+        which is why this is pinned explicitly.
+        """
+        ids = [f"web:tie:wordings:{index:02d}" for index in range(10)]
+        save_web_pages(
+            self.store,
+            "altsource_sv",
+            [
+                WebPage(
+                    id=page_id,
+                    source="altsource_sv",
+                    url=f"https://example.invalid/tie{index}",
+                    title="same title",
+                    language="ja",
+                    kind="wordings",
+                    text="目标词在这里",
+                    crawled_at="2026-08-01T00:00:00+00:00",
+                    hash=page_id,
+                )
+                for index, page_id in enumerate(ids)
+            ],
+        )
+        results = web_search(self.store, "目标词", limit=4)
+        self.assertEqual(
+            [item["id"] for item in results],
+            ids[:4],
+            "tied rows came back out of store order",
+        )
+
     def test_include_text_returns_bodies(self):
         results = web_search(self.store, "目标词", limit=3, include_text=True)
         self.assertTrue(results)
