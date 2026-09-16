@@ -13,8 +13,10 @@ from sekaisync.mcp_server import PROTOCOL_VERSION, McpServer
 from sekaisync.tools import (
     HTTP_GET_ROUTES,
     HTTP_POST_ROUTES,
+    TOOLS,
     ToolSpec,
     coerce_args,
+    mcp_tools_list,
 )
 
 
@@ -356,6 +358,9 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         if parsed.path == "/openapi.json":
             self._send_json(200, OPENAPI)
             return
+        if parsed.path == "/.well-known/mcp.json":
+            self._send_json(200, mcp_discovery_document())
+            return
         spec = HTTP_GET_ROUTES.get(parsed.path)
         if spec is None:
             self._send_json(404, {"error": "Not found"})
@@ -406,6 +411,36 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
+
+
+def mcp_discovery_document() -> dict:
+    """MCP 发现清单（``/.well-known/mcp.json``）。
+
+    工具列表**从 tools 注册表实时生成**，不手写——手写副本迟早与本尊漂移
+    （这个项目的文档数字漂移已是一类被记录过的问题）。同生态先例：
+    ``https://pjsk.moe/.well-known/mcp.json``，Agent 可零配置自动发现。
+    """
+    return {
+        "name": "SekaiSync",
+        "description": (
+            "Local knowledge base and deterministic fact layer for Project Sekai "
+            "(registry, glossary, cross-language terminology, crawled story text, "
+            "official news). Zero third-party dependencies."
+        ),
+        "version": __version__,
+        "serverInfo": {"name": "SekaiSync", "version": __version__},
+        "authentication": {
+            "type": "none",
+            "description": "Local service bound to 127.0.0.1 by default; no authentication required.",
+        },
+        "capabilities": {"tools": True, "resources": True, "prompts": False},
+        "transport": {
+            "mcp": "/mcp",
+            "stdio": "python -m sekaisync serve-mcp",
+            "openapi": "/openapi.json",
+        },
+        "tools": mcp_tools_list(TOOLS),
+    }
 
 
 def handle_mcp_message(
