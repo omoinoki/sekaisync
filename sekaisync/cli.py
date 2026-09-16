@@ -1793,7 +1793,25 @@ def main(argv: list[str] | None = None) -> int:
                 rebuild_indexes_after_event_check(config)
         except Exception as exc:
             args.auto_event_check = {"status": "error", "reason": str(exc)}
-    return args.func(args)
+    try:
+        return args.func(args)
+    except dbstore.SchemaVersionError as exc:
+        # P07 gate: the store was not written by this build (newer/older/unknown
+        # schema, or unreadable). Fail with an actionable message and a non-zero
+        # code instead of a traceback — the store is left byte-identical.
+        print(json.dumps(
+            {
+                "error": str(exc),
+                "schema_status": exc.status,
+                "schema_version_found": exc.found,
+                "schema_version_supported": exc.supported,
+                "store_db": str(exc.path) if exc.path else None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

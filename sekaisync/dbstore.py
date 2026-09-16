@@ -17,6 +17,11 @@ test fixtures). ``legacy_archived`` marks a store whose legacy files were
 moved away, so post-archive reads never re-trigger an import. ``raw/``
 region master tables, ``kb/news``, ``kb/events`` and the derived
 ``cache/`` files stay JSON by design.
+
+Schema gate (P07): a store whose ``schema_version`` stamp is older, newer
+or unreadable is refused with ``SchemaVersionError`` instead of being
+restamped as the current version. Reads never rewrite a stamp; migration
+is an explicit admin operation and is deliberately not implemented here.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -147,7 +153,198 @@ def connect(store_root: Path):
         conn.close()
 
 
+# ── schema version gate (P07) ─────────────────────────────────────
+#
+# B1 scope is rejection only: this build refuses to open a store it does
+# not understand and never restamps one.  Migration (v1→v2→v3) is an
+# explicit admin operation and is deliberately NOT implemented here.
+
+#: status values reported by ``inspect_schema``
+SCHEMA_ABSENT = "absent"      # no DB file (or an empty one) — safe to create
+SCHEMA_CURRENT = "current"    # stamped with SCHEMA_VERSION — safe to use
+SCHEMA_OLDER = "older"        # created by an older build — needs migration
+SCHEMA_NEWER = "newer"        # created by a newer build — needs newer code
+SCHEMA_UNKNOWN = "unknown"    # stamp present but not comparable — unreadable identity
+SCHEMA_CORRUPT = "corrupt"    # not a readable SekaiSync database
+
+
+@dataclass(frozen=True)
+class SchemaState:
+    """Read-only classification of a store's schema stamp."""
+
+    status: str
+    version: Optional[str] = None   # stamp as found on disk (None if absent/corrupt)
+    path: Optional[Path] = None     # the DB file the state describes
+    detail: str = ""                # human-readable extra context
+
+    @property
+    def is_current(self) -> bool:
+        return self.status == SCHEMA_CURRENT
+
+    @property
+    def is_usable(self) -> bool:
+        """True only for a store this build may open without changing it."""
+        return self.status in (SCHEMA_ABSENT, SCHEMA_CURRENT)
+
+
+class SchemaVersionError(RuntimeError):
+    """A store cannot be opened safely by this build.
+
+    Raised instead of silently restamping an unrecognised schema so that a
+    newer store is never reinterpreted as an older one.  ``status`` carries
+    the ``inspect_schema`` classification; ``found`` / ``supported`` name
+    the on-disk and expected schema versions.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: str,
+        path: Optional[Path] = None,
+        found: Optional[str] = None,
+        supported: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.path = path
+        self.found = found
+        self.supported = supported
+
+
+def _readonly_uri(path: Path) -> str:
+    """``file:`` URI that opens ``path`` read-only without creating it.
+
+    ``mode=ro`` never creates the database file, never creates parent
+    directories, and cannot write — so inspecting an unknown store leaves it
+    byte-identical.  (``immutable=1`` is deliberately not used: it ignores a
+    hot WAL and would misreport a valid store as empty.)
+    """
+    return Path(path).resolve().as_uri() + "?mode=ro"
+
+
+def _version_key(value: str) -> Optional[tuple[int, ...]]:
+    """Comparable key for dotted-integer stamps; None when not comparable."""
+    parts = value.strip().split(".")
+    if not parts or any(not part.strip().isdigit() for part in parts):
+        return None
+    key = tuple(int(part) for part in parts)
+    while len(key) > 1 and key[-1] == 0:  # "1.0" == "1"
+        key = key[:-1]
+    return key
+
+
+def inspect_schema(store_root: Path) -> SchemaState:
+    """Classify a store as absent / current / older / newer / unknown / corrupt.
+
+    Read-only: opens a ``mode=ro`` URI, so it creates no directory, no file
+    and never rewrites the schema stamp.  ``absent`` means "safe to
+    initialize"; anything else is a decision for the caller.  A non-empty
+    database with no ``meta`` stamp is reported as corrupt — never guessed
+    to be new.
+    """
+    path = db_path(Path(store_root))
+    if not path.exists():
+        return SchemaState(SCHEMA_ABSENT, None, path)
+    try:
+        if path.stat().st_size == 0:
+            # SQLite itself treats a zero-byte file as a valid empty database
+            # (exactly what an interrupted first-time create leaves behind),
+            # so nothing can be lost by initializing it.
+            return SchemaState(SCHEMA_ABSENT, None, path)
+    except OSError as exc:
+        return SchemaState(SCHEMA_CORRUPT, None, path, f"{type(exc).__name__}: {exc}")
+    try:
+        conn = sqlite3.connect(_readonly_uri(path), uri=True, timeout=5.0)
+    except sqlite3.Error as exc:
+        return SchemaState(SCHEMA_CORRUPT, None, path, f"{type(exc).__name__}: {exc}")
+    try:
+        has_meta = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+        ).fetchone()
+        if not has_meta:
+            return SchemaState(
+                SCHEMA_CORRUPT, None, path, "database has no meta table"
+            )
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+    except sqlite3.Error as exc:
+        return SchemaState(SCHEMA_CORRUPT, None, path, f"{type(exc).__name__}: {exc}")
+    finally:
+        conn.close()
+    if not row or not str(row[0] or "").strip():
+        return SchemaState(
+            SCHEMA_CORRUPT, None, path, "meta has no schema_version stamp"
+        )
+    version = str(row[0]).strip()
+    if version == SCHEMA_VERSION:
+        return SchemaState(SCHEMA_CURRENT, version, path)
+    found_key = _version_key(version)
+    supported_key = _version_key(SCHEMA_VERSION)
+    if found_key is None or supported_key is None or found_key == supported_key:
+        # ``version`` already failed the exact match above, so an equal key
+        # means a different spelling of a comparable version (e.g. "1.0"
+        # vs "1"). Refuse rather than guess which one is on disk.
+        return SchemaState(
+            SCHEMA_UNKNOWN, version, path,
+            f"schema_version {version!r} is not a version this build recognises",
+        )
+    if found_key > supported_key:
+        return SchemaState(SCHEMA_NEWER, version, path)
+    return SchemaState(SCHEMA_OLDER, version, path)
+
+
+def _schema_error(state: SchemaState) -> SchemaVersionError:
+    """Actionable error for a store this build must not open."""
+    where = f"store database {state.path}"
+    if state.status == SCHEMA_NEWER:
+        message = (
+            f"{where} was written by a newer SekaiSync (schema_version "
+            f"{state.version!r}; this build supports {SCHEMA_VERSION!r}). "
+            f"Refusing to open it so the newer data is not rewritten as an "
+            f"older schema. Use a SekaiSync build that supports "
+            f"{state.version!r}, or point --store at another directory."
+        )
+    elif state.status == SCHEMA_OLDER:
+        message = (
+            f"{where} uses an older schema (schema_version {state.version!r}; "
+            f"this build supports {SCHEMA_VERSION!r}). It was not migrated "
+            f"automatically and will not be rewritten in place. Run the "
+            f"explicit migration with a build that supports {state.version!r}, "
+            f"or point --store at another directory."
+        )
+    elif state.status == SCHEMA_UNKNOWN:
+        message = (
+            f"{where} carries a schema version this build does not recognise "
+            f"({state.detail}; this build supports {SCHEMA_VERSION!r}). "
+            f"Refusing to guess its schema; point --store at another directory."
+        )
+    else:
+        message = (
+            f"{where} is not a readable SekaiSync database "
+            f"({state.detail or 'unreadable'}; this build supports schema_version "
+            f"{SCHEMA_VERSION!r}). It was left untouched and NOT recreated; "
+            f"restore it from a backup or point --store at another directory."
+        )
+    return SchemaVersionError(
+        message,
+        status=state.status,
+        path=state.path,
+        found=state.version,
+        supported=SCHEMA_VERSION,
+    )
+
+
 def initialize(store_root: Path) -> None:
+    """Create the schema in a new/absent store, or verify a current one.
+
+    Refuses (``SchemaVersionError``) to touch a store stamped with any other
+    version so an unknown store is never silently restamped.
+    """
+    state = inspect_schema(store_root)
+    if state.status not in (SCHEMA_ABSENT, SCHEMA_CURRENT):
+        raise _schema_error(state)
     with connect(store_root) as conn:
         conn.executescript(_SCHEMA)
         conn.execute(
@@ -158,23 +355,19 @@ def initialize(store_root: Path) -> None:
 
 
 def initialized(store_root: Path) -> bool:
-    path = db_path(store_root)
-    if not path.exists():
-        return False
-    try:
-        with connect(store_root) as conn:
-            row = conn.execute(
-                "SELECT value FROM meta WHERE key='schema_version'"
-            ).fetchone()
-    except sqlite3.DatabaseError:
-        return False
-    return bool(row) and row[0] == SCHEMA_VERSION
+    """True only when the store exists and carries this build's schema stamp."""
+    return inspect_schema(store_root).status == SCHEMA_CURRENT
 
 
 def _ensure_initialized(store_root: Path) -> None:
     """Tables only; write APIs must never trigger a legacy import (recursion)."""
-    if not initialized(store_root):
+    state = inspect_schema(store_root)
+    if state.status == SCHEMA_CURRENT:
+        return
+    if state.status == SCHEMA_ABSENT:
         initialize(store_root)
+        return
+    raise _schema_error(state)
 
 
 def ensure_store(store_root: Path) -> None:
@@ -183,9 +376,16 @@ def ensure_store(store_root: Path) -> None:
     Per-domain import markers let hand-written legacy fixtures (tests) and
     real legacy stores migrate lazily, while archived stores (files moved
     away, domain already imported) never re-trigger.
+
+    A store stamped with a version this build does not understand is refused
+    with ``SchemaVersionError`` and left byte-identical — reads must never
+    downgrade it into a plausible-looking older store.
     """
-    if not initialized(store_root):
+    state = inspect_schema(store_root)
+    if state.status == SCHEMA_ABSENT:
         initialize(store_root)
+    elif state.status != SCHEMA_CURRENT:
+        raise _schema_error(state)
     pending = pending_legacy_domains(store_root)
     if pending:
         import_legacy_domains(store_root, pending)
@@ -812,6 +1012,10 @@ def term_status_from_db(store_root: Path) -> dict[str, Any]:
 
 
 def count_rows(store_root: Path) -> dict[str, int]:
+    # Tables-only gate: called from inside import_legacy_domains, so it must
+    # not trigger a legacy import (recursion) — but it must still refuse a
+    # store whose schema this build does not understand.
+    _ensure_initialized(store_root)
     with connect(store_root) as conn:
         out = {}
         for table in ("entities", "glossary_terms", "terms", "term_evidence", "web_pages"):
