@@ -153,18 +153,42 @@ def resolve_name(
     source_language: Optional[str] = None,
     kind: Optional[str] = None,
 ) -> list[dict]:
+    """Resolve a name, stating plainly when a language slot has no value.
+
+    A missing target-language name is a real answer — "the local store does not
+    have this name yet" — and is reported as ``target_name=None`` with
+    ``translation_status='missing'``.  It is deliberately NOT substituted with
+    ``term.canonical``: doing so asserts a translation the store does not have,
+    and once a fallback sits in the ``target_name`` slot no consumer can tell
+    it apart from a real translation.  ``canonical_name`` carries the display
+    spelling for callers that only need something to show.
+
+    B1 / Astra P04: ``target_name`` used to fall back to ``term.canonical``.
+    ``translation_status``, ``canonical_name`` and ``source_status`` are new.
+    """
     matches = find_terms(terms, query, kind=kind, limit=5)
     results = []
     for term, score in matches:
-        source_name = term.names.get(source_language, "") if source_language else ""
         target_name = term.names.get(target_language, "")
+        if source_language:
+            source_name = term.names.get(source_language, "")
+            source_status = "available" if source_name else "missing"
+        else:
+            # No source language was requested, so nothing can be missing.
+            # This is a different case from a requested-but-absent slot and
+            # must not be reported as "missing".
+            source_name = term.canonical
+            source_status = "not_requested"
         results.append(
             {
                 "id": term.id,
                 "kind": term.kind,
                 "canonical": term.canonical,
-                "source_name": source_name or term.canonical,
-                "target_name": target_name or term.canonical,
+                "canonical_name": term.canonical,
+                "source_name": source_name or None,
+                "source_status": source_status,
+                "target_name": target_name or None,
+                "translation_status": "available" if target_name else "missing",
                 "official": term.official,
                 "demo": term.demo,
                 "trust": term.trust or trust_for_source(

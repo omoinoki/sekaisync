@@ -198,40 +198,101 @@ class SekaiSyncCore:
         data["ready"] = self.ready()
         return data
 
+    #: Fields whose value is region-scoped in the master data.  v1 stores a
+    #: single ``facts`` dict per entity with no per-region authority, so for a
+    #: multi-region entity we cannot prove which region a value came from.
+    #: Reporting such a value as definite would invent region authority that
+    #: does not exist yet (Astra P03/P04; per-region facts arrive in B6).
+    _REGION_SENSITIVE_FIELDS = frozenset(
+        {
+            "startat", "starttime", "endat", "endtime", "start_at", "end_at",
+            "releasedate", "release_date", "availablefrom", "available_from",
+        }
+    )
+
     def verify_claims(self, claims: list[dict]) -> list[dict]:
         """Verify claims against the local registry with honest semantics.
 
-        Returns matched / conflict / ambiguous / unverified (NOT "verified" —
-        string matching is not fact verification). Each result carries
-        evidence citations (which entity, which name, what trust level)."""
+        Status vocabulary — chosen so that each value means exactly one thing:
+
+        ``matched``      the expected string appears among the matched entity's
+                         names.  This is NAME matching, not fact verification.
+        ``supported``    an explicit ``field`` was requested, the store has that
+                         field, and the values agree after normalization.
+        ``conflict``     an explicit ``field`` was requested, the store has that
+                         field, and the values differ.  Only ever returned with
+                         the stored value attached as evidence.
+        ``ambiguous``    the claim matched but no ``expected`` was supplied.
+        ``unknown``      the store cannot decide: no matching entity, or the
+                         store does not carry the requested field at all.
+                         Absence of data is NOT evidence a claim is false.
+        ``needs_region_data``
+                         the entity is multi-region and the field is
+                         region-scoped, so v1 cannot attribute a value to the
+                         requested region.
+
+        B1 / Astra P04: free-text that does not match previously returned
+        ``conflict``, which asserted a refutation the store cannot support —
+        "this string is not in my names" is not "this claim is false".  That
+        case is now ``unknown``/``unsupported``.
+        """
         output = []
         for claim in claims:
             text = str(claim.get("claim", ""))
             expected = str(claim.get("expected", ""))
-            matches = self.lookup(text, limit=3)
+            field = str(claim.get("field", "") or "").strip()
+            requested_region = str(claim.get("region", "") or "").strip()
+            entity_id = str(claim.get("entity_id", "") or "").strip()
+
+            if entity_id:
+                matched_entity = entity_by_id(self.registry, entity_id)
+                matches = self._match_rows([matched_entity]) if matched_entity else []
+            else:
+                matches = self.lookup(text, limit=3)
+
             if not matches:
                 output.append(
                     {
                         "claim": text,
-                        "status": "unverified",
+                        "status": "unknown",
                         "reason": "No matching entity found in local registry",
                         "evidence": [],
                         "coverage_note": "This means the local store does not cover this topic, not that the claim is false.",
                     }
                 )
                 continue
+
             expected_key = normalize_name(expected)
+
+            # ── explicit field comparison ────────────────────────────
+            if field:
+                result = self._verify_field_claim(
+                    matches, field, expected, expected_key, requested_region, text
+                )
+                output.append(result)
+                continue
+
+            # ── name / free-text comparison ──────────────────────────
             matched_keys = {
                 normalize_name(v)
                 for m in matches
                 for v in list(m["names"].values()) + [str(v) for v in m["facts"].values() if isinstance(v, (str, int, float))]
             }
-            if expected_key and expected_key in matched_keys:
-                status = "matched"
-            elif expected_key and expected_key not in matched_keys:
-                status = "conflict"
-            else:
+            if not expected_key:
                 status = "ambiguous"
+                reason = "No expected value supplied, so nothing was compared."
+            elif expected_key in matched_keys:
+                status = "matched"
+                reason = None
+            else:
+                # A name search that misses is not a refutation: the store may
+                # simply not carry this string in a name slot.
+                status = "unknown"
+                reason = (
+                    "The matched entity exists, but this string is not among "
+                    "its known names or fact values. This is a coverage gap, "
+                    "not evidence that the claim is false."
+                )
             # Build evidence citations
             evidence = []
             for m in matches[:2]:
@@ -247,16 +308,131 @@ class SekaiSyncCore:
                 }:
                     ev["matched_name"] = expected
                 evidence.append(ev)
-            output.append(
+            entry = {
+                "claim": text,
+                "status": status,
+                "method": "name-based string matching against local registry",
+                "evidence": evidence,
+                "matches": matches,
+            }
+            if reason:
+                entry["reason"] = reason
+            output.append(entry)
+        return output
+
+    def _match_rows(self, entities: list) -> list[dict]:
+        """Normalize registry entities into lookup-shaped rows."""
+        rows = []
+        for entity in entities:
+            if entity is None:
+                continue
+            rows.append(
                 {
-                    "claim": text,
-                    "status": status,
-                    "method": "name-based string matching against local registry",
-                    "evidence": evidence,
-                    "matches": matches,
+                    "id": entity.id,
+                    "type": entity.type,
+                    "regions": list(entity.regions or []),
+                    "names": dict(entity.names),
+                    "facts": dict(entity.facts or {}),
+                    "source": entity.source,
+                    "trust": entity.trust,
+                    "official": entity.source.startswith(("master_db", "official")),
                 }
             )
-        return output
+        return rows
+
+    def _verify_field_claim(
+        self,
+        matches: list[dict],
+        field: str,
+        expected: str,
+        expected_key: str,
+        requested_region: str,
+        text: str,
+    ) -> dict:
+        """Compare one explicit field, refusing to answer beyond the data.
+
+        Only fields the store actually carries can produce ``supported`` or
+        ``conflict``.  A field the store does not carry is ``unknown`` — the
+        danger this replaces was reporting a mismatch against an absent field as
+        a refutation.
+        """
+        row = matches[0]
+        field_key = field.strip()
+        facts = row.get("facts", {})
+
+        stored_key = None
+        for candidate in facts:
+            if candidate.lower() == field_key.lower() or normalize_name(candidate) == normalize_name(field_key):
+                stored_key = candidate
+                break
+
+        if stored_key is None:
+            return {
+                "claim": text,
+                "status": "unknown",
+                "field": field,
+                "reason": (
+                    f"The local store has no '{field}' field for this entity, "
+                    "so the claim can be neither confirmed nor refuted."
+                ),
+                "supported_fields": sorted(facts.keys()),
+                "evidence": [],
+                "matches": matches,
+            }
+
+        if (
+            field_key.lower() in self._REGION_SENSITIVE_FIELDS
+            and not requested_region
+            and len(row.get("regions", []) or []) > 1
+        ):
+            return {
+                "claim": text,
+                "status": "needs_region_data",
+                "field": field,
+                "reason": (
+                    "This field is region-scoped and the entity exists in "
+                    "multiple regions; without a requested region the stored "
+                    "value cannot be attributed to one."
+                ),
+                "evidence": [self._field_evidence(row, stored_key, None)],
+                "matches": matches,
+            }
+
+        stored_value = facts[stored_key]
+        stored_key_norm = normalize_name(str(stored_value))
+        if expected_key and stored_key_norm == expected_key:
+            return {
+                "claim": text,
+                "status": "supported",
+                "field": stored_key,
+                "method": "explicit field comparison against local registry",
+                "evidence": [self._field_evidence(row, stored_key, stored_value)],
+                "matches": matches,
+            }
+
+        return {
+            "claim": text,
+            "status": "conflict",
+            "field": stored_key,
+            "method": "explicit field comparison against local registry",
+            "reason": "The stored value differs from the expected value.",
+            "expected": expected,
+            "actual": stored_value,
+            "evidence": [self._field_evidence(row, stored_key, stored_value)],
+            "matches": matches,
+        }
+
+    def _field_evidence(self, row: dict, field: str, value: object) -> dict:
+        """A citation that keeps provenance with the claim about it."""
+        return {
+            "entity_id": row.get("id", ""),
+            "entity_type": row.get("type", ""),
+            "source": row.get("source", ""),
+            "trust": row.get("trust", ""),
+            "official": row.get("official", False),
+            "field": field,
+            "value": value,
+        }
 
     def web_lookup(
         self,
