@@ -1221,14 +1221,26 @@ def review_stats(store_root: Path) -> dict:
 # ── 导出 / 导入（智能体上下文里的紧凑格式） ────────────────────────────
 
 
-#: 写回格式说明（导出文件顶部打印一次，不占用每条队列项的行数）。
+#: 写回格式说明 + 判断判据（导出文件顶部打印一次，不占用每条队列项的行数）。
+#:
+#: 判据部分来自 Sekai Viewer 抽取 prompt 的正反例纪律：实体标识必须唯一，
+#: 通用称谓（お母さん/先輩/彼女）可能指任何人，不能当实体标识。这类判据必须
+#: 出现在智能体**实际读到的那份文本**里，只写在文档中是不够的。
 DECIDE_HELP = (
     "# 写回：把下面每条填成一块，存成文件后执行\n"
     "#   python -m sekaisync.agent_review submit --store <store> --file <判断文件>\n"
     "# 字段：id（每条第一行的 id）/ decision: accept|reject|replace\n"
     "#   value: <replace 必填；accept 不填则用 hint>   confidence: 0.0-1.0\n"
     "#   rationale: <一句中文理由，会沉淀进方法论>      generalize: pair|pattern|null\n"
-    "#   pattern: <generalize=pattern 时必填，如 re:^N\\d{1,3}$ 或 prefix:PJ>"
+    "#   pattern: <generalize=pattern 时必填，如 re:^N\\d{1,3}$ 或 prefix:PJ>\n"
+    "#\n"
+    "# 判据（决定 accept / reject / replace 的依据）：\n"
+    "# 1) 实体标识的唯一性——好：一歌 / 星乃一歌 / いちか / ホシノイチカ（都唯一指向该角色）；\n"
+    "#    坏：お母さん（母亲）/ 先輩 / 彼女 / みんな——可能指任何人，不能作实体标识，应 reject。\n"
+    "# 2) 音译可逆——片假名术语先看是否英语外来语音译：セカイ→SEKAI、カイト→KAITO 音形对应明确，\n"
+    "#    可 accept；音形对不上的（テスト→Huh）是行位噪声，应 reject。\n"
+    "# 3) 拿不准就 reject——错误译名会污染知识库；reject 只是保留待后续证据，成本低得多。\n"
+    "# 4) 能确定正确译名时用 replace 并写清理由：最有价值的干预（刮削抓不到，但你知道）。"
 )
 
 
