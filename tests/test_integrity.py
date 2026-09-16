@@ -182,7 +182,6 @@ class IntegrityTest(unittest.TestCase):
             store_root = Path(tmp) / "store"
             self._write_pages(store_root)
             result = cross_instance_reconciliation(store_root, limit=10)
-
             # event 2 is identical across both instances (no drift);
             # event 1 has a conflicting rewritten copy on altsource_sv.
             self.assertEqual(result["summary"]["drift_keys"], 1)
@@ -204,6 +203,158 @@ class IntegrityTest(unittest.TestCase):
                 "cross_instance_drift", result["summary"]
             )
             self.assertGreaterEqual(result["summary"]["cross_instance_drift"], 1)
+
+
+class IntegrityTotalsVsSamplesTest(unittest.TestCase):
+    """P19 — report every problem found, not the size of the sample returned.
+
+    Two defects are covered here:
+
+    1. ``limit`` capped ``issues`` and the caller then reported
+       ``len(that slice)`` as the total, so a store with many problems
+       reported only ``limit`` of them and looked healthier than it was.
+    2. ``str(item.get("text_hash")) or sha256_hex(...)`` turned a missing hash
+       into the literal string ``"None"``, which is truthy — so the fallback
+       never ran and two pages with completely different text were both
+       hashed as ``"None"`` and judged mirrors instead of a conflict.
+    """
+
+    def _page(self, page_id, text, event_no, episode_no=1, source="altsource_ms", **kwargs):
+        """canonical_key is DERIVED from the id/url, never set directly.
+
+        ``canonical_key_for_page`` parses ``event_story:<n>:<m>`` out of the
+        page id, so the fixture has to look like a real event-story page for
+        any grouping to happen at all.
+        """
+        return WebPage(
+            id=page_id,
+            source=source,
+            url=f"https://example.invalid/story/event/{event_no}/{episode_no}/",
+            title=page_id,
+            language="zh_hans",
+            kind="event_story",
+            text=text,
+            crawled_at="2026-08-11T00:00:00+00:00",
+            hash="h",
+            **kwargs,
+        )
+
+    def test_missing_hash_on_different_text_is_a_conflict_not_a_mirror(self):
+        """The regression that hid real differences behind a 'None' hash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            save_web_pages(
+                store_root,
+                "altsource_ms",
+                [
+                    self._page("web:ms:event_story:1:1", "正文 A", 1, text_hash=""),
+                    self._page("web:ms:event_story:1:1:alt", "正文 B", 1, text_hash=""),
+                ],
+            )
+            from sekaisync.integrity import verify_web_integrity
+
+            web = verify_web_integrity(store_root, limit=10)
+            self.assertGreater(web["canonical_keys"], 0, "fixture built no groups")
+            self.assertEqual(
+                web["conflict_groups_total"],
+                1,
+                "two different texts with no stored hash were treated as "
+                "mirrors because both folded to the string 'None'",
+            )
+            self.assertEqual(web["mirror_duplicates"], 0)
+
+    def test_same_text_without_hash_is_still_a_mirror(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            save_web_pages(
+                store_root,
+                "altsource_ms",
+                [
+                    self._page("web:ms:event_story:1:1", "同一正文", 1, text_hash=""),
+                    self._page("web:ms:event_story:1:1:alt", "同一正文", 1, text_hash=""),
+                ],
+            )
+            from sekaisync.integrity import verify_web_integrity
+
+            web = verify_web_integrity(store_root, limit=10)
+            self.assertGreater(web["canonical_keys"], 0, "fixture built no groups")
+            self.assertEqual(web["conflict_groups_total"], 0)
+            self.assertEqual(web["mirror_duplicates"], 1)
+
+    def test_none_and_empty_hash_behave_identically(self):
+        """None and "" must not take different code paths."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            save_web_pages(
+                store_root,
+                "altsource_ms",
+                [
+                    self._page("web:ms:event_story:1:1", "正文 A", 1, text_hash=""),
+                    self._page("web:ms:event_story:1:1:alt", "正文 B", 1, text_hash=None),
+                ],
+            )
+            from sekaisync.integrity import verify_web_integrity
+
+            web = verify_web_integrity(store_root, limit=10)
+            self.assertGreater(web["canonical_keys"], 0, "fixture built no groups")
+            self.assertEqual(web["conflict_groups_total"], 1)
+
+    def test_totals_do_not_shrink_with_the_sample_limit(self):
+        """Astra: total=7 with sample_limit=2 must still report 7."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            pages = []
+            for i in range(7):
+                pages.append(
+                    self._page(f"web:ms:event_story:{i}:1", f"正文 {i}", i, text_hash="")
+                )
+                pages.append(
+                    self._page(
+                        f"web:ms:event_story:{i}:1:alt", f"不同 {i}", i, text_hash=""
+                    )
+                )
+            save_web_pages(store_root, "altsource_ms", pages)
+
+            from sekaisync.integrity import verify_web_integrity
+
+            small = verify_web_integrity(store_root, limit=2)
+            self.assertEqual(small["conflict_groups_total"], 7)
+            self.assertEqual(len(small["conflict_group_samples"]), 2)
+            self.assertTrue(small["conflict_groups_truncated"])
+
+            wide = verify_web_integrity(store_root, limit=100)
+            self.assertEqual(
+                wide["conflict_groups_total"],
+                7,
+                "changing the sample limit changed the reported total",
+            )
+            self.assertFalse(wide["conflict_groups_truncated"])
+
+    def test_run_integrity_check_summary_reports_true_total(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            pages = []
+            for i in range(6):
+                pages.append(
+                    self._page(f"web:ms:event_story:{i}:1", f"正文 {i}", i, text_hash="")
+                )
+                pages.append(
+                    self._page(
+                        f"web:ms:event_story:{i}:1:alt", f"不同 {i}", i, text_hash=""
+                    )
+                )
+            save_web_pages(store_root, "altsource_ms", pages)
+
+            result = run_integrity_check(store_root, limit=2)
+            summary = result["summary"]
+            self.assertEqual(summary["conflicts"], 6)
+            self.assertGreater(
+                summary["issues"],
+                len(result["issues"]),
+                "summary reported the sample size as the problem total",
+            )
+            self.assertEqual(summary["issues_sample_count"], len(result["issues"]))
+            self.assertTrue(summary["issues_truncated"])
 
 
 if __name__ == "__main__":
