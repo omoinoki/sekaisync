@@ -943,25 +943,28 @@ class SekaiSyncCore:
                 "agent_guidance": "Character mission details for CN are not available from the local master data.",
             },
             {
-                # Astra B2/P13: until raw/news publish as immutable generations
-                # with a single active pointer, a response that combines several
-                # raw/news files can mix two generations.  This gap is declared
-                # rather than left implicit: a *single* SQL read is consistent
-                # (revision-pinned), but a multi-file aggregate is not.
+                # Astra B2/P13. raw/ master tables now publish as immutable
+                # generations with a single active pointer committed in the same
+                # transaction as the indexes, so a master-data read is pinned to
+                # one generation. kb/news is still written in place, so an
+                # aggregate spanning news plus raw can still mix. The gap is
+                # narrowed, not closed — do not describe it as resolved.
                 "domain": "multi_file_generation_consistency",
-                "scope": "raw master tables + kb/news",
+                "scope": "kb/news (raw master tables are now generation-pinned)",
                 "severity": "partial",
                 "description": (
-                    "raw/ region master tables and kb/news are written in place, "
-                    "not published as immutable generations with an active pointer. "
-                    "An aggregate that reads several of those files can therefore "
+                    "raw/ region master tables publish as immutable generations "
+                    "with an active pointer committed atomically with the derived "
+                    "indexes, so master-data reads are pinned to one generation. "
+                    "kb/news is still written in place, so an aggregate that "
+                    "combines news with raw or with several news files can still "
                     "mix content from before and after a concurrent sync."
                 ),
                 "agent_guidance": (
-                    "SQL-backed reads (entities/terms/web pages) are revision-pinned "
-                    "and self-consistent. Do not present a multi-region or "
-                    "master+news aggregate as a single consistent snapshot until "
-                    "generation publishing lands (Astra P13)."
+                    "Master-data reads (entities/terms/web pages) are pinned to a "
+                    "generation and self-consistent. Do not present an aggregate "
+                    "that includes news as a single consistent snapshot until news "
+                    "also publishes as a generation (Astra P13)."
                 ),
             },
         ]
