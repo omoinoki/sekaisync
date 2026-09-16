@@ -790,6 +790,37 @@ def _meta_set(conn, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, value))
 
 
+def current_revision(conn: sqlite3.Connection) -> int:
+    """The committed write generation of this store.
+
+    A counter in ``meta`` bumped inside the same transaction as any fact
+    change, so a reader can tell one committed generation from the next.
+    Readers must NOT use ``PRAGMA data_version`` for this: it is only
+    meaningful relative to a single long-lived connection and is not a global
+    commit sequence (Astra P02).
+    """
+    try:
+        raw = _meta_get(conn, "data_revision")
+    except sqlite3.Error:
+        return 0
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_revision(conn: sqlite3.Connection) -> int:
+    """Advance the store revision. Caller owns the transaction.
+
+    Must be called inside the same transaction as the writes it describes, so
+    a reader either sees the new facts together with the new revision or sees
+    neither.
+    """
+    next_revision = current_revision(conn) + 1
+    _meta_set(conn, "data_revision", str(next_revision))
+    return next_revision
+
+
 def pending_legacy_domains(store_root: Path) -> list[str]:
     """Domains whose legacy files exist but were never imported into the DB."""
     _ensure_initialized(store_root)

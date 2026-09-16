@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+import copy
 import json
+import sqlite3
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from sekaisync.config import REGIONS
 from sekaisync import dbstore
@@ -34,7 +39,82 @@ from sekaisync.webindex import (
 )
 
 
+def _serialized_size(value: object) -> int:
+    """Approximate serialized size, used to skip caching huge results."""
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _detached(value: dict) -> dict:
+    """A copy the caller may freely mutate.
+
+    Cached aggregates are shared between requests; handing out the cached
+    object lets one caller's mutation become another caller's "fact".
+    """
+    return copy.deepcopy(value)
+
+
+@dataclass(frozen=True)
+class CoreSnapshot:
+    """Immutable view of everything one request reads.
+
+    ``revision`` is the committed store revision the collections were loaded
+    at.  Aggregates computed from this snapshot are cached under that exact
+    revision, so a result can never be filed under a generation it did not
+    come from.
+    """
+
+    revision: int
+    registry: object
+    glossary: object
+    terms: object
+    factpacks: object
+
+
+@dataclass
+class ReadView:
+    """A request's fixed read context: one connection, one snapshot.
+
+    Helpers that read SQL must use ``view.conn`` rather than opening their own
+    connection, otherwise a helper's read can land in a different generation
+    than the rest of the response.
+    """
+
+    core: "SekaiSyncCore"
+    conn: sqlite3.Connection
+    snapshot: CoreSnapshot
+
+    @property
+    def revision(self) -> int:
+        return self.snapshot.revision
+
+    @property
+    def registry(self):
+        return self.snapshot.registry
+
+    @property
+    def glossary(self):
+        return self.snapshot.glossary
+
+    @property
+    def terms(self):
+        return self.snapshot.terms
+
+    @property
+    def factpacks(self):
+        return self.snapshot.factpacks
+
+
 class SekaiSyncCore:
+    #: Bound on cached aggregate keys.  Aggregates are a handful of fixed
+    #: shapes (status/trust/progress:<regions>), so a small LRU is plenty and
+    #: an unbounded dict would be an unbounded memory claim.
+    _cache_max_entries = 64
+    #: A serialized result above this is not worth caching.
+    _cache_max_bytes = 512 * 1024
+
     def __init__(self, store_root: Path):
         self.store_root = store_root
         dbstore.ensure_store(store_root)
@@ -49,7 +129,7 @@ class SekaiSyncCore:
         # the in-memory datasets (version bump) and (b) the on-disk
         # signature of the files those aggregates read.
         self._data_version = 0
-        self._result_cache: dict[str, tuple[tuple, dict]] = {}
+        self._result_cache: "OrderedDict[str, tuple[tuple, dict, int]]" = OrderedDict()
         self._cache_lock = threading.Lock()
 
     def _bump_data_version(self) -> None:
@@ -88,16 +168,50 @@ class SekaiSyncCore:
                 signature.append((str(path), st.st_mtime_ns, st.st_size))
         return tuple(signature)
 
-    def _cached_aggregate(self, key: str, compute: Callable[[], dict]) -> dict:
+    def _cached_aggregate(
+        self,
+        key: str,
+        compute: Callable[[], dict],
+        view: "Optional[ReadView]" = None,
+    ) -> dict:
+        """Memoize an aggregate against the revision it was computed from.
+
+        The version is captured **before** ``compute()`` runs and re-checked
+        **after** it returns.  Capturing it afterwards — which is what this
+        used to do — files a computation that began before a write under the
+        post-write version, so the stale answer is then served as current for
+        as long as that version stands.  Astra D02; the race is reproduced
+        deterministically in ``tests/test_core_snapshot.py``.
+
+        Read-only callers should pass the request's ``view`` so the aggregate
+        is computed from that request's fixed snapshot rather than from
+        whatever ``self.registry`` holds at that instant.
+        """
+        version_at_start = self._data_version
         disk = self._disk_signature()
+        stamp = (version_at_start, disk)
+
         with self._cache_lock:
             hit = self._result_cache.get(key)
-            if hit is not None and hit[0] == (self._data_version, disk):
-                return hit[1]
-        result = compute()
+            if hit is not None and hit[0] == stamp:
+                self._result_cache.move_to_end(key)
+                return _detached(hit[1])
+            if hit is not None:
+                del self._result_cache[key]
+
+        result = compute() if view is None else compute(view)
+
         with self._cache_lock:
-            self._result_cache[key] = ((self._data_version, disk), result)
-        return result
+            # Only publish if no writer landed while we were computing.  A
+            # concurrent commit makes this result stale, and a stale result
+            # must never be labelled with the newer version.
+            if self._data_version == version_at_start:
+                if _serialized_size(result) <= self._cache_max_bytes:
+                    self._result_cache[key] = (stamp, result, len(self._result_cache))
+                    self._result_cache.move_to_end(key)
+                    while len(self._result_cache) > self._cache_max_entries:
+                        self._result_cache.popitem(last=False)
+        return _detached(result)
 
     def refresh(self) -> dict:
         """Reload registry/glossary/factpacks/terms from disk.
@@ -106,6 +220,9 @@ class SekaiSyncCore:
         after an external ``sync`` / ``rebuild-indexes`` run the in-memory
         copies are stale.  Calling this makes the next query see the latest
         facts without restarting the server.
+
+        This forces a reload even when the revision is unchanged, for callers
+        that know an external update happened.
         """
         dbstore.ensure_store(self.store_root)
         self.registry = dbstore.load_entities(self.store_root)
@@ -119,6 +236,57 @@ class SekaiSyncCore:
             "factpacks": len(self.factpacks),
             "terms": len(self.terms),
         }
+
+    def current_revision(self) -> int:
+        """The store's committed revision, read from meta.
+
+        Distinct from ``_data_version``, which counts in-process reloads:
+        this one is the cross-process write generation.
+        """
+        try:
+            with dbstore.connect(self.store_root) as conn:
+                return dbstore.current_revision(conn)
+        except (sqlite3.Error, OSError):
+            return 0
+
+    @contextlib.contextmanager
+    def request_view(self) -> Iterator["ReadView"]:
+        """Fix one read snapshot for the duration of a request.
+
+        Opens a read-only connection, begins a deferred transaction and reads
+        the revision, which pins the SQLite snapshot: every later read on this
+        connection — including page detail lookups and term evidence — sees
+        that same generation even if a writer commits meanwhile.  Without it a
+        single response could mix two generations (Astra D02/P02).
+
+        The snapshot object is published to ``self._snapshot`` for the
+        lifetime of the block so helpers can read from it instead of the
+        mutable in-memory collections.  The previous global snapshot is
+        restored on exit: a request that saw an older transaction must not
+        drag the shared cache backwards.
+        """
+        conn = sqlite3.connect(str(db_path(self.store_root)), timeout=60.0)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN")
+            revision = dbstore.current_revision(conn)
+            snapshot = CoreSnapshot(
+                revision=revision,
+                registry=self.registry,
+                glossary=self.glossary,
+                terms=self.terms,
+                factpacks=self.factpacks,
+            )
+            previous = getattr(self, "_snapshot", None)
+            self._snapshot = snapshot
+            try:
+                yield ReadView(core=self, conn=conn, snapshot=snapshot)
+            finally:
+                self._snapshot = previous
+                with contextlib.suppress(sqlite3.Error):
+                    conn.rollback()
+        finally:
+            conn.close()
 
     def ready(self) -> bool:
         return (
