@@ -178,9 +178,28 @@ def progress_path(store_root: Path) -> Path:
 
 
 def region_master_dir(store_root: Path, region: str) -> Path:
-    """Directory holding the region master JSON tables."""
+    """Directory holding the region master JSON tables.
+
+    This is the **legacy in-place** path and is still the correct place to
+    *write* bootstrapped data (see ``cli.create_demo_store``). Readers should
+    prefer :func:`master_dir_for`, which resolves the active published
+    generation when one exists (Astra P13).
+    """
     return raw_dir(store_root) / region / "source"
 
 
 def region_source_dir(store_root: Path, region: str) -> Path:
+    """See :func:`region_master_dir` — the legacy in-place path."""
     return raw_dir(store_root) / region / "source"
+
+
+def master_source_dir(store_root: Path, region: str) -> Path:
+    """Read-side directory for a region's source tree.
+
+    Delegates to :func:`region_master_dir` semantics but goes through the
+    generation-aware resolver, so readers automatically follow the active
+    generation once one has been published.
+    """
+    from sekaisync.registry import master_dir_for  # lazy: registry imports layout
+
+    return master_dir_for(store_root, region)

@@ -12,7 +12,7 @@ from sekaisync.config import DEFAULT_REGION_ORDER, REGIONS
 from sekaisync.filecache import cached_json
 from sekaisync.layout import (
     progress_path,
-    region_master_dir,
+    master_source_dir,
     registry_path,
     web_index_path,
 )
@@ -94,7 +94,7 @@ def _load_records(
         except Exception:
             pass
 
-    base = region_master_dir(store_root, region)
+    base = master_source_dir(store_root, region)
     table = table.removesuffix(".json")
     candidates = [
         base / f"{table}.json",

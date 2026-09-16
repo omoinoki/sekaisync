@@ -18,7 +18,12 @@ from typing import Any, Callable, Iterable, Optional
 from sekaisync.config import REGIONS
 from sekaisync.endpoints import current_endpoints
 from sekaisync.eventalias import _build_jp_box_map, _load_json
-from sekaisync.layout import events_archive_path, region_master_dir, region_source_dir
+from sekaisync.layout import (
+    events_archive_path,
+    master_source_dir,
+    region_master_dir,
+    region_source_dir,
+)
 
 EVENT_BASE_TABLES = ("events", "eventStories", "eventCards", "cards", "eventMusics", "musics")
 
@@ -63,7 +68,7 @@ def _source_write_dir(store_root: Path, region: str) -> Path:
     source.mkdir(parents=True, exist_ok=True)
     return source
 def _local_table_path(store_root: Path, region: str, table: str) -> Optional[Path]:
-    base = region_master_dir(store_root, region)
+    base = master_source_dir(store_root, region)
     patterns = (
         base / "**" / f"{table}.json",
         base / f"{table}.json",

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from sekaisync.layout import region_source_dir
+from sekaisync.layout import master_source_dir, region_source_dir
 
 # Region keys in the order used by the CLI.
 REGION_ORDER = ("jp", "en", "tc", "kr", "cn")
@@ -300,7 +300,7 @@ def _load_json(path: Path) -> list[dict]:
 
 
 def _region_source_root(store_root: Path, region: str) -> Path:
-    return region_source_dir(store_root, region) / _REGION_FOLDER[region]
+    return master_source_dir(store_root, region) / _REGION_FOLDER[region]
 
 
 @dataclass

@@ -226,3 +226,44 @@ class LegacyLayoutCompatibilityTest(_GenerationStore):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigratedReaderTest(_GenerationStore):
+    """The remaining raw readers must follow the published generation too.
+
+    Astra: "迁移 registry/progress/event_detection/eventalias/worldlink 等所有
+    读取者". Before this, each resolved ``raw/<region>/source`` directly and
+    would have kept reading the pre-generation path after a publish.
+    """
+
+    def test_worldlink_reads_the_published_generation(self):
+        import sekaisync.worldlink as worldlink
+
+        self._sync()
+        generation = dbstore.active_generations(self.store)["jp"]
+        root = worldlink._region_source_root(self.store, "jp")
+        self.assertTrue(str(root).startswith(
+            str(generation_master_dir(self.store, "jp", generation))
+        ), f"worldlink still reads {root}")
+
+    def test_eventalias_reads_the_published_generation(self):
+        import sekaisync.eventalias as eventalias
+
+        self._sync()
+        generation = dbstore.active_generations(self.store)["jp"]
+        root = eventalias._region_source_root(self.store, "jp")
+        self.assertTrue(str(root).startswith(
+            str(generation_master_dir(self.store, "jp", generation))
+        ), f"eventalias still reads {root}")
+
+    def test_progress_and_event_detection_resolve_under_the_generation(self):
+        """Both resolve their base dir through the shared resolver."""
+        for module_name in ("sekaisync.progress", "sekaisync.event_detection"):
+            module = __import__(module_name, fromlist=["x"])
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            self.assertIn(
+                "master_source_dir(store_root, region)",
+                source,
+                f"{module_name} still resolves the raw path directly instead of "
+                f"going through the generation-aware resolver",
+            )
