@@ -31,6 +31,7 @@ from sekaisync.fetcher import (
     BUDGET_HTML_BYTES,
     BUDGET_JSON_BYTES,
     FetchError,
+    store_writer_lock,
 )
 from sekaisync.layout import web_category_dir, web_consent_path, web_pages_path
 from sekaisync.models import WebPage
@@ -2277,7 +2278,12 @@ def crawl_altsource_ms(
     settings: Optional[MoesekaiSettings] = None,
     instance: Optional[str] = None,
 ) -> dict[str, Any]:
-    with _ms_instance_scope(instance):
+    # Writer lease: a crawl read-modify-writes shared page state, so two
+    # concurrent crawls against one store could interleave and lose updates.
+    # Taken at the public entry point (not the CLI) so programmatic callers get
+    # the same protection, and acquired before any connection is opened so lock
+    # ordering stays uniform (Astra P13).
+    with store_writer_lock(store_root), _ms_instance_scope(instance):
         return _crawl_altsource_ms_impl(
             store_root, depth=depth, locales=locales, limit=limit,
             accept_tos=accept_tos, delay=delay, fetcher=fetcher,
@@ -3323,7 +3329,8 @@ def crawl_altsource_sv(
     settings: Optional[ViewerSettings] = None,
     instance: Optional[str] = None,
 ) -> dict[str, Any]:
-    with _sv_instance_scope(instance):
+    # See crawl_altsource_ms: lease first, then any connection (Astra P13).
+    with store_writer_lock(store_root), _sv_instance_scope(instance):
         _sv_cache_root.set(Path(store_root))
         return _crawl_altsource_sv_impl(
             store_root, regions=regions, tables=tables, limit=limit,

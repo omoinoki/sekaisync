@@ -1010,6 +1010,22 @@ def sync(
     regions: Iterable[str],
     local_mirrors: Optional[dict[str, Path]] = None,
 ) -> dict:
+    """Fetch region master tables and publish the derived indexes.
+
+    Holds the store's writer lease for the whole operation: a sync is a
+    read-merge-write over shared state, so a second writer interleaving it
+    would let one run's baseline clobber the other's.  The lease is acquired
+    *before* any connection is opened so lock ordering is uniform (Astra P13).
+    """
+    with store_writer_lock(config.store_root):
+        return _sync_locked(config, regions, local_mirrors)
+
+
+def _sync_locked(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    local_mirrors: Optional[dict[str, Path]] = None,
+) -> dict:
     regions = tuple(regions)
     local_mirrors = local_mirrors or {}
     for region_key in regions:
