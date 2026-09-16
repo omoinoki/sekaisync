@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -40,11 +41,16 @@ from sekaisync.fetcher import write_freshness
 from sekaisync.http_server import serve_http
 from sekaisync.llm_client import LLMClient, load_llm_config
 from sekaisync.mcp_server import run_mcp_server
+from sekaisync.trinity import build_candidate_pool, scrub_trinity
+from sekaisync.zhfirst import _load_manual_seed
 from sekaisync.termindex import (
     TERM_STORY_KINDS,
+    build_alignment_resources,
+    build_pair_story_index,
     extract_terms,
     extract_terms_local,
     build_translation_memory,
+    group_pages_by_story,
     load_pages,
     load_terms,
     lookup_terms,
@@ -608,6 +614,127 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+
+def _names_from_conflict(conflict: dict) -> dict:
+    """冲突项 → 各语言的候选集合（取每个语言的首个候选作为提案）。"""
+    names = {}
+    for lang, values in (conflict.get("candidates") or {}).items():
+        cand_values = list(values.keys()) if isinstance(values, dict) else list(values)
+        if cand_values:
+            names[str(lang)] = cand_values[0]
+    return names
+
+
+def _proposals_from_rows(rows: list) -> dict:
+    """待裁决行 → apply_methodology_batch 需要的 {term: {lang: [candidates]} 结构。"""
+    proposals = {}
+    for row in rows:
+        term = str(row.get("term") or "")
+        if not term:
+            continue
+        slot = proposals.setdefault(term, {})
+        for lang, value in (row.get("names") or {}).items():
+            if not value:
+                continue
+            values_list = slot.setdefault(str(lang), [])
+            if str(value) not in values_list:
+                values_list.append(str(value))
+    return proposals
+
+def _review_item_id(term: str, language: str, values: tuple) -> str:
+    """队列条目 id：稳定、可复现（入队去重与已结算判定都靠它）。
+
+    必须走 hashlib —— 内置 ``hash()`` 对 str 是进程内随机化的（PYTHONHASHSEED）：
+    同一术语每次运行会得到不同 id，去重与 ``skipped_settled`` 会永久失效。
+    """
+    raw = term + "" + language + "" + "".join(values)
+    return "rv:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+
+def _review_items_from_trinity(result: dict) -> list:
+    """把三位一体的 pending / conflicts 转成干预队列条目。
+
+    * ``pending`` 带 names 的项 → pending（有候选可比）
+    * ``pending`` 无 names 的项 → gate_failed（三路皆未产出，留空候选槽让
+      智能体用自身知识 ``replace`` 补译名——这是干预环最有价值的场景）
+    * ``conflicts`` 项 → conflict（多通道给出不同译名，交智能体裁决）
+    """
+    from datetime import datetime, timezone
+
+    from sekaisync import agent_review
+
+    now = datetime.now(timezone.utc).isoformat()
+    items = []
+    for row in result.get("pending") or []:
+        term = str(row.get("term") or "")
+        if not term:
+            continue
+        names = row.get("names") or {}
+        if names:
+            for lang, value in names.items():
+                if not value:
+                    continue
+                items.append(
+                    agent_review.ReviewItem(
+                        id=_review_item_id(term, str(lang), (str(value),)),
+                        kind="pending",
+                        term=term,
+                        language=str(lang),
+                        candidates=[str(value)],
+                        chosen_hint=str(value),
+                        evidence=[],
+                        story_keys=[],
+                        channels=list(row.get("channels") or []),
+                        reason=str(row.get("reason") or "低置信待裁决")[:200],
+                        created_at=now,
+                    )
+                )
+        else:
+            items.append(
+                agent_review.ReviewItem(
+                    id=_review_item_id(term, "en", ()),
+                    kind="gate_failed",
+                    term=term,
+                    language="en",
+                    candidates=[],
+                    chosen_hint=None,
+                    evidence=[],
+                    story_keys=[],
+                    channels=list(row.get("channels") or []),
+                    reason=str(row.get("reason") or "三路皆未产出，需外部知识")[:200],
+                    created_at=now,
+                )
+            )
+    for conflict in result.get("conflicts") or []:
+        term = str(conflict.get("term") or "")
+        raw_candidates = conflict.get("candidates") or {}
+        for lang, values in raw_candidates.items():
+            if not term or not values:
+                continue
+            cand_values = list(values.keys()) if isinstance(values, dict) else list(values)
+            if not cand_values:
+                continue
+            items.append(
+                agent_review.ReviewItem(
+                    id=_review_item_id(term, str(lang), tuple(sorted(cand_values))),
+                    kind="conflict",
+                    term=term,
+                    language=str(lang),
+                    candidates=cand_values,
+                    chosen_hint=cand_values[0],
+                    evidence=[],
+                    story_keys=[],
+                    channels=[],
+                    reason=str(conflict.get("reason") or "通道冲突")[:200],
+                    created_at=now,
+                )
+            )
+    return items
+
+
 def cmd_terms_extract(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     pages = load_pages(
@@ -650,6 +777,86 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         if item.strip()
     ]
     existing = dbstore.load_terms_records(config.store_root, include_sentences=True)
+    if getattr(args, "layered", False):
+        # 三位一体路径（experiment 验证通过后才接入）：主干 ja 分布对齐 +
+        # 辅助1 hub 扩散 + 辅助2 片假名音译，合并去重 + 交叉验证增益，
+        # 未决项进智能体干预队列，已沉淀方法论直接套用。
+        from sekaisync import agent_review
+        from sekaisync.trinity import build_candidate_pool, scrub_trinity
+
+        groups = group_pages_by_story(pages)
+        layered_cache = config.store_root / "cache" / "trinity"
+        layered_cache.mkdir(parents=True, exist_ok=True)
+        # 候选池必须从语料构建（片假名串 ∪ 引号词 ∪ 统计发现词），
+        # 不能用 existing——那样只会重复刮削已有术语，发现不了新词。
+        candidate_pool, discovered = build_candidate_pool(
+            groups, sorted(keys), source_language=args.source_language)
+        glossary = list(dbstore.load_glossary_terms(config.store_root))
+        vocab, idf = build_alignment_resources(groups, target_languages, glossary, layered_cache)
+        pair_index = build_pair_story_index(groups, target_languages, args.source_language)
+        result = scrub_trinity(
+            groups,
+            sorted(keys),
+            candidate_pool,
+            source_language=args.source_language,
+            discovered=discovered,
+            target_languages=tuple(target_languages),
+            glossary=glossary,
+            seed=_load_manual_seed(),
+            vocab=vocab,
+            idf=idf,
+            pair_index=pair_index,
+        )
+        # 方法论只作用于**待裁决项**（pending / conflicts / gate_failed）——
+        # accepted 是刮削已确认的结果，对它套用没有意义。做法是：
+        #   1) 把待裁决项整理成 proposals，用方法论结算能确定的；
+        #   2) 已结算的并入 accepted（补上译名），没结算的才入队。
+        pending_rows = [
+            row for row in (result.get("pending") or [])
+            if str(row.get("term") or "")
+        ] + [
+            {"term": c.get("term"), "names": _names_from_conflict(c),
+             "channels": [], "reason": c.get("reason") or "通道冲突"}
+            for c in (result.get("conflicts") or [])
+        ]
+        proposals = _proposals_from_rows(pending_rows)
+        applied = agent_review.apply_methodology_batch(config.store_root, proposals)
+        settled = applied.get("settled") or {}
+        accepted = result.get("accepted") or {}
+        for term, langs in settled.items():
+            record = accepted.setdefault(term, {"names": {}, "confidence": 0.9,
+                                                "channels": ["methodology"],
+                                                "agreement": 1})
+            names = record.setdefault("names", {})
+            for lang, value in (langs or {}).items():
+                if value and not names.get(lang):
+                    names[lang] = value
+        # 已结算的术语不再入队
+        review_items = [
+            item for item in _review_items_from_trinity(result)
+            if item.term not in settled]
+        queued = agent_review.enqueue(config.store_root, review_items)
+        print(
+            json.dumps(
+                {
+                    "path": str(dbstore.db_file(config.store_root)),
+                    "pipeline": "trinity",
+                    "story_key_count": len(keys),
+                    "methodology_settled": len(settled),
+                    "accepted": len(accepted),
+                    "pending": len(result.get("pending") or []),
+                    "conflicts": len(result.get("conflicts") or []),
+                    "rejected": len(result.get("rejected") or []),
+                    "methodology_applied": len(applied.get("settled") or {}),
+                    "queued_for_agent": queued,
+                    "channel_stats": result.get("stats", {}),
+                    "review_next": "sekaisync terms review export --out queue.txt",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     if args.local:
         memory = {}
         if len(pages) > 1:
@@ -962,6 +1169,52 @@ def cmd_wl(args: argparse.Namespace) -> int:
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_terms_review(args: argparse.Namespace) -> int:
+    """智能体干预环：导出待裁决队列 / 提交判断 / 查看方法论与复用率。
+
+    设计上不要求用户提供 LLM API Key——主流 AI 订阅限制第三方应用接入，
+    而使用 sekaisync 的编码智能体本身就有推理能力。sekaisync 只提供本地
+    队列接口，判断由智能体在自己会话里完成，结果沉淀为方法论供后续复用。
+    """
+    from sekaisync import agent_review
+
+    store = config_from_args(args).store_root
+    action = args.review_action
+    if action == "list":
+        items = agent_review.load_queue(store, limit=args.limit, kind=args.kind)
+        print(json.dumps(
+            [item.__dict__ for item in items], ensure_ascii=False, indent=2))
+        return 0
+    if action == "export":
+        out_path = Path(args.out) if args.out else Path("review_queue.txt")
+        agent_review.export_for_agent(store, out_path, limit=args.limit or 20)
+        print(json.dumps({"exported": str(out_path), "size": len(items) if (items := agent_review.load_queue(store)) else 0},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if action == "submit":
+        if args.file:
+            text = Path(args.file).read_text(encoding="utf-8")
+        elif args.text:
+            text = args.text
+        else:
+            print("ERROR: submit needs --file or --text", file=sys.stderr)
+            return 2
+        result = agent_review.import_judgments_from_text(store, text)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if action == "stats":
+        print(json.dumps(agent_review.review_stats(store), ensure_ascii=False, indent=2))
+        return 0
+    if action == "methodology":
+        entries = agent_review.load_methodology(store)
+        print(json.dumps(
+            [e.__dict__ for e in entries[: args.limit or len(entries)]],
+            ensure_ascii=False, indent=2))
+        return 0
+    print(f"ERROR: unknown review action {action}", file=sys.stderr)
+    return 2
 
 
 def cmd_terms_status(args: argparse.Namespace) -> int:
@@ -1356,6 +1609,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use deterministic local extraction instead of an LLM",
     )
     p_terms_extract.add_argument(
+        "--layered",
+        action="store_true",
+        help="Use the trinity scrubber (trunk + hub + translit channels) instead of the flat pipeline",
+    )
+    p_terms_extract.add_argument(
         "--include-overlay",
         action="store_true",
         help="Include auxiliary translation reference pages when selecting story text",
@@ -1386,6 +1644,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_terms_penetrate.add_argument("--story-key", default=None, help="Story key like event:174:1; auto-picks most frequent if omitted")
     p_terms_penetrate.add_argument("--languages", default="ja,zh_hans,en,zh_tw,ko", help="Comma-separated target languages")
     p_terms_penetrate.set_defaults(func=cmd_terms_penetrate)
+
+    p_terms_review = terms_sub.add_parser(
+        "review",
+        help="智能体干预环：导出待裁决队列、提交判断、查看方法论（不需要 API Key）",
+    )
+    p_terms_review.add_argument(
+        "review_action",
+        choices=["list", "export", "submit", "stats", "methodology"],
+    )
+    p_terms_review.add_argument("--limit", type=int, default=0)
+    p_terms_review.add_argument("--kind", default=None)
+    p_terms_review.add_argument("--out", default=None)
+    p_terms_review.add_argument("--file", default=None)
+    p_terms_review.add_argument("--text", default=None)
+    p_terms_review.set_defaults(func=cmd_terms_review)
 
     p_terms_zhfirst = terms_sub.add_parser(
         "zhfirst",
