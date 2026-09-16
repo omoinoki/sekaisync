@@ -130,41 +130,93 @@ def _merge_table_records(
     existing: list[dict[str, Any]],
     incoming: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Merge rows by natural key.
+
+    Rows are keyed by :func:`_row_identity` rather than ``id`` alone. The old
+    ``if key:`` guard silently **dropped** every row without an ``id`` — fine
+    while every table in this path has one, but a trap the moment a table like
+    ``eventMusics`` (137/137 rows id-less in the real store) is routed here.
+    Unkeyed rows now keep distinct identities instead of vanishing.
+    """
     seen: dict[str, dict[str, Any]] = {}
     for record in existing:
         if not isinstance(record, dict):
             continue
-        key = str(record.get("id"))
-        if key:
-            seen.setdefault(key, record)
+        seen.setdefault(_row_identity("", record), record)
     for record in incoming:
         if not isinstance(record, dict):
             continue
-        key = str(record.get("id"))
-        if key:
-            seen.setdefault(key, record)
+        seen.setdefault(_row_identity("", record), record)
     return [seen[key] for key in sorted(seen, key=lambda k: (len(k), k))]
+
+
+#: Relation tables have no single ``id``; their identity is the combination of
+#: fields that actually identifies the relationship. ``seq`` is deliberately
+#: excluded: it is ordering/versioning, not identity, so including it would let
+#: the same relationship be appended again under a new seq.
+_RELATION_NATURAL_KEYS: dict[str, tuple[str, ...]] = {
+    "eventMusics": ("eventId", "musicId"),
+    "eventCards": ("eventId", "cardId"),
+    "eventDeckBonus": ("eventId", "cardId", "bonusType"),
+}
+
+
+def _row_identity(table: str, record: dict[str, Any]) -> str:
+    """Natural key for one row, per Astra P16/D16.
+
+    Entity tables use ``id``. Relation tables use their actual relationship
+    fields. A row with **no usable key** gets a unique identity derived from its
+    full content, so distinct rows are never merged — the previous code keyed
+    every key-less row as ``""``, so only the first survived and the rest were
+    silently dropped. Identical rows still deduplicate, which is what "去掉完整
+    行相同的重复" asks for.
+    """
+    fields = _RELATION_NATURAL_KEYS.get(table)
+    if fields:
+        parts = [str(record.get(field) or "") for field in fields]
+        if any(parts):
+            return f"{table}:" + "\x1f".join(parts)
+
+    value = record.get("id")
+    if value is not None and str(value) != "":
+        return f"{table}:id:{value}"
+
+    # No natural key at all: fall back to the whole row's content, so two
+    # genuinely different rows cannot collide.
+    try:
+        return f"{table}:row:{json.dumps(record, sort_keys=True, ensure_ascii=False)}"
+    except (TypeError, ValueError):
+        return f"{table}:repr:{repr(sorted(record.items(), key=lambda kv: str(kv[0])))}"
 
 
 def _merge_event_rows(
     existing: list[dict[str, Any]],
     incoming: Iterable[dict[str, Any]],
     new_event_ids: set[str],
+    table: str = "",
 ) -> list[dict[str, Any]]:
-    """Merge tables whose records are tied to an event id (eventCards / eventMusics)."""
+    """Merge tables whose records are tied to an event id (eventCards / eventMusics).
+
+    Passing ``table`` enables the relation natural key. Without it the legacy
+    ``id``-only behaviour is kept, which is only safe for entity tables — callers
+    merging relation rows must name the table or id-less rows are lost.
+    """
     result = list(existing)
-    seen = {str(record.get("id")) for record in result if record.get("id") is not None}
+    seen = {
+        _row_identity(table, record)
+        for record in result
+        if isinstance(record, dict)
+    }
     for record in incoming:
         if not isinstance(record, dict):
             continue
         event_id = str(record.get("eventId") or "")
         if event_id and event_id not in new_event_ids:
             continue
-        key = str(record.get("id"))
+        key = _row_identity(table, record)
         if key in seen:
             continue
-        if key:
-            seen.add(key)
+        seen.add(key)
         result.append(record)
     return result
 
@@ -215,7 +267,7 @@ def merge_new_event_tables(
         existing = _load_json(path) if path.exists() else []
         incoming = tables.get(table, [])
         if table in {"eventCards", "eventMusics"}:
-            merged = _merge_event_rows(existing, incoming, new_event_ids)
+            merged = _merge_event_rows(existing, incoming, new_event_ids, table=table)
         elif table == "cards":
             merged = _merge_cards(existing, incoming, new_card_ids)
         else:
