@@ -25,6 +25,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
+
+from sekaisync import dbstore
 from pathlib import Path
 from typing import Any, Optional
 
@@ -188,6 +191,81 @@ def rename_legacy_source_ids(
         )
 
 
+def _migrate_page_rows(store_root: Path, summary: dict[str, Any], dry_run: bool) -> bool:
+    """Rename SQL identities without serializing or replacing row payloads.
+
+    Existing SQL is always authoritative, even without an import marker. Only
+    an absent database may bootstrap from JSON, in the same row transaction.
+    Any destination collision aborts the entire migration; neither row wins.
+    """
+    dbstore.require_unbound_writer(store_root)
+    state = dbstore.inspect_schema(store_root)
+    absent = state.status == dbstore.SCHEMA_ABSENT
+    if not state.is_usable:
+        raise dbstore.SchemaVersionError(f"Cannot migrate store: {state.detail}", status=state.status)
+    bootstrap = []
+    if absent:
+        for path in sorted(web_root(store_root).glob("*/pages.json")):
+            items = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                raise ValueError(f"Invalid page list: {path}")
+            for seq, item in enumerate(items, 1):
+                row = list(dbstore._page_dict_to_row(path.parent.name, item))
+                row[-1] = seq
+                bootstrap.append(tuple(row))
+    if dry_run and absent:
+        keys = [(row[0], row[1]) for row in bootstrap]
+        conn = None
+    else:
+        if not dry_run:
+            dbstore.initialize(store_root)  # schema only; never import stale JSON
+        conn = sqlite3.connect(
+            dbstore.db_file(store_root).resolve().as_uri() + ("?mode=ro" if dry_run else "?mode=rw"),
+            uri=True,
+        )
+        conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+        keys = conn.execute("SELECT source, id FROM web_pages ORDER BY source, id").fetchall()
+        keys.extend((row[0], row[1]) for row in bootstrap)
+    try:
+        destinations = {}
+        changes = []
+        for source, page_id in keys:
+            target = (_remap_source(source), _remap_id(page_id))
+            if target in destinations:
+                summary["conflicts"].append({
+                    "target": list(target), "records": [list(destinations[target]), [source, page_id]],
+                })
+            else:
+                destinations[target] = (source, page_id)
+            if target != (source, page_id):
+                changes.append((*target, source, page_id))
+        summary["db_pages_patched"] = len(changes)
+        if summary["conflicts"]:
+            summary["errors"].append({"stage": "database", "error": "source identity conflicts; no rows changed"})
+            return False
+        if not dry_run:
+            if bootstrap:
+                conn.executemany(dbstore._PAGE_INSERT, bootstrap)
+            for change in changes:
+                conn.execute("UPDATE web_pages SET source=?, id=? WHERE source=? AND id=?", change)
+            # Prevent future lazy imports from resurrecting pre-migration JSON.
+            conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('imported_pages', '1')")
+            if changes or bootstrap:
+                summary["revision"] = dbstore.bump_revision(conn)
+            else:
+                summary["revision"] = dbstore.current_revision(conn)
+            conn.commit()
+            summary["db_committed"] = True
+        return True
+    except BaseException:
+        if conn is not None:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _rename_legacy_source_ids_impl(
     store_root: Path,
     rebuild_index: bool = True,
@@ -205,10 +283,26 @@ def _rename_legacy_source_ids_impl(
         "derived_files_patched": 0,
         "errors": [],
         "rebuild": None,
+        "conflicts": [],
+        "db_pages_patched": 0,
+        "db_committed": False,
     }
 
     def error(message: str) -> None:
         summary["errors"].append(message)
+
+    try:
+        if not _migrate_page_rows(store_root, summary, dry_run):
+            summary["ok"] = False
+            return summary
+    except Exception as exc:
+        summary["errors"].append({"stage": "database", "error": f"{type(exc).__name__}: {exc}"})
+        summary["ok"] = False
+        return summary
+
+    # Only after SQL commits may any file be changed. These page files are
+    # projections, never migration inputs for an existing database.
+    page_sources = dbstore.load_web_pages(store_root) if not dry_run else {}
 
     # 1. Rename legacy web page directories (cheap; reversible by mapping).
     web_root_dir = web_root(store_root)
@@ -231,17 +325,19 @@ def _rename_legacy_source_ids_impl(
                 error(f"rename {legacy} -> {canonical} failed: {exc}")
 
     # 2. Patch page records and drop regenerable category artifacts.
-    for source in ALL_STORED_SOURCES:
+    for source in sorted(set(ALL_STORED_SOURCES) | set(page_sources)):
         path = web_pages_path(store_root, source)
         try:
-            patched, text = _patch_pages(path)
+            if dry_run:
+                patched, _ = _patch_pages(path)
+                summary["pages_patched"] += patched
+            elif source in page_sources or path.exists():
+                items = page_sources.get(source, [])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_file(path, json.dumps(items, ensure_ascii=False, indent=2))
+                summary["pages_patched"] += len(items)
         except (ValueError, OSError) as exc:
             error(f"pages {source}: {exc}")
-        else:
-            if patched:
-                summary["pages_patched"] += patched
-                if not dry_run:
-                    _write_file(path, text)
         category_dir = web_category_dir(store_root, source)
         if category_dir.exists():
             if not dry_run:
@@ -297,23 +393,42 @@ def _rename_legacy_source_ids_impl(
         derived.unlink()
 
     if rebuild_index and not dry_run:
-        from sekaisync import dbstore
         from sekaisync.webindex import rebuild_web_index
 
         try:
-            # The JSON directories are authoritative after renaming: drop any
-            # rows imported under legacy names, re-import, then recompute.
-            for legacy in LEGACY_IDS:
-                dbstore.delete_source_pages(store_root, legacy)
-            dbstore.reimport_pages(store_root)
             summary["rebuild"] = rebuild_web_index(store_root)
-        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
-            # A failed rebuild means the migration did NOT reach a usable
-            # state: rows referencing legacy ids were already deleted and the
-            # re-import did not complete.  Recording that only inside
-            # ``summary["rebuild"]`` let a caller read a normal-looking summary
-            # and treat a half-applied migration as success, so it is also
-            # appended to ``errors`` — which was previously always empty here.
+            # The shared rebuild round-trips rows through WebPage, whose
+            # dataclass does not model unknown metadata; restore those fields
+            # from the pre-rebuild DB snapshot so the round-trip is lossless.
+            modelled = set(dbstore._PAGE_COLUMNS) | {"source"}
+            with dbstore.connect(store_root) as conn:
+                for source, items in page_sources.items():
+                    for item in items:
+                        unknown = {
+                            key: value for key, value in item.items()
+                            if key not in modelled
+                        }
+                        if not unknown:
+                            continue
+                        row = conn.execute(
+                            "SELECT extra_json FROM web_pages WHERE source=? AND id=?",
+                            (source, item["id"]),
+                        ).fetchone()
+                        if row is None:
+                            continue
+                        extra = json.loads(row[0] or "{}")
+                        missing = {
+                            key: value for key, value in unknown.items()
+                            if key not in extra
+                        }
+                        if missing:
+                            extra.update(missing)
+                            conn.execute(
+                                "UPDATE web_pages SET extra_json=? WHERE source=? AND id=?",
+                                (json.dumps(extra, ensure_ascii=False), source, item["id"]),
+                            )
+                conn.commit()
+        except Exception as exc:
             summary["rebuild"] = {"error": str(exc)}
             summary["errors"].append(
                 {"stage": "rebuild", "error": f"{type(exc).__name__}: {exc}"}

@@ -899,7 +899,10 @@ def fetch_region(
     return fetch_region_from_tarball(region_key, config)
 
 
-def _region_versions(config: SekaiSyncConfig, regions: Iterable[str]) -> dict[str, dict]:
+def _region_versions(
+    config: SekaiSyncConfig, regions: Iterable[str],
+    roots: Optional[Mapping[str, Path]] = None,
+) -> dict[str, dict]:
     """Client/data/asset version numbers from each region's versions.json.
 
     Sekai Viewer's home page shows these (e.g. ``6.7.0`` / ``6.7.0.40``);
@@ -915,7 +918,8 @@ def _region_versions(config: SekaiSyncConfig, regions: Iterable[str]) -> dict[st
         # versions.json lives inside the per-region source tree (e.g. under a
         # sekai-master-db-*-diff-main/ subdirectory), mirroring how
         # data_files_for_region discovers tables.
-        matches = sorted(region_master_dir(config.store_root, region).glob("**/versions.json"))
+        root = roots[region] if roots is not None else _freshness_roots(config, (region,))[region]
+        matches = sorted(root.glob("**/versions.json"))
         if not matches:
             out[region] = {}
             continue
@@ -939,13 +943,33 @@ def _region_versions(config: SekaiSyncConfig, regions: Iterable[str]) -> dict[st
     return out
 
 
-def write_freshness(
+def _freshness_roots(
+    config: SekaiSyncConfig, regions: Iterable[str],
+    generation: Optional[str] = None, conn: Optional[object] = None,
+) -> dict[str, Path]:
+    pointers = dbstore.active_generations(config.store_root, conn=conn)
+    roots = {}
+    for region in regions:
+        selected = generation
+        if not selected or not generation_master_dir(config.store_root, region, selected).exists():
+            selected = pointers.get(region)
+        roots[region] = (
+            generation_master_dir(config.store_root, region, selected)
+            if selected else region_master_dir(config.store_root, region)
+        )
+    return roots
+
+
+def _build_freshness(
     config: SekaiSyncConfig,
     regions: Iterable[str],
     web_status: Optional[dict] = None,
     news_available: bool = False,
     generation: Optional[str] = None,
-) -> Path:
+    conn: Optional[object] = None,
+) -> dict:
+    regions = tuple(regions)
+    roots = _freshness_roots(config, regions, generation, conn)
     region_info = {}
     for region in regions:
         if region == "demo":
@@ -963,7 +987,10 @@ def write_freshness(
                 "source": f"master_db:{region}",
             }
     master_available = {
-        region: region == "demo" or bool(data_files_for_region(config.store_root, region))
+        region: (
+            region == "demo"
+            or any(child.suffix == ".json" for child in roots[region].rglob("*") if child.is_file())
+        )
         for region in regions
     }
     freshness = {
@@ -980,7 +1007,7 @@ def write_freshness(
             news_available=news_available,
             master_available=master_available,
         ),
-        "versions": _region_versions(config, regions),
+        "versions": _region_versions(config, regions, roots),
         "sources": build_source_manifest(config.sites),
         "web": web_status or {
             "enabled": False,
@@ -988,6 +1015,60 @@ def write_freshness(
             "sources": {},
         },
     }
+    return freshness
+
+
+def store_freshness_record(conn: object, record: Mapping[str, Any]) -> None:
+    """Persist the freshness record in the store's SQL ``meta`` table.
+
+    The DB is the authoritative copy, committed inside the same transaction as
+    the indexes and generation pointers; the ``cache/freshness.json`` file is a
+    projection that can always be re-materialised with
+    :func:`project_freshness`.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('freshness', ?)",
+        (json.dumps(record, ensure_ascii=False, sort_keys=True),),
+    )
+
+
+def project_freshness(config: SekaiSyncConfig) -> Optional[Path]:
+    """Write ``cache/freshness.json`` from the committed SQL record.
+
+    Returns the written path, or ``None`` when no record has been committed
+    yet. Idempotent, so callers may run it after any crash to repair the file.
+    """
+    with dbstore.connect(config.store_root) as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key='freshness'").fetchone()
+    if row is None:
+        return None
+    try:
+        record = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    path = freshness_path(config.store_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, record)
+    return path
+
+
+def write_freshness(
+    config: SekaiSyncConfig,
+    regions: Iterable[str],
+    web_status: Optional[dict] = None,
+    news_available: bool = False,
+    generation: Optional[str] = None,
+) -> Path:
+    """Standalone freshness writer for non-publish callers.
+
+    The publish path uses :func:`_build_freshness` +
+    :func:`store_freshness_record` inside its transaction instead, so the
+    record and the state it describes commit together.
+    """
+    freshness = _build_freshness(
+        config, regions, web_status=web_status,
+        news_available=news_available, generation=generation,
+    )
     path = freshness_path(config.store_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, freshness)
@@ -1022,11 +1103,12 @@ def rebuild_indexes(
         seed = json.loads(seed_path.read_text(encoding="utf-8"))
     terms = merge_glossary(entities, seed)
     dbstore.save_glossary_terms(config.store_root, terms, conn=conn)
-    # Fact packs are JSON projections, not authoritative state; they are
-    # rewritten here and can always be rebuilt from the committed indexes.
-    for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
-        packs = build_fact_packs(entities, language=language)
-        save_fact_packs(packs, factpack_path(config.store_root, language))
+    # A caller-owned transaction must not publish files before it commits.
+    # publish_generation projects these from committed entities afterwards.
+    if conn is None:
+        for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
+            packs = build_fact_packs(entities, language=language)
+            save_fact_packs(packs, factpack_path(config.store_root, language))
     return {"entities": len(entities), "terms": len(terms)}
 
 
@@ -1158,13 +1240,35 @@ def _write_freshness_for_generation(
     generation: str,
     conn: Optional[object] = None,
 ) -> None:
-    """Freshness record for the generation being published.
+    """Record the freshness report for the generation being published.
 
-    Written inside the publish transaction, because freshness is part of what
-    makes the generation visible: a freshness record claiming a generation the
-    pointer does not name (or the reverse) is a mixed-generation report.
+    The record is stored in the DB inside the publish transaction, because
+    freshness is part of what makes the generation visible: a freshness record
+    claiming a generation the pointer does not name (or the reverse) is a
+    mixed-generation report. The ``cache/freshness.json`` file is written
+    after COMMIT by :func:`project_publication`.
     """
-    write_freshness(config, regions, generation=generation)
+    record = _build_freshness(config, regions, generation=generation, conn=conn)
+    store_freshness_record(conn, record)
+
+
+def project_publication(config: SekaiSyncConfig) -> dict[str, int]:
+    """Re-materialise the regenerable file projections of the committed state.
+
+    Writes ``cache/freshness.json`` from the committed SQL record and rewrites
+    the JSON fact packs from the committed indexes. Idempotent and rerunnable,
+    so a projection failure or a crash before the files were written is
+    repaired by running this again — it never touches authoritative state.
+    """
+    written = 0
+    if project_freshness(config) is not None:
+        written += 1
+    entities = dbstore.load_entities(config.store_root)
+    for language in ("ja", "en", "zh_tw", "zh_hans", "ko"):
+        packs = build_fact_packs(entities, language=language)
+        save_fact_packs(packs, factpack_path(config.store_root, language))
+        written += 1
+    return {"factpacks": written, "freshness": 1 if written else 0}
 
 
 def publish_generation(
@@ -1184,6 +1288,11 @@ def publish_generation(
     generation with new indexes — never new indexes pointing at old raw files
     or the reverse. A failure before COMMIT changes nothing; a failure after
     COMMIT leaves a complete, internally-consistent new generation.
+
+    The regenerable JSON projections (fact packs, ``cache/freshness.json``)
+    are written only *after* COMMIT succeeds, from the committed state. A
+    failure while writing them cannot make the store claim an uncommitted
+    generation; :func:`project_publication` repairs the files on a rerun.
     """
     generation = str(prepared["generation"])
     prepared_regions = tuple(prepared.get("regions") or ())
@@ -1213,6 +1322,8 @@ def publish_generation(
         except Exception:
             conn.rollback()
             raise
+
+    project_publication(config)
 
     return {
         "generation": generation,
