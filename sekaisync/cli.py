@@ -41,6 +41,7 @@ from sekaisync.fetcher import write_freshness
 from sekaisync.http_server import serve_http
 from sekaisync.llm_client import LLMClient, load_llm_config
 from sekaisync.mcp_server import run_mcp_server
+from sekaisync.runtime import build_runtime
 from sekaisync.trinity import build_candidate_pool, scrub_trinity
 from sekaisync.zhfirst import _load_manual_seed
 from sekaisync.termindex import (
@@ -1414,13 +1415,16 @@ def cmd_kb_status(args: argparse.Namespace) -> int:
 
 def cmd_serve_mcp(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    core = SekaiSyncCore(config.store_root)
+    # A served Core performs network work (event_check), so it needs the
+    # configuration bound explicitly instead of reading a process-global
+    # snapshot at call time (Astra P14).
+    core = SekaiSyncCore(config.store_root, runtime=build_runtime(config))
     return run_mcp_server(core)
 
 
 def cmd_serve_http(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    core = SekaiSyncCore(config.store_root)
+    core = SekaiSyncCore(config.store_root, runtime=build_runtime(config))
     serve_http(core, host=args.host, port=args.port, sites=config.sites)
     return 0
 

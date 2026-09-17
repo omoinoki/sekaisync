@@ -915,6 +915,23 @@ class SekaiSyncCore:
         from sekaisync.eventalias import resolve_activity
 
         return resolve_activity(self.store_root, query, regions=regions)
+    @contextlib.contextmanager
+    def _runtime_scope(self, what: str):
+        """Endpoints for one networked call, from this Core's runtime.
+
+        Astra P14/D14: a networked method used to install its configuration in
+        the process-global snapshot, so two Cores with different settings
+        overwrote each other's endpoints.  With a runtime the call scopes those
+        endpoints to itself and restores them afterwards; without one it fails
+        with an actionable error instead of borrowing whatever the global
+        snapshot happens to hold.
+        """
+        from sekaisync.runtime import require_endpoints
+
+        require_endpoints(self.runtime, what=f"Core.{what}()")
+        with self.runtime.activate():
+            yield
+
     def event_check(
         self,
         regions: Optional[list[str]] = None,
@@ -922,11 +939,10 @@ class SekaiSyncCore:
         fetcher=None,
         master_base: Optional[str] = None,
     ) -> dict:
-        from sekaisync.event_detection import apply_master_base, check_events
+        from sekaisync.event_detection import check_events
 
-        if master_base:
-            apply_master_base(master_base)
-        return check_events(self.store_root, regions=regions, fetcher=fetcher, timeout=timeout)
+        with self._runtime_scope("event_check"):
+            return check_events(self.store_root, regions=regions, fetcher=fetcher, timeout=timeout)
 
     def event_archive(
         self,
@@ -943,18 +959,19 @@ class SekaiSyncCore:
         fetcher=None,
         master_base: Optional[str] = None,
     ) -> dict:
-        from sekaisync.progress import apply_master_base, compute_progress
+        from sekaisync.progress import compute_progress
 
-        if master_base:
-            apply_master_base(master_base)
         if live or fetcher is not None or master_base:
-            # Network-driven or caller-instrumented runs: never cached.
-            return compute_progress(
-                self.store_root,
-                regions=regions,
-                live=live,
-                fetcher=fetcher,
-            )
+            # A network-driven or caller-instrumented run reads endpoints from
+            # this Core's runtime instead of replacing the process-global
+            # snapshot, and never gets cached.
+            with self._runtime_scope("progress"):
+                return compute_progress(
+                    self.store_root,
+                    regions=regions,
+                    live=live,
+                    fetcher=fetcher,
+                )
         key_regions = tuple(regions) if regions is not None else None
 
         def _compute() -> dict:

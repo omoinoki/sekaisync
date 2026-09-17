@@ -150,6 +150,72 @@ class RuntimeContextTest(unittest.TestCase):
             self.assertIsInstance(core.status(), dict)
 
 
+class CoreRuntimeTest(unittest.TestCase):
+    """P14 — Core's networked methods read their own runtime, not the global.
+
+    These used to call ``apply_master_base``, which replaced the process-global
+    endpoint snapshot: a second Core with different settings silently redirected
+    the first one's in-flight work.
+    """
+
+    def _store(self) -> Path:
+        import tempfile
+
+        from sekaisync.cli import create_demo_store
+        from sekaisync.config import SekaiSyncConfig as _Cfg
+        from sekaisync.fetcher import sync
+
+        tmp = tempfile.TemporaryDirectory(prefix="test_core_runtime_")
+        self.addCleanup(tmp.cleanup)
+        store = Path(tmp.name) / "store"
+        create_demo_store(store)
+        sync(_Cfg(store_root=store, regions=("demo",), demo=True), ["demo"])
+        return store
+
+    def _runtime(self, store: Path, base: str = "https://runtime.invalid"):
+        site = SiteSettings(
+            id="sv", backend="sekai_viewer",
+            viewer=ViewerSettings(master_base=base, asset_base=base + "/assets",
+                                  i18n_base=base + "/i18n"),
+        )
+        return build_runtime(SekaiSyncConfig(store_root=store, sites=(site,)))
+
+    def test_networked_call_without_runtime_refuses_instead_of_going_global(self):
+        from sekaisync.core import SekaiSyncCore
+
+        core = SekaiSyncCore(self._store())
+        with self.assertRaises(RuntimeNotConfiguredError):
+            core.event_check(regions=["jp"], fetcher=lambda url: "{}")
+
+    def test_networked_call_uses_its_own_runtime_and_restores_the_global(self):
+        from sekaisync.core import SekaiSyncCore
+
+        store = self._store()
+        before = current_endpoints()
+        core = SekaiSyncCore(store, runtime=self._runtime(store))
+        seen = []
+        core.progress(
+            regions=["jp"], live=True,
+            fetcher=lambda url: (seen.append(current_endpoints().ALTSOURCE_SV_MASTER_BASE), "[]")[1],
+        )
+        self.assertEqual(set(seen), {"https://runtime.invalid"})
+        self.assertEqual(current_endpoints(), before, "the call leaked into the global snapshot")
+
+    def test_two_cores_do_not_redirect_each_other(self):
+        """The A/B case that motivated P14, now at the Core entry point."""
+        from sekaisync.core import SekaiSyncCore
+
+        store = self._store()
+        a = SekaiSyncCore(store, runtime=self._runtime(store, "https://a.invalid"))
+        b = SekaiSyncCore(store, runtime=self._runtime(store, "https://b.invalid"))
+        seen = []
+        fetcher = lambda url: (seen.append(current_endpoints().ALTSOURCE_SV_MASTER_BASE), "[]")[1]
+        a.progress(regions=["jp"], live=True, fetcher=fetcher)
+        b.progress(regions=["jp"], live=True, fetcher=fetcher)
+        a.progress(regions=["jp"], live=True, fetcher=fetcher)
+        self.assertEqual(seen, ["https://a.invalid", "https://b.invalid", "https://a.invalid"])
+
+
 class CrawlScopeTest(unittest.TestCase):
     """The crawl entry points scope endpoints to their own settings."""
 
