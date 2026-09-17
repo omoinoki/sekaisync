@@ -53,10 +53,10 @@
 | B1 | 最小保护 P07/P12/P15/P20d/P19/P04/P05 | ✅ **7/7 完成** | 见下表 | 563 | 全部已提交并独立验证 |
 | B2 | 存储止损与快照 P13/P01/P02 | 🟡 P01/P02 完成；P13 部分 | 见下表 | — | P13 的 raw 代际发布未做（见"未完成"） |
 | B3 | 查询去放大 P06 | 🟡 部分 | `517980a` | — | 元数据投影已做；browse/search 未做 |
-| B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` | 844 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化均已提交；剩三通道逐槽采纳与 CLI/MCP runtime 接入 |
+| B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` | 849 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳与 CLI/MCP runtime 接入 |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **844**。**全绿**（`8e7ea48`，冻结树
+**测试账本**：基线 **361** → 当前 **849**。**全绿**（`c95787b`，冻结树
 `python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
@@ -115,6 +115,7 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `7e0ea9b` | **P09 官方合并只提升其实际供给的槽**（WrongName/A 组合消除） |
 | `dea142c` | **P16 TableRead 四态**（missing/invalid/valid_empty/valid；不完整表阻断 up_to_date 与合并） |
 | `8e7ea48` | **P03 v3 区域事实 + P08 槽权威接线 + P14 线程/缓存参数化**（844 测试绿） |
+| `c95787b` | **P05 逐区服公开时间过滤 + 正文语言如实**（849 测试绿） |
 
 **`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
 与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
@@ -813,6 +814,10 @@ e0996ba/d44c720/0872418）：
   P16 TableRead 四态**已于 `dea142c` 完成**（本行 2026-09-17 前记录已过期），
   但事件关系表的自然键以外完整性仍以 `check_events` 的 incomplete_local 为准
 - ❌ 不说"性能已达标" —— `web_browse` 约 21s（原 50.2s），`web_search` 仍约 195s；均未达方案预期的 <1s
-- ❌ 不说"逐区服事实防剧透已完整" —— region_facts 已实现，但 `build_fact_pack_at` 仍无 region 参数，
+- ❌ 不说"逐区服事实防剧透已完整" —— `build_fact_pack_at` 已于 `c95787b` 要求 region 并按
+  逐区服事实判定公开时间（`region_scope` 明示是否降级），正文按请求语言选取并报告
+  `effective_language`；但这是**公开时间过滤**，不是任意剧集进度防剧透——后者需要逐章节
+  `knowledge_at` 证据，尚未建模。且仅有声明了 `_TIME_FIELDS` 的类型（event/card/gacha/
+  virtual_live/song/area/shop_item）参与判定，其余类型一律 undated 并扣下正文
 
 **真实 store 未被修改**：全部破坏性验证都在临时库上完成；真实库仅做过只读查询与性能测量。
