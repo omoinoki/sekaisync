@@ -31,13 +31,14 @@ class NewsTest(unittest.TestCase):
         jp_title = "\u91cd\u8907\u304a\u77e5\u3089\u305b"
         merged = merge_news(
             [
-                # Two instances of the SAME backend are mirrors: same upstream
-                # id, so they deduplicate to one post. Identity is
-                # (backend, upstream id, language) — never the title.
+                # Explicit upstream evidence identifies these instances as
+                # mirrors; backend equality alone is not sufficient. Identity
+                # is (upstream namespace, upstream id, language), not title.
                 {
                     "language": "zh_hans",
                     "source": "altsource_sv",
                     "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
                     "source_id": "1",
                     "title": cn_title,
                     "text": "短",
@@ -46,6 +47,7 @@ class NewsTest(unittest.TestCase):
                     "language": "zh_hans",
                     "source": "altsource_sv_local",
                     "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
                     "source_id": "1",
                     "title": cn_title,
                     "text": "更长的正文内容",
@@ -54,6 +56,7 @@ class NewsTest(unittest.TestCase):
                     "language": "ja",
                     "source": "altsource_sv",
                     "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
                     "source_id": "2",
                     "title": jp_title,
                     "text": "短い",
@@ -62,6 +65,7 @@ class NewsTest(unittest.TestCase):
                     "language": "ja",
                     "source": "altsource_sv_local",
                     "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
                     "source_id": "2",
                     "title": jp_title,
                     "text": "より長い本文内容",
@@ -254,15 +258,14 @@ class NewsTest(unittest.TestCase):
     def test_source_priority_follows_passed_order(self):
         from sekaisync.sources import SOURCE_MS, SOURCE_SV
 
-        # Two instances of the same backend are mirrors of one upstream post, so
-        # they share an upstream id and deduplicate; priority then picks which
-        # instance's copy is served. Identity is (backend, upstream id,
-        # language) — the title is display-only.
+        # Explicit upstream namespaces prove mirror identity. Priority picks
+        # which instance's copy is served; the title is display-only.
         records = [
             {
                 "language": "zh_hans",
                 "source": SOURCE_SV,
                 "source_type": "sekai_viewer",
+                "upstream_namespace": "official:test",
                 "source_id": "7",
                 "text": "sv text",
             },
@@ -270,12 +273,12 @@ class NewsTest(unittest.TestCase):
                 "language": "zh_hans",
                 "source": "altsource_sv_local",
                 "source_type": "sekai_viewer",
+                "upstream_namespace": "official:test",
                 "source_id": "7",
                 "text": "local text",
             },
         ]
-        # Both instances are the same backend, so priority decides which copy
-        # is served. The unknown instance ranks last under either order.
+        # These proven mirrors share identity, so priority decides the copy.
         merged = merge_news(records, source_priority=(SOURCE_SV, "altsource_sv_local"))
         self.assertEqual(merged[0]["source"], SOURCE_SV)
         merged = merge_news(records, source_priority=("altsource_sv_local", SOURCE_SV))
@@ -491,8 +494,8 @@ class NewsIdentityTest(unittest.TestCase):
         """Same backend + same upstream id = one post, served by priority."""
         merged = merge_news(
             [
-                self._record(source="altsource_sv"),
-                self._record(source="altsource_sv_local"),
+                self._record(source="altsource_sv", upstream_namespace="official:test"),
+                self._record(source="altsource_sv_local", upstream_namespace="official:test"),
             ],
             source_priority=("altsource_sv_local", "altsource_sv"),
         )
