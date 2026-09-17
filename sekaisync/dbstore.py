@@ -1290,7 +1290,9 @@ def save_terms_records(
                     len(evidence) if replace_evidence else max(len(evidence), existing_counts.get(item.get("id", ""), 0)),
                 )
             )
-            if replace_evidence and evidence:
+            if replace_evidence:
+                # An empty replacement clears the rows — the advertised
+                # count of 0 must match term_evidence exactly.
                 conn.execute("DELETE FROM term_evidence WHERE term_id=?", (item.get("id", ""),))
                 for idx, ev in enumerate(evidence):
                     if not isinstance(ev, dict):
