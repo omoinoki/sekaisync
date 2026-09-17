@@ -138,7 +138,7 @@
           "decision": "accept",
           "value": "Good",
           "rationale": "",
-          "created_at": "2026-09-17T09:02:53.138211+00:00"
+          "created_at": "2026-09-17T09:09:44.269768+00:00"
         },
         "candidate": "Good",
         "source": "decision",
@@ -180,7 +180,7 @@
   },
   "source_inventory": {
     "module_count": 46,
-    "module_lines": 33318,
+    "module_lines": 33334,
     "test_file_count": 54,
     "direct_trinity_import_in_tests": true,
     "modules": [
@@ -386,8 +386,8 @@
       },
       {
         "path": "sekaisync/trinity.py",
-        "lines": 2533,
-        "sha256": "257e4166976be08ce23d39ce7a5b02b87108e32f2386cadb9fdb63160c0d641a"
+        "lines": 2549,
+        "sha256": "93506a8a21175f33eb9fb07126720c9dba7323a32508ac1aa444dcd1b1221474"
       },
       {
         "path": "sekaisync/trust.py",

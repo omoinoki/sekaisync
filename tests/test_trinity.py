@@ -12,10 +12,15 @@ and channels became names, producing `{"SEKAI": "translit"}` with the real
 language slot lost.
 """
 
+import sys
 import unittest
+from pathlib import Path
 
 from sekaisync.cli import _names_from_conflict, _proposals_from_rows
 from sekaisync.trinity import arbitrate
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_penetrate_channels import _story  # noqa: E402  (shared corpus fixture)
 
 
 class ArbitrateShapeTest(unittest.TestCase):
@@ -182,3 +187,74 @@ class SlotIsolationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SlotDecisionHandoffTest(unittest.TestCase):
+    """`scrub_trinity` must hand its per-slot decisions to the caller.
+
+    `_merge_channels` has always built `slot_decisions`, but `scrub_trinity`
+    dropped the key when assembling its result — so the layered pipeline could
+    report how many slots were accepted yet had nothing it could commit, and
+    the slot store (Astra P08/P11) had no path from the channels at all.
+
+    The decisions must also carry the *stories* behind them: a slot
+    certificate is only issued from evidence that names its supporting
+    stories, so a payload reporting a count ("3") cannot become a decision.
+    """
+
+    def _corpus(self) -> dict:
+        return {
+            "s1": _story("セカイに行こう\nカイトと歌う\n", "Let's go to SEKAI\nSing with KAITO\n"),
+            "s2": _story("セカイは広い\n", "SEKAI is wide\n"),
+            "s3": _story("セカイの歌\n", "Song of SEKAI\n"),
+        }
+
+    def _run(self) -> dict:
+        from sekaisync import trinity
+
+        groups = self._corpus()
+        pool, _discovered = trinity.build_candidate_pool(groups, sorted(groups))
+        return trinity.scrub_trinity(groups, sorted(groups), pool, target_languages=("en",))
+
+    def test_decisions_reach_the_top_level_result(self):
+        result = self._run()
+        self.assertIn("slot_decisions", result)
+        self.assertTrue(result["slot_decisions"])
+        # One decision per (term, language), with the status vocabulary the
+        # slot store uses.
+        for row in result["slot_decisions"]:
+            self.assertIn(row["status"], {"accepted", "pending", "conflict", "rejected"})
+            self.assertTrue(row["term"])
+            self.assertTrue(row["language"])
+
+    def test_decisions_carry_the_supporting_story_keys(self):
+        result = self._run()
+        accepted = [r for r in result["slot_decisions"] if r["status"] == "accepted"]
+        self.assertTrue(accepted, "fixture stopped producing an accepted slot")
+        keys = set()
+        for row in accepted:
+            for item in row["evidence"]:
+                evidence = (item.get("payload") or {}).get("evidence") or {}
+                keys.update(evidence.get("story_keys") or [])
+        # Non-empty is the point: `keys <= corpus` alone passes vacuously when
+        # no payload carries story_keys at all, which is exactly the gap this
+        # test exists to catch.
+        self.assertTrue(keys, "no channel payload carried story_keys")
+        self.assertTrue(
+            keys <= set(self._corpus()),
+            f"story_keys are not story identities: {sorted(keys)}",
+        )
+
+    def test_accepted_decisions_agree_with_the_accepted_map(self):
+        """The handoff must not disagree with what the report shows."""
+        result = self._run()
+        from_decisions = {
+            (row["term"], row["language"]): row["value"]
+            for row in result["slot_decisions"] if row["status"] == "accepted"
+        }
+        from_accepted = {
+            (term, lang): value
+            for term, record in (result.get("accepted") or {}).items()
+            for lang, value in (record.get("names") or {}).items()
+        }
+        self.assertEqual(from_decisions, from_accepted)

@@ -803,6 +803,12 @@ def _channel_trunk(
                         "evidence": {
                             "channel": "trunk",
                             "stories": len(src_stories),
+                            # The slot store's certificate needs the supporting
+                            # story identities, not just their count: a slot is
+                            # accepted only from evidence that names the stories
+                            # behind it, so a payload reporting merely "3"
+                            # cannot be turned into a decision after the fact.
+                            "story_keys": sorted(src_stories),
                             "target": target_language,
                             # reliability：三组对照实验的评测范围只有
                             # zh_hans / zh_hant / en（组 1 = ja→zh，精度背书；
@@ -895,7 +901,8 @@ def _channel_glossary_backing(
                     "value": str(value),
                     "sim": 0.0,
                     "evidence": {"channel": "trunk", "method": "glossary_surname",
-                                 "ja": row.get("ja"), "stories": len(hits)},
+                                 "ja": row.get("ja"), "stories": len(hits),
+                                 "story_keys": sorted(hits)},
                 }
             }
         if lang_map:
@@ -1098,6 +1105,7 @@ def _channel_hub(
                     "value": best_en,
                     "sim": 0.0,
                     "evidence": {"channel": "hub", "votes": votes_n, "stories": n_stories,
+                                 "story_keys": sorted(votes.get(best_en) or ()),
                                  "aux_hits": aux_hits, "verified": bool(aux_hits)},
                 }
             }
@@ -1143,6 +1151,7 @@ def _channel_hub(
                         "value": cand_value,
                         "sim": 0.0,
                         "evidence": {"channel": "hub", "backfill": True, "votes": cand_n,
+                                     "story_keys": sorted(back_votes.get(cand_value) or ()),
                                      "anchor": best_en, "anchor_stories": anchor_stories},
                     }
                 }
@@ -1227,6 +1236,7 @@ def _channel_translit(
                 "evidence": {
                     "channel": "translit", "sim": sim, "votes": n,
                     "stories": n_stories,
+                    "story_keys": sorted(votes.get(cand) or ()),
                     # 跨语言字面命中：该拉丁名在别的语言译文里**原样保留**
                     # （Vivid Street / MORE MORE HOUSE 这类品牌名不译）。
                     # 这是修正组 2 "繁中同形自证失效"之后，真正有效的第二个
@@ -2353,6 +2363,12 @@ def scrub_trinity(
         "pending": merged["pending"],
         "rejected": rejected,
         "stats": stats,
+        # Per-(term, language) decisions with the evidence behind each one.
+        # `_merge_channels` builds these for the slot store's commit path
+        # (Astra P08/P11), and dropping them here is why the layered pipeline
+        # could only report counts: the decisions existed but never left the
+        # merge step.
+        "slot_decisions": merged["slot_decisions"],
         # 诊断用原始通道产出（不参与主线集成契约，供 verify/report 使用）。
         "channels_raw": {
             name: {
