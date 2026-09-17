@@ -84,6 +84,37 @@ class WebBrowseSqlTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def test_metadata_rows_keep_source_type_and_instance(self):
+        """Provenance columns survive the metadata projection (Astra verifier:
+        recomputing trust from metadata must match the stored value)."""
+        from sekaisync import dbstore
+
+        page = WebPage(
+            id="web:custom:event_story:2:1",
+            source="custom_sv",
+            url="https://pjsk.moe/zh-cn/story/event/2/1/",
+            title="自定义实例",
+            language="zh_hans",
+            kind="event_story",
+            text="实例正文",
+            crawled_at="2026-08-13T00:00:00+00:00",
+            hash="c1",
+            source_type="sekai_viewer",
+            instance="custom_sv",
+        )
+        save_web_pages(self.store, "custom_sv", [page])
+        row = {item["id"]: item for item in dbstore.load_web_index_rows(self.store)}[page.id]
+        self.assertEqual(row["source_type"], "sekai_viewer")
+        self.assertEqual(row["instance"], "custom_sv")
+        self.assertEqual(row["trust"], "B")
+        from sekaisync.trust import trust_for_page
+
+        self.assertEqual(row["trust"], trust_for_page({
+            "source": "custom_sv", "kind": "event_story",
+            "source_type": "sekai_viewer", "auxiliary": False,
+            "overlay": False, "derived": False,
+        }))
+
     def _oracle(self, source=None, language=None, kind=None, limit=50,
                 include_overlay=False):
         """The pre-SQL algorithm: full scan, Python filter, two-pass sort."""

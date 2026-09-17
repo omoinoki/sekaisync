@@ -87,7 +87,7 @@ def _mark_untranslated_pages_locked(
             page["original_text_hash"] = original_hash
             # P0 fix: keep original text alongside placeholder so the
             # replacement is reversible (restore via original_text field).
-            page["original_text"] = other_text
+            page["original_text"] = str(page.get("text") or "")
             page["text"] = placeholder
             page["text_hash"] = sha256_hex(placeholder)
             page["hash"] = hashlib.sha1(placeholder.encode("utf-8")).hexdigest()[:16]
@@ -106,6 +106,7 @@ def _mark_untranslated_pages_locked(
             store_root,
             source,
             [web_page_from_dict(item) for item in items],
+            existing={page["id"]: page for page in pages if page.get("source") == source},
         )
 
     return {

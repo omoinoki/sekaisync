@@ -70,6 +70,7 @@ _INDEX_RECORD_FIELDS = (
     "untranslated", "untranslated_placeholder", "asset_mismatch",
     "content_language_mismatch", "scenario_id_mismatch",
     "translation_source", "source_language", "crawled_at",
+    "source_type", "instance",
 )
 
 _SCHEMA = """

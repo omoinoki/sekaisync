@@ -108,6 +108,7 @@ class PostprocessTest(unittest.TestCase):
             self.assertTrue(pages["web:altsource_ms:event_story:1:1:zh"]["untranslated"])
             self.assertEqual(pages["web:altsource_ms:event_story:1:1:zh"]["text"], '[未翻译]')
             self.assertTrue(pages["web:altsource_ms:event_story:1:1:zh"]["original_text_hash"])
+            self.assertEqual(pages["web:altsource_ms:event_story:1:1:zh"]["original_text"], '日本語の本文')
             self.assertEqual(
                 pages["web:altsource_ms:event_story:1:1:en"]["text"],
                 '[未翻译]',
@@ -119,6 +120,7 @@ class PostprocessTest(unittest.TestCase):
             pages = {page["id"]: page for page in flatten_web_pages(store_root)}
             self.assertTrue(pages["web:altsource_ms:event_story:1:1:en"]["untranslated"])
             self.assertFalse(pages["web:altsource_ms:event_story:1:1:en"]["content_language_mismatch"])
+            self.assertEqual(pages["web:altsource_ms:event_story:1:1:en"]["original_text"], '日本語の本文')
             self.assertEqual(pages["web:altsource_ms:event_story:1:1:en"]["text"], '[未翻译]')
             self.assertEqual(
                 pages["web:altsource_ms:event_story:1:1:ja"]["text"],

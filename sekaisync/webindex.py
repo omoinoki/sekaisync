@@ -589,7 +589,7 @@ def save_web_pages(
     if existing is None:
         existing = load_existing_page_map(store_root, source)
     for page in pages:
-        existing[page.id] = web_page_to_dict(page)
+        existing[page.id] = {**existing.get(page.id, {}), **web_page_to_dict(page)}
     merged = list(existing.values())
     dbstore.save_web_pages_full(store_root, source, merged)
     if write_categories:
@@ -661,7 +661,7 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
     rebuilt: dict[str, int] = {}
     for source, items in dbstore.load_web_pages(store_root).items():
         pages = [web_page_from_dict(recompute_language_flags(item)) for item in items]
-        merged = [web_page_to_dict(page) for page in pages]
+        merged = [{**item, **web_page_to_dict(page)} for item, page in zip(items, pages)]
         dbstore.save_web_pages_full(store_root, source, merged)
         write_category_files(
             web_category_dir(store_root, source),
@@ -715,6 +715,7 @@ def web_search(
     include_text: bool = False,
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
+    kind: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Search page titles/bodies, best match first within source priority.
 
@@ -729,6 +730,10 @@ def web_search(
     batch) while still considering **every** candidate — the scoring loop is
     still linear, and Astra's text is explicit that this must not be sold as
     an algorithmic speedup.
+
+    ``kind`` uses exact raw-kind matching before scoring and heap selection.
+    Filtering after the heap would let unrelated kinds consume the result
+    limit and hide matching pages. SQL iteration remains streamed.
     """
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
@@ -754,6 +759,8 @@ def web_search(
         if wanted_source and not matches_source_filter(page, wanted_source):
             continue
         if language and page.get("language") != language:
+            continue
+        if kind and page.get("kind") != kind:
             continue
         head = page.get("text_head") or ""
         haystack = "\n".join([page.get("title", ""), head])
