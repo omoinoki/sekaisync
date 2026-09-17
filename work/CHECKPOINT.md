@@ -16,11 +16,16 @@
 2. **不可以宣称**：完整术语闭环、全区服事实、防剧透、性能达标、MCP 2025-06-18 符合。
    逐条禁令见文末《明确不能说的》。
 3. **仍未完成**（均有实测依据，非推测）：
-   - **P11 layered 落库未做** —— `apply_scrub_result` / `validate_slot_for_commit`
-     在代码与测试中均**不存在**；`--layered` 仍只入 review 队列并打印计数。
-   - **P06 只做了一半** —— search 已索引化；`web_browse` 仍是全表有序扫描。
-   - **P14 worker 仍经 ContextVar** 读取，未直接接收 `CrawlContext`。
-   - **P15 协议标识仍为 `2024-11-05`**，未做版本协商与真实客户端互操作。
+   - **P11 layered 落库** —— `apply_scrub_result` 已实现（`57cdf3f`），
+     `--layered` 现在**真正写入 `term_slots`**（独立验证：表中有行、names_json 与
+     accepted 槽一致、revision 递增；`verifier=None` 时全 pending，门槛未放宽）。
+     仍**不可宣称**"完整术语闭环"——见文末 `extract_terms_local` 不写 source 的限制。
+   - **P06 browse** —— 索引快路径已实现（`ad16469`；副本实测 7.66s→0.12s）。
+     **但老库不会自动获得该索引**（`_SCHEMA` 只在建新库时执行），
+     且带 `source=`/`kind=` 过滤仍受 `_sql_filter_values` 的 5 列 DISTINCT 拖累（~7.6s）。
+   - **P14 worker 仍经 ContextVar** 读取，未直接接收 `CrawlContext`（仅整洁度，已评估不值得做）。
+   - **P15 协议协商已实现**（`2b4d99a`，`2025-06-18`）；但该版其余一致性项
+     （通知 202、GET 行为、真实客户端互操作）未做，**仍不可宣称协议符合 MCP 2025-06-18**。
    - **B8 发布门禁未达标**（性能、互操作、平台矩阵、故障点矩阵均有缺口）。
 
 **剩余项复盘**：见 `work/REMAINING_REVIEW_2026-09-18.md`；**派发清单**（已编制、待人工确认后执行）：`work/AGENT_DISPATCH_2026-09-18.md`（逐项判断剩余项是否仍需修、还是已被后来的重构超越；并更正了三处此前不准确的表述）。
@@ -81,8 +86,8 @@
 | B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` `24a26fb` `ae101fb` | 879 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **879**。**全绿**（`ae101fb`，冻结树
-`python -X utf8 -m unittest discover -s tests` → `Ran 879 tests OK`；
+**测试账本**：基线 **361** → 当前 **943**。**全绿**（`ad16469`，冻结树
+`python -X utf8 -m unittest discover -s tests` → `Ran 943 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
 
@@ -146,6 +151,11 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `ebec6d0` | **P15 MCP resource templates 分离 + 字面模板读取拒答**（857 测试绿） |
 | `24a26fb` | **P08/P11 基础：slot_decisions 与 story_keys 交到调用方**（860 测试绿） |
 | `ae101fb` | **P06 召回等价的候选索引 + web 写入补 revision**（879 测试绿） |
+| `196d425` | **W1-A 通道产出可入库证据行**（903 测试绿） |
+| `2b4d99a` | **W3 MCP 协议版本协商**（903 测试绿） |
+| `0e329c1` | **W1-B 语料 verifier + 修死代码**（924 测试绿） |
+| `57cdf3f` | **W1-C `apply_scrub_result`：layered 真落库**（937 测试绿） |
+| `ad16469` | **W2 browse 索引快路径**（943 测试绿；副本实测 62x） |
 
 **`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
 与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
