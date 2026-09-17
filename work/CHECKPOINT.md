@@ -371,6 +371,17 @@ translit 三条通道的 `payload["evidence"]` 现在带 `story_keys` 而非只�
 决策与证据现在可用，但**没有任何代码把它们提交进槽库**——layered 仍只入 review 队列。
 **不要宣称 layered 已落库。**
 
+**下一项的确切前置（已核实，别再重新摸索）**：槽提交要求**证据行**先存在。
+`term_slots._prepare_slot` 会拿 `slot['evidence_refs']` 去 `evidence` 行集合里解析，
+解析不到即 `ValueError`；`_certificate` 还要求每条支撑证据满足
+`ev['language'] == slot['language']`、`ev['source'] == slot['source']`，且
+`ev['term'] == value or ev['value'] == value or value in ev['sentence']`（`term_slots.py:138-142`）。
+三通道现在给到的是 `story_keys` 列表 + 投票数，**没有 (语言, 原句) 级别的证据行**。
+因此 `apply_scrub_result` 之前必须先让通道产出可入库的证据行（源句/目标句 + story_key +
+language + source），或把 `_certificate` 的资格门改成三通道证据形态——
+两条路都要动 `trinity`，且必须重跑 P08 的资格门回归（`tests/test_term_slot_migration.py`
+的 `test_explicit_matching_verifier_evidence_accepts_only_one_slot` 钉住证书语义）。
+
 ---
 
 ### P14 — 显式 RuntimeContext（**核心缺陷已修**）
