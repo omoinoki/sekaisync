@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,11 @@ from sekaisync.layout import (
 from sekaisync.models import Entity, GlossaryTerm
 from sekaisync.trust import trust_for_page
 
+# Compatibility initializer remains v1 until all old writers are adapted.
 SCHEMA_VERSION = "1"
+LATEST_SCHEMA_VERSION = "2"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"1", "2"})
+RESERVED_REGION_SCHEMA_VERSION = "3"
 
 _PAGE_COLUMNS = (
     "id", "url", "title", "language", "kind", "text", "crawled_at", "hash",
@@ -145,7 +150,15 @@ def connect(store_root: Path):
     it never closes. This wrapper guarantees close so Windows can remove
     store directories (tests use TemporaryDirectory aggressively).
     Aggregate SQL runs in milliseconds; the per-call open cost is negligible.
+
+    When a request-level connection is bound via :func:`read_connection`, this
+    yields that connection instead — without committing or closing it (the
+    request owns its transaction and lifecycle, P02).
     """
+    bound = _bound_connection(store_root)
+    if bound is not None:
+        yield bound
+        return
     store_root = Path(store_root)
     path = db_path(store_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,6 +170,56 @@ def connect(store_root: Path):
         yield conn
     finally:
         conn.close()
+
+
+_REQUEST_CONNECTION: ContextVar[Optional[tuple[Path, sqlite3.Connection]]] = ContextVar(
+    "sekaisync_request_connection", default=None
+)
+
+
+@contextlib.contextmanager
+def read_connection(store_root: Path, conn: sqlite3.Connection):
+    """Bind a request-scoped connection for nested ``connect``/``ensure_store``.
+
+    P02 request consistency: within the ``with`` block every ``connect()``
+    yields *this* connection (no commit, no close — the request owns its
+    lifecycle and transaction), so every SQL read helper shares one snapshot
+    instead of each opening its own connection.  Default (unbound) behaviour of
+    every other entry point is byte-for-byte unchanged, on v1 and v2 alike.
+    Migration and term writers reject a binding for the same store; they must
+    never commit, roll back, or change the caller's read transaction.
+    """
+    previous = _REQUEST_CONNECTION.get()
+    if previous is not None:
+        raise RuntimeError(
+            "read_connection is already bound for this context; "
+            "requests must not nest snapshots"
+        )
+    token = _REQUEST_CONNECTION.set((Path(store_root).resolve(), conn))
+    try:
+        yield conn
+    finally:
+        _REQUEST_CONNECTION.reset(token)
+
+
+def _bound_connection(store_root: Path) -> Optional[sqlite3.Connection]:
+    binding = _REQUEST_CONNECTION.get()
+    if binding is not None and binding[0] == Path(store_root).resolve():
+        return binding[1]
+    return None
+
+
+def require_unbound_writer(store_root: Path) -> None:
+    """Reject writes before borrowing a request-owned read connection."""
+    if _bound_connection(store_root) is not None:
+        raise RuntimeError("cannot write while a read connection is bound for this store")
+
+
+def require_write_connection(conn: sqlite3.Connection) -> None:
+    """Connection-level writers must not mutate the bound read transaction."""
+    binding = _REQUEST_CONNECTION.get()
+    if binding is not None and binding[1] is conn:
+        raise RuntimeError("cannot write through a bound read connection")
 
 
 # ── schema version gate (P07) ─────────────────────────────────────
@@ -293,7 +356,7 @@ def inspect_schema(store_root: Path) -> SchemaState:
             SCHEMA_CORRUPT, None, path, "meta has no schema_version stamp"
         )
     version = str(row[0]).strip()
-    if version == SCHEMA_VERSION:
+    if version in SUPPORTED_SCHEMA_VERSIONS:
         return SchemaState(SCHEMA_CURRENT, version, path)
     found_key = _version_key(version)
     supported_key = _version_key(SCHEMA_VERSION)
@@ -352,13 +415,20 @@ def _schema_error(state: SchemaState) -> SchemaVersionError:
 
 
 def initialize(store_root: Path) -> None:
-    """Create the schema in a new/absent store, or verify a current one.
+    """Create the v1 schema in a new/absent store, or verify a current one.
 
     Refuses (``SchemaVersionError``) to touch a store stamped with any other
-    version so an unknown store is never silently restamped.
+    version so an unknown store is never silently restamped.  For transition
+    reasons a fresh store is still created as v1: existing term writers and
+    fixtures build implicit stores through this path and v1 stays fully
+    supported.  Creating a per-language-slot v2 store is an explicit choice —
+    use :func:`initialize_new_store` (P07/P08); migration of an existing v1
+    store is :func:`migrate_store`, never automatic.
     """
     state = inspect_schema(store_root)
-    if state.status not in (SCHEMA_ABSENT, SCHEMA_CURRENT):
+    if state.status == SCHEMA_CURRENT:
+        return
+    if state.status != SCHEMA_ABSENT:
         raise _schema_error(state)
     with connect(store_root) as conn:
         conn.executescript(_SCHEMA)
@@ -369,14 +439,98 @@ def initialize(store_root: Path) -> None:
         conn.commit()
 
 
+def initialize_new_store(store_root: Path) -> None:
+    """Explicitly create a v2 slot store (never an automatic path).
+
+    v2 adds ``term_slots`` plus the review queue/decision/rule tables.  The
+    v3 ``entity_region_facts`` table is reserved for a separate integration and
+    is deliberately not created here.  Existing v1 stores are not touched by
+    this function; they move to v2 only through :func:`migrate_store`.
+    """
+    from sekaisync.term_slots import create_schema
+
+    state = inspect_schema(store_root)
+    if state.status == SCHEMA_CURRENT:
+        if state.version != "2":
+            raise _schema_error(state)
+        return
+    if state.status != SCHEMA_ABSENT:
+        raise _schema_error(state)
+    with connect(store_root) as conn:
+        conn.executescript(_SCHEMA)
+        create_schema(conn)
+        conn.executemany(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            (("schema_version", "2"), ("v2_migration", "explicit_new_store")),
+        )
+        conn.commit()
+
+
+def migrate_store(
+    store_root: Path,
+    *,
+    target_version: int,
+    dry_run: bool = True,
+    backup_path: Optional[Path] = None,
+    verifier: Optional[Any] = None,
+    expected_plan_digest: Optional[str] = None,
+) -> dict:
+    """Explicit v1→v2 migration entry point (thin delegation).
+
+    Default is a read-only dry-run diff that preserves every legacy value as a
+    pending slot with the old provenance kept in ``legacy_payload`` (old
+    term-level ``trust`` is reported as ``reported_trust``, never certified).
+    Applying requires an explicit ``backup_path`` for a new consistent backup
+    and is atomic + idempotent; there is no startup auto-migration (P07/P08).
+    v3 (``entity_region_facts``) is reserved for a separate integration and is
+    not implemented here.
+    """
+    from sekaisync.term_slots import migrate_store as _migrate
+
+    return _migrate(
+        store_root,
+        target_version=target_version,
+        dry_run=dry_run,
+        backup_path=backup_path,
+        verifier=verifier,
+        expected_plan_digest=expected_plan_digest,
+    )
+
+
+def _require_v1_write_store(store_root: Path) -> None:
+    """v2 stores must not be written through the legacy terms API (fail closed).
+
+    On a v2 store ``names_json``/``official``/``trust`` are projections of
+    ``term_slots``; a legacy write would desynchronize them, so it is refused
+    with ``ValueError`` mentioning slots.  v1 and absent stores pass unchanged.
+    """
+    require_unbound_writer(store_root)
+    state = inspect_schema(store_root)
+    if state.status == SCHEMA_CURRENT and state.version == "2":
+        raise ValueError(
+            "this store uses explicit per-language term slots (schema v2); "
+            "write through sekaisync.term_slots.commit_slot_decisions instead"
+        )
+
+
 def initialized(store_root: Path) -> bool:
     """True only when the store exists and carries this build's schema stamp."""
     return inspect_schema(store_root).status == SCHEMA_CURRENT
 
 
 def _ensure_initialized(store_root: Path) -> None:
-    """Tables only; write APIs must never trigger a legacy import (recursion)."""
+    """Tables only; write APIs must never trigger a legacy import (recursion).
+
+    A bound request connection (``read_connection``) means the request has
+    already fixed a snapshot; initialization writes are skipped and the bound
+    connection is used as-is.  An unbound read of a store this build cannot
+    open is still refused with ``SchemaVersionError``.
+    """
     state = inspect_schema(store_root)
+    if _bound_connection(store_root) is not None:
+        if state.status in (SCHEMA_ABSENT, SCHEMA_CURRENT):
+            return
+        raise _schema_error(state)
     if state.status == SCHEMA_CURRENT:
         return
     if state.status == SCHEMA_ABSENT:
@@ -394,8 +548,13 @@ def ensure_store(store_root: Path) -> None:
 
     A store stamped with a version this build does not understand is refused
     with ``SchemaVersionError`` and left byte-identical — reads must never
-    downgrade it into a plausible-looking older store.
+    downgrade it into a plausible-looking older store.  When a request-level
+    connection is bound, no initialization/import write happens: a request
+    snapshot must stay read-only and consistent.
     """
+    if _bound_connection(store_root) is not None:
+        _ensure_initialized(store_root)
+        return
     state = inspect_schema(store_root)
     if state.status == SCHEMA_ABSENT:
         initialize(store_root)
@@ -1100,6 +1259,7 @@ def save_terms_records(
     """
     from sekaisync.termindex import term_to_dict
 
+    _require_v1_write_store(store_root)
     _ensure_initialized(store_root)
     with connect(store_root) as conn:
         # When not replacing evidence, keep the stored evidence_count (merge runs
@@ -1281,6 +1441,7 @@ def replace_terms_snapshot(
     from sekaisync.termindex import term_to_dict
 
     _ensure_initialized(store_root)
+    _require_v1_write_store(store_root)
 
     items: list[dict] = []
     seen: set[str] = set()
@@ -1378,6 +1539,7 @@ def upsert_terms(
     from sekaisync.termindex import term_to_dict
 
     _ensure_initialized(store_root)
+    _require_v1_write_store(store_root)
     updates = dict(evidence_updates or {})
 
     items: list[dict] = []
