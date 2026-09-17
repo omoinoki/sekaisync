@@ -1,0 +1,844 @@
+{
+  "specs": [
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "type",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "region",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 8,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "core_method": "lookup",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/lookup",
+      "mcp_name": "sekaisync_lookup",
+      "name": "lookup",
+      "wrap": "query_results"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": "zh_tw",
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "target_language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "source_language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "kind",
+          "required": false
+        }
+      ],
+      "core_method": "resolve_name",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/resolve",
+      "mcp_name": "sekaisync_resolve_name",
+      "name": "resolve_name",
+      "wrap": "query_results"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": "source_language",
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": [
+            "ja",
+            "zh_hans",
+            "en",
+            "zh_tw",
+            "ko"
+          ],
+          "kind": "csv_or_list",
+          "mcp_default": [],
+          "name": "languages",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 8,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "tag",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": "score",
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "sort",
+          "required": false
+        }
+      ],
+      "core_method": "term_lookup",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/term_lookup",
+      "mcp_name": "sekaisync_term_lookup",
+      "name": "term_lookup",
+      "wrap": "query_results"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": true,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "story_key",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": [
+            "ja",
+            "zh_hans",
+            "en",
+            "zh_tw",
+            "ko"
+          ],
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "languages",
+          "required": false
+        }
+      ],
+      "core_method": "term_penetrate",
+      "http_method": "GET",
+      "http_not_found": "No matching term: {query}",
+      "http_path": "/api/v1/term_penetrate",
+      "mcp_name": "sekaisync_term_penetrate",
+      "name": "term_penetrate",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "entity_id",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": "en",
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        }
+      ],
+      "core_method": "fact_pack",
+      "http_method": "GET",
+      "http_not_found": "Entity not found: {entity_id}",
+      "http_path": "/api/v1/fact_pack",
+      "mcp_name": "sekaisync_fact_pack",
+      "name": "fact_pack",
+      "wrap": "raw"
+    },
+    {
+      "args": [],
+      "core_method": "freshness",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/freshness",
+      "mcp_name": "sekaisync_freshness",
+      "name": "freshness",
+      "wrap": "raw"
+    },
+    {
+      "args": [],
+      "core_method": "refresh",
+      "http_method": "POST",
+      "http_not_found": null,
+      "http_path": "/api/v1/refresh",
+      "mcp_name": "sekaisync_refresh",
+      "name": "refresh",
+      "wrap": "refresh"
+    },
+    {
+      "args": [],
+      "core_method": "tag_clouds",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/tag_clouds",
+      "mcp_name": "sekaisync_tag_clouds",
+      "name": "tag_clouds",
+      "wrap": "raw"
+    },
+    {
+      "args": [],
+      "core_method": "data_gaps",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/data_gaps",
+      "mcp_name": "sekaisync_data_gaps",
+      "name": "data_gaps",
+      "wrap": "gaps"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": false,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "live",
+          "required": false
+        }
+      ],
+      "core_method": "progress",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/progress",
+      "mcp_name": "sekaisync_progress",
+      "name": "progress",
+      "wrap": "raw"
+    },
+    {
+      "args": [],
+      "core_method": "trust_summary",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/trust",
+      "mcp_name": "sekaisync_trust",
+      "name": "trust_summary",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": 20,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "core_method": "integrity",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/integrity",
+      "mcp_name": "sekaisync_integrity",
+      "name": "integrity",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": 50,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "tag",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "body",
+          "required": false
+        }
+      ],
+      "core_method": "news",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/news",
+      "mcp_name": "sekaisync_news",
+      "name": "news",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "json",
+          "mcp_default": null,
+          "name": "claims",
+          "required": true
+        }
+      ],
+      "core_method": "verify_claims",
+      "http_method": "POST",
+      "http_not_found": null,
+      "http_path": "/api/v1/verify_claims",
+      "mcp_name": "sekaisync_verify_claims",
+      "name": "verify_claims",
+      "wrap": "results"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "source",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "kind",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 8,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": false,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "include_text",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": false,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "include_overlay",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 0,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "max_text_chars",
+          "required": false
+        }
+      ],
+      "core_method": "web_lookup",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/web_lookup",
+      "mcp_name": "sekaisync_web_lookup",
+      "name": "web_lookup",
+      "wrap": "query_results"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 30,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "timeout",
+          "required": false
+        }
+      ],
+      "core_method": "event_check",
+      "http_method": "POST",
+      "http_not_found": null,
+      "http_path": "/api/v1/events/check",
+      "mcp_name": "sekaisync_event_check",
+      "name": "event_check",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "core_method": "event_archive",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/events/archive",
+      "mcp_name": "sekaisync_event_archive",
+      "name": "event_archive",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        }
+      ],
+      "core_method": "event_alias",
+      "http_method": "GET",
+      "http_not_found": "No matching event alias or ordinal",
+      "http_path": "/api/v1/event_alias",
+      "mcp_name": "sekaisync_event_alias",
+      "name": "event_alias",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        }
+      ],
+      "core_method": "worldlink",
+      "http_method": "GET",
+      "http_not_found": "No matching World Link alias or ordinal",
+      "http_path": "/api/v1/worldlink",
+      "mcp_name": "sekaisync_worldlink",
+      "name": "worldlink",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "csv_or_list",
+          "mcp_default": null,
+          "name": "regions",
+          "required": false
+        }
+      ],
+      "core_method": "activity",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/activity",
+      "mcp_name": "sekaisync_activity",
+      "name": "activity",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "query",
+          "required": true
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "type",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "region",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 8,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": false,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "include_overlay",
+          "required": false
+        }
+      ],
+      "core_method": "query",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/query",
+      "mcp_name": "sekaisync_query",
+      "name": "query",
+      "wrap": "raw"
+    },
+    {
+      "args": [
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "source",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "language",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": null,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "str",
+          "mcp_default": null,
+          "name": "kind",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": 50,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "int",
+          "mcp_default": null,
+          "name": "limit",
+          "required": false
+        },
+        {
+          "core_name": null,
+          "default": false,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "include_text",
+          "required": false
+        }
+      ],
+      "core_method": "web_browse",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/web_browse",
+      "mcp_name": "sekaisync_web_browse",
+      "name": "web_browse",
+      "wrap": "browse_results"
+    },
+    {
+      "args": [],
+      "core_method": "status",
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/status",
+      "mcp_name": "sekaisync_status",
+      "name": "status",
+      "wrap": "raw"
+    },
+    {
+      "args": [],
+      "core_method": null,
+      "http_method": "GET",
+      "http_not_found": null,
+      "http_path": "/api/v1/sites",
+      "mcp_name": "sekaisync_sites",
+      "name": "sites",
+      "wrap": "raw"
+    }
+  ],
+  "tool_count": 24
+}

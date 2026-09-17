@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
+from functools import wraps
 import copy
 import json
 import sqlite3
@@ -45,7 +47,7 @@ from sekaisync.webindex import (
 def _serialized_size(value: object) -> int:
     """Approximate serialized size, used to skip caching huge results."""
     try:
-        return len(json.dumps(value, ensure_ascii=False, default=str))
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
     except (TypeError, ValueError):
         return 0
 
@@ -75,6 +77,10 @@ class CoreSnapshot:
     terms: object
     factpacks: object
 
+    def __getattribute__(self, name):
+        value = object.__getattribute__(self, name)
+        return copy.deepcopy(value) if name in {"registry", "glossary", "terms", "factpacks"} else value
+
 
 @dataclass
 class ReadView:
@@ -87,7 +93,7 @@ class ReadView:
 
     core: "SekaiSyncCore"
     conn: sqlite3.Connection
-    snapshot: CoreSnapshot
+    snapshot: "CoreSnapshot"
 
     @property
     def revision(self) -> int:
@@ -108,6 +114,38 @@ class ReadView:
     @property
     def factpacks(self):
         return self.snapshot.factpacks
+
+
+# The request's active ReadView is context-local, never instance state.  A
+# mutable ``self._snapshot`` shared across threads let one request overwrite
+# another's fixed snapshot (Astra P02/D02); a ContextVar keeps each request —
+# and each thread — pinned to exactly its own view.
+_request_state: "ContextVar[Optional[ReadView]]" = ContextVar(
+    "sekaisync_active_readview", default=None
+)
+
+
+def _active_view() -> "Optional[ReadView]":
+    return _request_state.get()
+
+
+def request_scoped(method: Callable) -> Callable:
+    """Run a public query method inside the request's ReadView when one is
+    active.
+
+    With a view, the method sees the request's fixed revision: ``self.*``
+    reads route to the snapshot's collections and SQL helpers resolve to the
+    view's connection, so a response cannot mix generations.  Without one
+    (direct callers, write pipelines) the method behaves exactly as before.
+    """
+
+    @wraps(method)
+    def wrapper(self: "SekaiSyncCore", *args, **kwargs):
+        with self.request_view():
+            return copy.deepcopy(method(self, *args, **kwargs))
+
+    return wrapper
+
 
 
 class SekaiSyncCore:
@@ -131,12 +169,12 @@ class SekaiSyncCore:
         self.store_root = store_root
         self.runtime = runtime
         dbstore.ensure_store(store_root)
-        self.registry = dbstore.load_entities(store_root)
-        self.glossary = dbstore.load_glossary_terms(store_root)
-        self.factpacks = load_fact_packs(factpack_path(store_root, "en"))
+        self._registry = dbstore.load_entities(store_root)
+        self._glossary = dbstore.load_glossary_terms(store_root)
+        self._factpacks = load_fact_packs(factpack_path(store_root, "en"))
         # Light evidence (no sentence bodies): server queries only need
         # references; write-side pipelines reload with sentences on demand.
-        self.terms = dbstore.load_terms_records(store_root)
+        self._terms = dbstore.load_terms_records(store_root)
         # Aggregate-result cache for status/progress/trust_summary on
         # long-lived HTTP/MCP processes. Invalidated by (a) any change to
         # the in-memory datasets (version bump) and (b) the on-disk
@@ -186,6 +224,7 @@ class SekaiSyncCore:
         key: str,
         compute: Callable[[], dict],
         view: "Optional[ReadView]" = None,
+        *, _pass_view: bool = False,
     ) -> dict:
         """Memoize an aggregate against the revision it was computed from.
 
@@ -200,30 +239,25 @@ class SekaiSyncCore:
         is computed from that request's fixed snapshot rather than from
         whatever ``self.registry`` holds at that instant.
         """
+        active = view or _active_view()
+        if active is None or active.core is not self:
+            with self.request_view() as request:
+                return self._cached_aggregate(key, compute, request, _pass_view=view is not None)
         version_at_start = self._data_version
-        disk = self._disk_signature()
-        stamp = (version_at_start, disk)
-
+        stamp = (active.revision, version_at_start)
+        cache_key = (key, stamp)
         with self._cache_lock:
-            hit = self._result_cache.get(key)
-            if hit is not None and hit[0] == stamp:
-                self._result_cache.move_to_end(key)
-                return _detached(hit[1])
+            hit = self._result_cache.get(cache_key)
             if hit is not None:
-                del self._result_cache[key]
-
-        result = compute() if view is None else compute(view)
-
+                self._result_cache.move_to_end(cache_key)
+                return _detached(hit[1])
+        result = compute(active) if _pass_view else compute()
         with self._cache_lock:
-            # Only publish if no writer landed while we were computing.  A
-            # concurrent commit makes this result stale, and a stale result
-            # must never be labelled with the newer version.
-            if self._data_version == version_at_start:
-                if _serialized_size(result) <= self._cache_max_bytes:
-                    self._result_cache[key] = (stamp, result, len(self._result_cache))
-                    self._result_cache.move_to_end(key)
-                    while len(self._result_cache) > self._cache_max_entries:
-                        self._result_cache.popitem(last=False)
+            if self._data_version == version_at_start and _serialized_size(result) <= self._cache_max_bytes:
+                self._result_cache[cache_key] = (stamp, _detached(result), 0)
+                self._result_cache.move_to_end(cache_key)
+                while len(self._result_cache) > self._cache_max_entries:
+                    self._result_cache.popitem(last=False)
         return _detached(result)
 
     def refresh(self) -> dict:
@@ -238,17 +272,10 @@ class SekaiSyncCore:
         that know an external update happened.
         """
         dbstore.ensure_store(self.store_root)
-        self.registry = dbstore.load_entities(self.store_root)
-        self.glossary = dbstore.load_glossary_terms(self.store_root)
-        self.factpacks = load_fact_packs(factpack_path(self.store_root, "en"))
-        self.terms = dbstore.load_terms_records(self.store_root)
         self._bump_data_version()
-        return {
-            "registry": len(self.registry),
-            "glossary": len(self.glossary),
-            "factpacks": len(self.factpacks),
-            "terms": len(self.terms),
-        }
+        with self.request_view():
+            return {"registry": len(self.registry), "glossary": len(self.glossary),
+                    "factpacks": len(self.factpacks), "terms": len(self.terms)}
 
     def current_revision(self) -> int:
         """The store's committed revision, read from meta.
@@ -256,11 +283,8 @@ class SekaiSyncCore:
         Distinct from ``_data_version``, which counts in-process reloads:
         this one is the cross-process write generation.
         """
-        try:
-            with dbstore.connect(self.store_root) as conn:
-                return dbstore.current_revision(conn)
-        except (sqlite3.Error, OSError):
-            return 0
+        with self.request_view() as view:
+            return view.revision
 
     @contextlib.contextmanager
     def request_view(self) -> Iterator["ReadView"]:
@@ -272,35 +296,104 @@ class SekaiSyncCore:
         that same generation even if a writer commits meanwhile.  Without it a
         single response could mix two generations (Astra D02/P02).
 
-        The snapshot object is published to ``self._snapshot`` for the
-        lifetime of the block so helpers can read from it instead of the
-        mutable in-memory collections.  The previous global snapshot is
-        restored on exit: a request that saw an older transaction must not
-        drag the shared cache backwards.
+        The SQL domains (registry / glossary / terms) are loaded **inside that
+        one read transaction**, so the in-memory projections belong to the
+        same committed revision the connection is pinned to.  The view is
+        published through a ContextVar — context-local, never a mutable
+        ``self._snapshot`` — so overlapping requests (including nested ones
+        and requests on other threads) cannot see or restore each other's
+        snapshot (Astra P02/D02).
+
+        Read-only callers should run their queries inside ``with``; SQL
+        helpers invoked in the block resolve to the view's connection and
+        snapshot collections.
         """
-        conn = sqlite3.connect(str(db_path(self.store_root)), timeout=60.0)
+        active = _active_view()
+        if active is not None and active.core is self:
+            yield active
+            return
+        path = db_path(self.store_root).resolve()
+        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=60.0)
         try:
             conn.execute("PRAGMA query_only=ON")
             conn.execute("BEGIN")
-            revision = dbstore.current_revision(conn)
-            snapshot = CoreSnapshot(
-                revision=revision,
-                registry=self.registry,
-                glossary=self.glossary,
-                terms=self.terms,
-                factpacks=self.factpacks,
-            )
-            previous = getattr(self, "_snapshot", None)
-            self._snapshot = snapshot
-            try:
-                yield ReadView(core=self, conn=conn, snapshot=snapshot)
-            finally:
-                self._snapshot = previous
-                with contextlib.suppress(sqlite3.Error):
-                    conn.rollback()
+            with dbstore.read_connection(self.store_root, conn):
+                snapshot = self.load_snapshot(conn)
+                view = ReadView(core=self, conn=conn, snapshot=snapshot)
+                token = _request_state.set(view)
+                try:
+                    yield view
+                finally:
+                    _request_state.reset(token)
         finally:
+            conn.rollback()
             conn.close()
 
+    def load_snapshot(self, conn: sqlite3.Connection) -> CoreSnapshot:
+        """Load every SQL projection from the transaction pinned by meta."""
+        revision = dbstore.current_revision(conn)
+        return CoreSnapshot(
+            revision=revision,
+            registry=tuple(dbstore.load_entities(self.store_root)),
+            glossary=tuple(dbstore.load_glossary_terms(self.store_root)),
+            terms=tuple(dbstore.load_terms_records(self.store_root)),
+            # Preserve persisted-pack inventory, captured once per request.
+            # This external file is not atomic with the SQL revision;
+            # fact_pack() still derives authoritative results from entities.
+            factpacks=tuple(load_fact_packs(factpack_path(self.store_root, "en"))),
+        )
+
+    @property
+    def registry(self):
+        """Entity list, or the request snapshot's when a view is active.
+
+        Property, not attribute: inside a request the mutable ``self._registry``
+        cache must not be visible — a concurrent reload would replace what the
+        request is reading mid-response (Astra P02).
+        """
+        view = _active_view()
+        if view is not None and view.core is self:
+            return copy.deepcopy(view.snapshot.registry)
+        return self._registry
+
+    @registry.setter
+    def registry(self, value) -> None:
+        self._registry = value
+
+    @property
+    def glossary(self):
+        view = _active_view()
+        if view is not None and view.core is self:
+            return copy.deepcopy(view.snapshot.glossary)
+        return self._glossary
+
+    @glossary.setter
+    def glossary(self, value) -> None:
+        self._glossary = value
+
+    @property
+    def terms(self):
+        view = _active_view()
+        if view is not None and view.core is self:
+            return copy.deepcopy(view.snapshot.terms)
+        return self._terms
+
+    @terms.setter
+    def terms(self, value) -> None:
+        self._terms = value
+
+    @property
+    def factpacks(self):
+        view = _active_view()
+        if view is not None and view.core is self:
+            return view.snapshot.factpacks
+        return self._factpacks
+
+    @factpacks.setter
+    def factpacks(self, value) -> None:
+        self._factpacks = value
+
+    @request_scoped
     def ready(self) -> bool:
         return (
             bool(self.registry)
@@ -308,6 +401,7 @@ class SekaiSyncCore:
             or bool(self.terms)
         )
 
+    @request_scoped
     def lookup(
         self,
         query: str,
@@ -340,6 +434,7 @@ class SekaiSyncCore:
             )
         return results
 
+    @request_scoped
     def resolve_name(
         self,
         query: str,
@@ -355,6 +450,7 @@ class SekaiSyncCore:
             kind=kind,
         )
 
+    @request_scoped
     def fact_pack(self, entity_id: str, language: str = "en") -> Optional[dict]:
         entity = entity_by_id(self.registry, entity_id)
         if entity is None:
@@ -371,6 +467,7 @@ class SekaiSyncCore:
             "token_ratio": round(pack.token_ratio, 3),
         }
 
+    @request_scoped
     def freshness(self) -> dict:
         path = freshness_path(self.store_root)
         if not path.exists():
@@ -391,6 +488,7 @@ class SekaiSyncCore:
         }
     )
 
+    @request_scoped
     def verify_claims(self, claims: list[dict]) -> list[dict]:
         """Verify claims against the local registry with honest semantics.
 
@@ -420,7 +518,7 @@ class SekaiSyncCore:
         output = []
         for claim in claims:
             text = str(claim.get("claim", ""))
-            expected = str(claim.get("expected", ""))
+            expected = claim.get("expected")
             field = str(claim.get("field", "") or "").strip()
             requested_region = str(claim.get("region", "") or "").strip()
             entity_id = str(claim.get("entity_id", "") or "").strip()
@@ -443,7 +541,7 @@ class SekaiSyncCore:
                 )
                 continue
 
-            expected_key = normalize_name(expected)
+            expected_key = normalize_name(str(expected)) if expected is not None else ""
 
             # ── explicit field comparison ────────────────────────────
             if field:
@@ -457,7 +555,7 @@ class SekaiSyncCore:
             matched_keys = {
                 normalize_name(v)
                 for m in matches
-                for v in list(m["names"].values()) + [str(v) for v in m["facts"].values() if isinstance(v, (str, int, float))]
+                for v in m["names"].values()
             }
             if not expected_key:
                 status = "ambiguous"
@@ -514,6 +612,7 @@ class SekaiSyncCore:
                     "regions": list(entity.regions or []),
                     "names": dict(entity.names),
                     "facts": dict(entity.facts or {}),
+                    "region_facts": copy.deepcopy(entity.region_facts),
                     "source": entity.source,
                     "trust": entity.trust,
                     "official": entity.source.startswith(("master_db", "official")),
@@ -537,9 +636,30 @@ class SekaiSyncCore:
         danger this replaces was reporting a mismatch against an absent field as
         a refutation.
         """
-        row = matches[0]
+        if len(matches) != 1:
+            return {"claim": text, "status": "ambiguous", "field": field,
+                    "reason": "More than one entity matches; supply entity_id.", "evidence": []}
+        row = copy.deepcopy(matches[0])
         field_key = field.strip()
         facts = row.get("facts", {})
+        entity = entity_by_id(self.registry, row["id"])
+        if requested_region or (entity and entity.region_facts):
+            from sekaisync.regions import entity_for_region
+            selected = entity_for_region(entity, requested_region or None)
+            facts = selected["facts"]
+            row["facts"] = facts
+            row["region"] = requested_region or None
+            row["source"] = selected.get("source") or ""
+            if selected["coverage"] != "available":
+                return {"claim": text, "status": "unknown", "field": field,
+                        "region": requested_region or None, "coverage": selected["coverage"],
+                        "reason": "No trustworthy facts for the requested region.", "evidence": []}
+        elif field_key.lower() in self._REGION_SENSITIVE_FIELDS and len(row.get("regions", [])) > 1:
+            return {"claim": text, "status": "needs_region_data", "field": field,
+                    "reason": "Legacy facts have no trustworthy regional attribution.", "evidence": []}
+        if expected is None or expected == "":
+            return {"claim": text, "status": "unknown", "field": field,
+                    "reason": "No expected value supplied.", "evidence": []}
 
         stored_key = None
         for candidate in facts:
@@ -561,27 +681,30 @@ class SekaiSyncCore:
                 "matches": matches,
             }
 
-        if (
-            field_key.lower() in self._REGION_SENSITIVE_FIELDS
-            and not requested_region
-            and len(row.get("regions", []) or []) > 1
-        ):
-            return {
-                "claim": text,
-                "status": "needs_region_data",
-                "field": field,
-                "reason": (
-                    "This field is region-scoped and the entity exists in "
-                    "multiple regions; without a requested region the stored "
-                    "value cannot be attributed to one."
-                ),
-                "evidence": [self._field_evidence(row, stored_key, None)],
-                "matches": matches,
-            }
-
         stored_value = facts[stored_key]
-        stored_key_norm = normalize_name(str(stored_value))
-        if expected_key and stored_key_norm == expected_key:
+        if stored_value is None:
+            return {"claim": text, "status": "unknown", "field": field,
+                    "reason": "The stored value is null.", "evidence": []}
+        if isinstance(stored_value, bool):
+            equal = (isinstance(expected, bool) and stored_value == expected) or (
+                isinstance(expected, str) and expected.strip().lower() == str(stored_value).lower())
+        elif isinstance(stored_value, (int, float)):
+            try:
+                from decimal import Decimal, InvalidOperation
+                equal = not isinstance(expected, bool) and Decimal(str(stored_value)) == Decimal(str(expected))
+            except InvalidOperation:
+                equal = False
+        elif isinstance(stored_value, (dict, list)):
+            candidate = expected
+            if isinstance(candidate, str):
+                try:
+                    candidate = json.loads(candidate)
+                except ValueError:
+                    pass
+            equal = json.dumps(stored_value, sort_keys=True) == json.dumps(candidate, sort_keys=True)
+        else:
+            equal = normalize_name(str(stored_value)) == expected_key
+        if equal:
             return {
                 "claim": text,
                 "status": "supported",
@@ -612,9 +735,11 @@ class SekaiSyncCore:
             "trust": row.get("trust", ""),
             "official": row.get("official", False),
             "field": field,
+            "region": row.get("region"),
             "value": value,
         }
 
+    @request_scoped
     def web_lookup(
         self,
         query: str,
@@ -636,10 +761,8 @@ class SekaiSyncCore:
             include_text=include_text,
             include_overlay=include_overlay,
             source_priority=source_priority,
+            kind=kind,
         )
-        # P2: kind filter (event_story / card_story / area_talk / ...)
-        if kind:
-            results = [r for r in results if r.get("kind") == kind]
         # P2: token budget — truncate text if max_text_chars > 0
         if max_text_chars > 0:
             for r in results:
@@ -651,6 +774,7 @@ class SekaiSyncCore:
                         r["snippet"] = r["snippet"][:max_text_chars] + "…"
         return results
 
+    @request_scoped
     def web_browse(
         self,
         source: Optional[str] = None,
@@ -672,6 +796,7 @@ class SekaiSyncCore:
             source_priority=source_priority,
         )
 
+    @request_scoped
     def term_lookup(
         self,
         query: str,
@@ -698,6 +823,7 @@ class SekaiSyncCore:
                 r["evidence"] = evidence[r["id"]]
         return results
 
+    @request_scoped
     def term_penetrate(
         self,
         query: str,
@@ -715,12 +841,14 @@ class SekaiSyncCore:
             pages=pages,
         )
 
+    @request_scoped
     def tag_clouds(self) -> dict:
         from sekaisync.termindex import build_tag_clouds
 
         pages = dbstore.load_web_index_rows(self.store_root)
         return build_tag_clouds(self.terms, pages=pages)
 
+    @request_scoped
     def term_status(self) -> dict:
         return dbstore.term_status_from_db(self.store_root)
 
@@ -813,6 +941,7 @@ class SekaiSyncCore:
 
         return self._cached_aggregate(f"progress:{key_regions}", _compute)
 
+    @request_scoped
     def trust_summary(self) -> dict:
         def _compute() -> dict:
             from sekaisync.trust import TRUST_LEVELS, trust_for_page
@@ -864,6 +993,7 @@ class SekaiSyncCore:
 
         return self._cached_aggregate("trust", _compute)
 
+    @request_scoped
     def integrity(self, limit: int = 20) -> dict:
         from sekaisync.integrity import run_integrity_check
 
@@ -880,6 +1010,7 @@ class SekaiSyncCore:
             "items": records[:limit],
         }
 
+    @request_scoped
     def status(self) -> dict:
         def _compute() -> dict:
             from sekaisync.webindex import load_web_category_counts
@@ -982,6 +1113,7 @@ class SekaiSyncCore:
             },
         ]
 
+    @request_scoped
     def query(
         self,
         query: str,
@@ -1044,6 +1176,7 @@ class SekaiSyncCore:
             "terms": terms,
         }
 
+    @request_scoped
     def store_stats(self) -> dict:
         return {
             "entities": len(self.registry),

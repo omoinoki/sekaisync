@@ -1,0 +1,180 @@
+{
+  "lookup_missing": [],
+  "status": {
+    "freshness": {
+      "ready": "bool",
+      "regions": {},
+      "updated_at": "NoneType"
+    },
+    "master": {
+      "entities": "int",
+      "fact_packs": "int",
+      "glossary_terms": "int",
+      "ready": "bool",
+      "terms": "int"
+    },
+    "news": {
+      "available": "bool",
+      "count": "int",
+      "items": [],
+      "languages": {},
+      "matched": "int",
+      "sources": {}
+    },
+    "progress": {
+      "caveat": "str",
+      "generated_at": "str",
+      "live": "bool",
+      "live_degraded": "bool",
+      "now_ms": "int",
+      "overall": {
+        "denominator_complete": "bool",
+        "excluded_units_total": "int",
+        "expected_units": "int",
+        "fact": {
+          "denominator_complete": "...",
+          "expected_units": "...",
+          "known_subset_pct": "...",
+          "matched_units": "...",
+          "pct": "..."
+        },
+        "known_subset_pct": "NoneType",
+        "matched_units": "int",
+        "pct": "NoneType",
+        "text": {
+          "denominator_complete": "...",
+          "expected_units": "...",
+          "known_subset_pct": "...",
+          "matched_units": "...",
+          "pct": "..."
+        }
+      },
+      "regions": {
+        "cn": {
+          "activity": "...",
+          "denominator_complete": "...",
+          "excluded_units": "...",
+          "excluded_units_total": "...",
+          "fact": "...",
+          "language": "...",
+          "live_state": "...",
+          "overall": "...",
+          "table_states": "...",
+          "text": "..."
+        },
+        "en": {
+          "activity": "...",
+          "denominator_complete": "...",
+          "excluded_units": "...",
+          "excluded_units_total": "...",
+          "fact": "...",
+          "language": "...",
+          "live_state": "...",
+          "overall": "...",
+          "table_states": "...",
+          "text": "..."
+        },
+        "jp": {
+          "activity": "...",
+          "denominator_complete": "...",
+          "excluded_units": "...",
+          "excluded_units_total": "...",
+          "fact": "...",
+          "language": "...",
+          "live_state": "...",
+          "overall": "...",
+          "table_states": "...",
+          "text": "..."
+        },
+        "kr": {
+          "activity": "...",
+          "denominator_complete": "...",
+          "excluded_units": "...",
+          "excluded_units_total": "...",
+          "fact": "...",
+          "language": "...",
+          "live_state": "...",
+          "overall": "...",
+          "table_states": "...",
+          "text": "..."
+        },
+        "tc": {
+          "activity": "...",
+          "denominator_complete": "...",
+          "excluded_units": "...",
+          "excluded_units_total": "...",
+          "fact": "...",
+          "language": "...",
+          "live_state": "...",
+          "overall": "...",
+          "table_states": "...",
+          "text": "..."
+        }
+      },
+      "requested_live": "bool"
+    },
+    "store": "str",
+    "terms": {
+      "languages": {},
+      "official": "int",
+      "tags": {},
+      "terms": "int",
+      "top_by_tag": {},
+      "with_evidence": "int"
+    },
+    "trust": {
+      "levels": {
+        "A": {
+          "auxiliary": "...",
+          "glossary": "...",
+          "registry": "...",
+          "terms": "...",
+          "web": "..."
+        },
+        "B": {
+          "auxiliary": "...",
+          "glossary": "...",
+          "registry": "...",
+          "terms": "...",
+          "web": "..."
+        },
+        "C": {
+          "auxiliary": "...",
+          "glossary": "...",
+          "registry": "...",
+          "terms": "...",
+          "web": "..."
+        },
+        "D": {
+          "auxiliary": "...",
+          "glossary": "...",
+          "registry": "...",
+          "terms": "...",
+          "web": "..."
+        }
+      },
+      "totals": {
+        "auxiliary": "int",
+        "glossary": "int",
+        "registry": "int",
+        "terms": "int",
+        "web": "int"
+      }
+    },
+    "web": {
+      "auxiliary": {
+        "available": "bool",
+        "count": "int",
+        "kinds": {},
+        "languages": {},
+        "sources": {},
+        "translation_sources": {},
+        "trust": {}
+      },
+      "category_counts": {},
+      "consent": "bool",
+      "enabled": "bool",
+      "sources": {}
+    }
+  }
+}

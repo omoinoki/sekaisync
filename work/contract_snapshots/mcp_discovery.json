@@ -1,0 +1,566 @@
+{
+  "authentication": {
+    "description": "Local service bound to 127.0.0.1 by default; no authentication required.",
+    "type": "none"
+  },
+  "capabilities": {
+    "prompts": false,
+    "resources": true,
+    "tools": true
+  },
+  "description": "Local knowledge base and deterministic fact layer for Project Sekai (registry, glossary, cross-language terminology, crawled story text, official news). Zero third-party dependencies.",
+  "name": "SekaiSync",
+  "serverInfo": {
+    "name": "SekaiSync",
+    "version": "0.3.0"
+  },
+  "tools": [
+    {
+      "description": "Look up Project Sekai entities in the local registry.",
+      "inputSchema": {
+        "properties": {
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "limit": {
+            "default": 8,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "region": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_lookup"
+    },
+    {
+      "description": "Resolve a proper noun to an official localized name.",
+      "inputSchema": {
+        "properties": {
+          "kind": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "source_language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "target_language": {
+            "default": "zh_tw",
+            "maxLength": 32,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_resolve_name"
+    },
+    {
+      "description": "Look up an extracted Project Sekai term and its cross-language names. Tags: person/location/organization/event(product fictional)/product/other. Sort by score or weight.",
+      "inputSchema": {
+        "properties": {
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "limit": {
+            "default": 8,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "sort": {
+            "default": "score",
+            "enum": [
+              "score",
+              "weight"
+            ],
+            "type": "string"
+          },
+          "tag": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_term_lookup"
+    },
+    {
+      "description": "Cross-language per-line penetration for a term at a story position (event:174:1 etc.). Returns per-language term/sentence/trust for the same narrative line.",
+      "inputSchema": {
+        "properties": {
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "story_key": {
+            "maxLength": 128,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_term_penetrate"
+    },
+    {
+      "description": "Return a compact fact pack for one entity ID.",
+      "inputSchema": {
+        "properties": {
+          "entity_id": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "language": {
+            "default": "en",
+            "maxLength": 32,
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_fact_pack"
+    },
+    {
+      "description": "Return local data freshness and region coverage.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_freshness"
+    },
+    {
+      "description": "Reload cached registry/glossary/factpacks/terms from disk after an external sync or index rebuild.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_refresh"
+    },
+    {
+      "description": "Return tag clouds split by released(multi-lang, supports penetrate) vs unreleased(ja-only, pending).",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_tag_clouds"
+    },
+    {
+      "description": "Return known data source limitations (home_line gaps, overseas MySekai missing, etc.) so agents can honestly say 'not covered'.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_data_gaps"
+    },
+    {
+      "description": "Return per-region fact/text completeness as integer percentages.",
+      "inputSchema": {
+        "properties": {
+          "live": {
+            "default": false,
+            "type": "boolean"
+          },
+          "regions": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_progress"
+    },
+    {
+      "description": "Return trust-level (A/B/C/D) distribution across registry, glossary, terms and web pages.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_trust"
+    },
+    {
+      "description": "Return knowledge base integrity issues: duplicates, canonical conflicts, hash mismatches and source fidelity metadata.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_integrity"
+    },
+    {
+      "description": "Return locally synced official news and announcements, filterable by language (ja/en/tc/kr/cn), category tag (event/gacha/music/campaign/update/information/bug) and body availability.",
+      "inputSchema": {
+        "properties": {
+          "body": {
+            "type": "boolean"
+          },
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "tag": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_news"
+    },
+    {
+      "description": "Verify claims against the local registry.",
+      "inputSchema": {
+        "properties": {
+          "claims": {
+            "items": {
+              "properties": {
+                "claim": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "type": "array"
+          }
+        },
+        "required": [
+          "claims"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_verify_claims"
+    },
+    {
+      "description": "Search the locally crawled text index from Sekai Viewer / altsource.",
+      "inputSchema": {
+        "properties": {
+          "include_overlay": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_text": {
+            "default": false,
+            "type": "boolean"
+          },
+          "kind": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "limit": {
+            "default": 8,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_text_chars": {
+            "default": 0,
+            "maximum": 200000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_web_lookup"
+    },
+    {
+      "description": "Detect new Project Sekai events, fetch their base master data, classify as box / WL / other, archive, and grow the crawl denominator. Never starts the web crawler.",
+      "inputSchema": {
+        "properties": {
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "timeout": {
+            "default": 30,
+            "maximum": 600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_event_check"
+    },
+    {
+      "description": "List archived event classifications (box / WL / other) by region.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_event_archive"
+    },
+    {
+      "description": "Resolve community event shorthand such as khn3 or 豆三箱 to a character box event with cross-region official names.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_event_alias"
+    },
+    {
+      "description": "Resolve World Link shorthand such as vbs wl2, vs wl, finale, round2, wl3第2组 or wl2g7 to the corresponding world_bloom event with cross-region official names.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_worldlink"
+    },
+    {
+      "description": "Unified activity resolution: World Link shorthand first (wl2g7, vbs wl2, finale, wl3第2组), then character box shorthand (khn3, 豆三箱). Returns kind=wl / kind=box / kind=unresolved (mixed or unnumbered events).",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_activity"
+    },
+    {
+      "description": "Unified local query across master metadata and crawled story text.",
+      "inputSchema": {
+        "properties": {
+          "include_overlay": {
+            "default": false,
+            "type": "boolean"
+          },
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "limit": {
+            "default": 8,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "region": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "sekaisync_query"
+    },
+    {
+      "description": "Browse the locally crawled text index filtered by source, language and category, newest first.",
+      "inputSchema": {
+        "properties": {
+          "include_text": {
+            "default": false,
+            "type": "boolean"
+          },
+          "kind": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "language": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_web_browse"
+    },
+    {
+      "description": "Return full store status: master/web/terms/trust/progress/news/freshness aggregates.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_status"
+    },
+    {
+      "description": "Return the configured multi-instance site profile from settings.json.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "sekaisync_sites"
+    }
+  ],
+  "transport": {
+    "mcp": "/mcp",
+    "openapi": "/openapi.json",
+    "stdio": "python -m sekaisync serve-mcp"
+  },
+  "version": "0.3.0"
+}
