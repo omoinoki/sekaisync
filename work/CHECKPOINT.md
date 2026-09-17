@@ -56,7 +56,7 @@
 | B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` | 852 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **857**。**全绿**（`ebec6d0`，冻结树
+**测试账本**：基线 **361** → 当前 **860**。**全绿**（`24a26fb`，冻结树
 `python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
@@ -119,6 +119,7 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `81570a1` | **P14 Core 联网方法走自身 runtime + serve 入口建 runtime**（852 测试绿） |
 | `c86adb1` | **P06 无过滤时跳过唯一值枚举**（`web_browse` 19.0s → 11.2s；854 测试绿） |
 | `ebec6d0` | **P15 MCP resource templates 分离 + 字面模板读取拒答**（857 测试绿） |
+| `24a26fb` | **P08/P11 基础：slot_decisions 与 story_keys 交到调用方**（860 测试绿） |
 
 **`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
 与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
@@ -358,19 +359,17 @@ accept 裁决**只计数不落盘** —— `submit_judgments` 返回 `accepted: 
 `candidate_tiers.validate_slot_for_commit` 唯一资格门、按 `(subject_id, language)` 结算、
 `TermRecord` 落库。**layered 仍未真正持久化，不要宣称已落库。**
 
-**2026-09-17 复核（给出接手起点，避免重复摸索）**：`scrub_trinity` 已在返回值里逐槽
-产出 `result["slot_decisions"]`（`trinity.py:1538`，字段
-`{term, language, status, value, candidates, evidence:[{channel,value,payload}]}`），
-但**没有任何消费者**——`cli.py` 的 layered 分支只读 `accepted/pending/conflicts` 并打印计数，
-再走 `agent_review.enqueue`；`tests/` 里除本文件外无 `slot_decisions` 命中。
+**已推进（2026-09-17，提交 `24a26fb`）**：两处缺口已修——
+`scrub_trinity` 现在把 `_merge_channels` 的 `slot_decisions` 一并返回（此前该键在
+组装返回值时被丢掉，所以流水线只能报计数）；trunk（对齐 + 姓氏背书）、hub（直取 + 回填）、
+translit 三条通道的 `payload["evidence"]` 现在带 `story_keys` 而非只有 `stories: <n>` 计数。
+`tests/test_trinity.py` 的 `SlotDecisionHandoffTest` 用真实语料驱动公开入口，断言决策到达顶层、
+与 accepted 映射一致、且证据带真实故事身份（非空且都在语料内）；三项均验证过"移除修复即变红"。
 
-接线前必须先解决一个数据缺口：槽证书（`term_slots._certificate`）要求
-`evidence_refs` 指向的每条证据带 `story_key`/`language`/`source`，而三个通道的
-`payload["evidence"]` 只有聚合计数（`stories: <n>`、`votes`、`sim`、`foreign_literal`
-字符串），**没有 story_key 列表**。因此这不是"把返回值转成决策"的接线题：要么让
-trunk/hub/translit 各自记录命中的 story_key（`_Corpus` 已有 `_term_stories` 与
-`line_index` 的按故事索引，数据源在），要么为三通道设计一个独立的资格门。
-在完成前者之前，任何"已落库"的说法都不成立。
+**仍未做**：`apply_scrub_result` 单事务写 term_slots/证据/待审队列、
+`candidate_tiers.validate_slot_for_commit` 唯一资格门、`TermRecord` 落库。
+决策与证据现在可用，但**没有任何代码把它们提交进槽库**——layered 仍只入 review 队列。
+**不要宣称 layered 已落库。**
 
 ---
 
