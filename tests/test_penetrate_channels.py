@@ -169,8 +169,11 @@ class VerifyTriangleTests(unittest.TestCase):
         self.assertEqual(result["aux_hits"]["zh_hans"]["method"], "registry")
 
     def test_no_anchor_fails(self):
+        # P20b: Sekai/SEKAI are the same normalized value; this fixture has
+        # SEKAI in both the target and aux pages, so case alone cannot fail it.
         groups = self._corpus()
-        result = verify_triangle("セカイ", "ja", "Sekai", "en", groups)
+        self.assertTrue(verify_triangle("セカイ", "ja", "Sekai", "en", groups)["verified"])
+        result = verify_triangle("セカイ", "ja", "OTHER", "en", groups)
         self.assertFalse(result["verified"])
         self.assertIn("无锚定证据", result["reason"])
 
@@ -226,9 +229,15 @@ class PenetrateLayeredTests(unittest.TestCase):
             target_languages=("en",),
         )
         self.assertGreaterEqual(res["channel_stats"]["C"], 2)
-        self.assertEqual(res["pairs"]["セカイ"]["en"], "SEKAI")
+        # P20b: 非官方槽未过三角闭环不得进 pairs，改入 pending 并带原因
+        #（本夹具无 glossary、无 zh/ko 文本，闭环必然不足——实验事实）。
+        self.assertNotIn("セカイ", res["pairs"])
+        pending = {(p["term"], p["language"]): p for p in res["pending"]}
+        self.assertIn(("セカイ", "en"), pending)
+        self.assertTrue(pending[("セカイ", "en")]["reason"])
         self.assertNotIn("テスト", res["pairs"])
-        for key in ("pairs", "tier_stats", "channel_stats", "rejected", "skipped_reason"):
+        for key in ("pairs", "pending", "tier_stats", "channel_stats",
+                    "rejected", "skipped_reason"):
             self.assertIn(key, res)
 
     def test_skipped_reason_without_idf(self):

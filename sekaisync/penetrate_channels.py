@@ -36,7 +36,7 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from sekaisync import termindex
-from sekaisync.candidate_tiers import Tier, classify, tier_summary
+from sekaisync.candidate_tiers import Tier, classify, tier_summary, normalize_candidate_key
 from sekaisync.normalize import normalize_name
 from sekaisync.romaji import (
     is_generic_katakana,
@@ -293,77 +293,32 @@ def _paired_stories(groups: dict, language: str, source_language: str) -> set[st
     return out
 
 
-# story_key -> (正文, 非空行)。同一 groups 对象只解一次（verify_triangle 会被
-# 反复调用，每调用重扫全语料不可接受）。按 id() 与规模双重校验，避免对象被
-# 回收后地址复用导致的错配。
-_TEXT_CACHE: dict[int, tuple[int, dict[str, tuple[str, list[str]]]]] = {}
-
-# (groups_id, lang) -> {story_key: page}，以及 groups_id -> {story: {lang: page}}。
-# 用于把 `_group_page` 的别名回退循环（每个 story×lang 一次字典遍历）降为 O(1)
-# 直接命中——verify_triangle 每次调用都要按语言取页，不缓存会退化。
-_PAGE_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
-_LANG_INDEX_CACHE: dict[int, tuple[int, dict[str, dict[str, Any]]]] = {}
-
-
+# In-memory inputs are mutable and carry no published revision. Do not retain
+# derived data across calls using object id/length as a content identity.
+# Page lookup stays O(1) on exact keys; text splitting is limited to scoped pages.
 def _lang_page_index(groups: dict) -> dict[str, dict[str, Any]]:
-    """groups → {story_key: {language: page}}（语言名已按别名归一）。"""
-    entry = _LANG_INDEX_CACHE.get(id(groups))
-    if entry is not None and entry[0] == len(groups):
-        return entry[1]
-    built: dict[str, dict[str, Any]] = {}
+    built = {}
     for sk, by in groups.items():
-        row: dict[str, Any] = {}
+        row = {}
         for lang, page in (by or {}).items():
-            if page is None:
-                continue
-            key = termindex._term_language(str(lang))
-            # 同一语言位重复时保留先到的（与 _group_page 的先命中语义一致）。
-            row.setdefault(key, page)
-        if row:
-            built[sk] = row
-    if len(_LANG_INDEX_CACHE) > 4:
-        _LANG_INDEX_CACHE.clear()
-        _PAGE_CACHE.clear()
-    _LANG_INDEX_CACHE[id(groups)] = (len(groups), built)
+            if page is not None:
+                row.setdefault(termindex._term_language(str(lang)), page)
+        built[sk] = row
     return built
 
 
 def _page_for(groups: dict, story_key: str, language: str) -> Any:
-    """带缓存的按语言取页（等价 ``termindex._group_page``）。"""
-    lang_key = termindex._term_language(language)
-    cache_key = (id(groups), lang_key)
-    table = _PAGE_CACHE.get(cache_key)
-    if table is None:
-        index = _lang_page_index(groups)
-        table = {sk: row.get(lang_key) for sk, row in index.items()}
-        # 别名位（zh_hans 等）可能拼法不同，逐个回退一次并记录。
-        missing = [sk for sk, page in table.items() if page is None]
-        if missing:
-            for sk in missing:
-                table[sk] = termindex._group_page(groups.get(sk, {}), language)
-        if len(_PAGE_CACHE) > 16:
-            _PAGE_CACHE.clear()
-        _PAGE_CACHE[cache_key] = table
-    return table.get(story_key)
+    """Exact language spelling wins before the shared alias fallback."""
+    return termindex._group_page(groups.get(story_key) or {}, language)
 
 
-def _story_text_cache(
-    groups: dict, language: str = "ja"
-) -> dict[str, tuple[str, list[str]]]:
-    """{story: (正文, 非空行)}，按 (groups, 语言) 缓存。"""
-    cache_key = id(groups)
-    entry = _TEXT_CACHE.get(cache_key)
-    if entry is not None and entry[0] == len(groups) and entry[1] == language:
-        return entry[2]
-    built: dict[str, tuple[str, list[str]]] = {}
+def _story_text_cache(groups: dict, language: str = "ja") -> dict:
+    """Call-local text view (legacy helper name; no cross-call cache)."""
+    built = {}
     for sk in groups:
         page = _page_for(groups, sk, language)
         text = str(page.get("text", "")) if page is not None else ""
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        built[sk] = (text, lines)
-    if len(_TEXT_CACHE) > 4:  # 长驻进程下防止缓存无限增长
-        _TEXT_CACHE.clear()
-    _TEXT_CACHE[cache_key] = (len(groups), language, built)
+        built[sk] = (text, [ln.strip() for ln in text.splitlines() if ln.strip()])
     return built
 
 
@@ -385,20 +340,12 @@ def _locate_term_lines(
     if not term:
         return out
     keys = story_scope if story_scope is not None else groups.keys()
-    texts = (
-        _story_text_cache(groups, language)
-        if story_scope is not None
-        else None
-    )
     for sk in keys:
-        if texts is not None:
-            text, lines = texts.get(sk, ("", []))
-        else:
-            page = _page_for(groups, sk, language)
-            if page is None:
-                continue
-            text = str(page.get("text", ""))
-            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        page = _page_for(groups, sk, language)
+        if page is None:
+            continue
+        text = str(page.get("text", ""))
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if not text or term not in text:
             continue
         hit = {i for i, ln in enumerate(lines) if term in ln}
@@ -515,8 +462,6 @@ _KNOWN_NAMES: dict[str, dict[str, str]] = {}
 # verify_triangle 在既无名册也无字面命中时用它做 align_term_by_frequency 反查。
 _ALIGN_CONTEXT: dict[str, Any] = {}
 
-# 反查结果缓存（对齐很贵，同一 (term, lang) 只算一次）。
-_AUX_LOOKUP_CACHE: dict[tuple[str, str], str] = {}
 
 
 def register_known_names(term: str, names: dict[str, str]) -> None:
@@ -538,7 +483,6 @@ def register_known_names(term: str, names: dict[str, str]) -> None:
 def clear_known_names() -> None:
     """清空名册（测试与长驻进程复用同一 groups 时使用）。"""
     _KNOWN_NAMES.clear()
-    _AUX_LOOKUP_CACHE.clear()
 
 
 def register_glossary_names(glossary: Iterable[Any] | None) -> int:
@@ -563,15 +507,13 @@ def _aux_name_for(term: str, aux_language: str) -> tuple[str, str]:
     """
     wanted = termindex._term_language(aux_language)
     known = _KNOWN_NAMES.get(normalize_name(term)) or {}
+    if known.get(aux_language):
+        return known[aux_language], "registry"
     for lang, name in known.items():
         if termindex._term_language(lang) == wanted:
             return name, "registry"
     ctx = _ALIGN_CONTEXT
     if ctx.get("idf") is not None and ctx.get("groups") is not None:
-        cache_key = (term, wanted)
-        if cache_key in _AUX_LOOKUP_CACHE:
-            hit = _AUX_LOOKUP_CACHE[cache_key]
-            return (hit, "align") if hit else ("", "")
         try:
             aligned = termindex.align_term_by_frequency(
                 term,
@@ -583,9 +525,22 @@ def _aux_name_for(term: str, aux_language: str) -> tuple[str, str]:
             )
         except Exception:
             aligned = ""
-        _AUX_LOOKUP_CACHE[cache_key] = aligned or ""
         return (aligned, "align") if aligned else ("", "")
     return "", ""
+
+
+def _contains_candidate(text: str, candidate: str) -> bool:
+    # Case/width normalization without erasing Latin word boundaries.
+    text = unicodedata.normalize("NFKC", text).casefold()
+    candidate = unicodedata.normalize("NFKC", candidate).casefold().strip()
+    if not candidate:
+        return False
+    pattern = re.escape(candidate)
+    if candidate[0].isascii() and candidate[0].isalnum():
+        pattern = r"(?<![a-z0-9])" + pattern
+    if candidate[-1].isascii() and candidate[-1].isalnum():
+        pattern += r"(?![a-z0-9])"
+    return re.search(pattern, text) is not None
 
 
 def _same_position_hits(
@@ -610,19 +565,18 @@ def _same_position_hits(
         if page is None:
             continue
         tgt_text = str(page.get("text", ""))
-        if needle not in tgt_text:
+        if not _contains_candidate(tgt_text, needle):
             continue
         tgt_lines = [ln.strip() for ln in tgt_text.splitlines() if ln.strip()]
         if not tgt_lines:
             continue
-        src_lines = len(
-            (_story_text_cache(groups, source_language).get(sk) or ("", []))[1]
-        )
+        source_page = _page_for(groups, sk, source_language) or {}
+        src_lines = sum(bool(ln.strip()) for ln in str(source_page.get("text", "")).splitlines())
         found = False
         for si in sorted(line_nos)[:3]:
             pred = _predict_line(si, src_lines or len(line_nos) or 1, len(tgt_lines))
             for ti in (pred, pred - 1, pred + 1):
-                if 0 <= ti < len(tgt_lines) and needle in tgt_lines[ti]:
+                if 0 <= ti < len(tgt_lines) and _contains_candidate(tgt_lines[ti], needle):
                     lines_hit += 1
                     found = True
         if found:
@@ -699,9 +653,15 @@ def verify_triangle(
 
     aux_hits: dict[str, Any] = {}
     n_verified = 0
+    anchor_lines = {sk: term_lines[sk] for sk in anchor["stories"]}
+    seen_languages = {termindex._term_language(source_language),
+                      termindex._term_language(target_language)}
+    support_counts: dict[str, int] = defaultdict(int)
     for aux_language in (aux_languages or ()):
-        if termindex._term_language(aux_language) == termindex._term_language(target_language):
-            continue  # 与目标语言同一语言位，不构成独立一票
+        canonical_language = termindex._term_language(aux_language)
+        if canonical_language in seen_languages:
+            continue
+        seen_languages.add(canonical_language)
         name, method = _aux_name_for(term, aux_language)
         if not name:
             # 兜底 3：Latin 候选字面命中。
@@ -711,7 +671,7 @@ def verify_triangle(
                 aux_hits[aux_language] = {"name": "", "method": "", "hits": 0, "stories": []}
                 continue
         hit = _same_position_hits(
-            groups, term, source_language, name, aux_language, term_lines
+            groups, term, source_language, name, aux_language, anchor_lines
         )
         aux_hits[aux_language] = {
             "name": name,
@@ -721,6 +681,8 @@ def verify_triangle(
         }
         if hit["stories"]:
             n_verified += 1
+            for sk in hit["stories"]:
+                support_counts[sk] += 1
 
     if max_aux_required <= 0:
         verified = True
@@ -728,7 +690,7 @@ def verify_triangle(
             f"目标语言同点位锚定成功（{len(anchor['stories'])} 故事）；"
             "max_aux_required<=0，跳过 aux 闭环"
         )
-    elif n_verified >= max_aux_required:
+    elif any(n >= max_aux_required for n in support_counts.values()):
         verified = True
         names = ", ".join(
             f"{lang}={info['name']}({info['method']})"
@@ -760,7 +722,6 @@ def register_alignment_context(
             "vocab": vocab,
         }
     )
-    _AUX_LOOKUP_CACHE.clear()
 
 
 # ── 主入口：三层分层穿透 ────────────────────────────────────────────
@@ -781,6 +742,7 @@ def _glossary_name_table(
     official_keys: set[str] = set()
     names_by_key: dict[str, dict[str, str]] = {}
     official_surfaces: set[str] = set()
+    owners: dict[str, dict[str, dict[str, str]]] = {}
     for term in (glossary or []):
         raw_names = getattr(term, "names", {}) or {}
         canonical = str(getattr(term, "canonical", "") or "")
@@ -798,18 +760,18 @@ def _glossary_name_table(
             for lang, value in termindex._canon_names(raw_names).items()
             if value and lang in termindex.TERM_LANGUAGES
         }
-        entry = names_by_key.setdefault(key, {})
-        entry.update(canon_names)
-        if canonical and "ja" not in entry:
-            entry["ja"] = canonical
-        # 名册按**每个官方表面**建键，而非只按 canonical：查询方拿到的术语
-        # 往往是某种语言的表面（セカイ、MEIKO、Shibuya），而 canonical 可能
-        # 是另一支（SEKAI）。只挂 canonical 会让 "セカイ" 查不到名册，
-        # 三角闭环退化成纯字面命中。
-        for surface in canon_names.values():
+        identity = str(getattr(term, "entity_id", "") or getattr(term, "id", "") or (
+            str(getattr(term, "kind", "")), canonical, tuple(sorted(canon_names.items()))
+        ))
+        for surface in [canonical, *canon_names.values()]:
             alias_key = normalize_name(surface)
-            if alias_key and alias_key != key:
-                names_by_key.setdefault(alias_key, {}).update(canon_names)
+            if alias_key:
+                owners.setdefault(alias_key, {})[identity] = canon_names
+    for key, candidates in owners.items():
+        if len(candidates) == 1:
+            names_by_key[key] = dict(next(iter(candidates.values())))
+    official_keys.intersection_update(names_by_key)
+    official_surfaces = {s for s in official_surfaces if normalize_name(s) in official_keys}
     return official_keys, names_by_key, official_surfaces
 
 
@@ -965,15 +927,28 @@ def penetrate_layered(
     # ── 第 0 层：前置过滤 ────────────────────────────────────────────
     tiers: dict[str, Tier] = {}
     alignable: list[str] = []
-    seen: set[str] = set()
-    for term in (candidates or []):
-        if not term or term in seen:
+    # Merge discovery metadata before classification so a later quoted
+    # occurrence is not lost to an earlier unquoted duplicate.
+    candidate_evidence: dict[str, dict] = {}
+    for item in (candidates or []):
+        surface = item if isinstance(item, str) else item.surface
+        key = normalize_candidate_key(surface)
+        if not key:
             continue
-        seen.add(term)
+        record = candidate_evidence.setdefault(key, dict(surface=surface, quoted=False,
+                                                         positions=[], rescued_by=[]))
+        record['quoted'] = record['quoted'] or bool(getattr(item, 'quoted', False))
+        for field in ('positions', 'rescued_by'):
+            for value in getattr(item, field, ()):
+                if value not in record[field]:
+                    record[field].append(value)
+    for record in candidate_evidence.values():
+        term = record['surface']
         tier = classify(
             term,
             language=source_language,
             official_keys=official_keys,
+            quoted=record['quoted'],
             seed_keys={normalize_name(s) for s in seed},
             discovered={normalize_name(d) for d in discovered},
         )
@@ -997,6 +972,8 @@ def penetrate_layered(
             official_pairs[term] = {
                 lang: name for lang, name in known.items() if lang
             }
+    # A batch owns its dictionary; never inherit names from a preceding batch.
+    clear_known_names()
     # 官方名册登记，供三角闭环使用。
     for key, names in names_by_key.items():
         register_known_names(key, names)
@@ -1074,6 +1051,7 @@ def penetrate_layered(
                 ):
                     staged[term][lang] = {"text": name, "source": source_name}
 
+    pending: list[dict[str, Any]] = []
     triangle_flags: dict[str, dict[str, Any]] = {}
     for term in sorted(staged):
         lang_entries = staged[term]
@@ -1084,8 +1062,8 @@ def penetrate_layered(
         ):
             entry = lang_entries[lang]
             name = entry["text"]
-            if entry["source"] != "L0" and termindex._term_language(lang) == "en":
-                # 三角闭环只对 en 目标有意义：aux（zh/ko）与 en 构成跨域闭环。
+            if entry["source"] != "L0":
+                # Every non-official target needs verification, not just English.
                 triangle_stats["checked"] += 1
                 tri = verify_triangle(
                     term,
@@ -1093,12 +1071,16 @@ def penetrate_layered(
                     name,
                     lang,
                     groups,
-                    aux_languages=("zh_hans", "zh_hant", "ko"),
+                    aux_languages=("ja", "en", "zh_hans", "zh_hant", "ko"),
                     max_aux_required=1,
                 )
                 triangle_flags[f"{term}\x00{lang}"] = tri
                 if tri["verified"]:
                     triangle_stats["verified"] += 1
+                else:
+                    pending.append({"term": term, "language": lang, "candidate": name,
+                                    "source": entry["source"], "reason": tri["reason"]})
+                    continue
             row[lang] = name
         if row:
             pairs[term] = row
@@ -1110,6 +1092,8 @@ def penetrate_layered(
     }
     return {
         "pairs": pairs,
+        "pending": pending,
+        "candidate_evidence": {r['surface']: r for r in candidate_evidence.values()},
         "tier_stats": tier_stats,
         "channel_stats": channel_stats,
         "rejected": rejected,
@@ -1154,6 +1138,11 @@ def channel_stats_summary(result: dict) -> str:
             f"第2层 三角闭环: 检查 {checked} 条 / 通过 {verified} 条 ({rate:.0f}%)"
         )
     lines.append(f"最终穿透: {len(pairs)} 个术语")
+    pending = result.get("pending") or []
+    if pending:
+        lines.append(f"待验证: {len(pending)} 个语言槽")
+        for item in pending[:8]:
+            lines.append(f"  {item['term']} [{item['language']}]: {item['reason']}")
     if rejected:
         sample = "、".join(rejected[:8])
         more = f" 等 {len(rejected)} 个" if len(rejected) > 8 else ""
