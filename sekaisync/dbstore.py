@@ -140,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_pages_lang ON web_pages(source, language);
 CREATE INDEX IF NOT EXISTS idx_pages_aux ON web_pages(aux_flag);
 CREATE INDEX IF NOT EXISTS idx_pages_canonical ON web_pages(canonical_key);
 CREATE INDEX IF NOT EXISTS idx_pages_seq ON web_pages(source, seq);
+CREATE INDEX IF NOT EXISTS idx_pages_browse ON web_pages(source, crawled_at DESC, seq, aux_flag, derived_flag, kind, language);
 """
 
 _REGION_SCHEMA = (
@@ -921,6 +922,13 @@ def web_trust_buckets(
         return _rows(owned)
 
 
+#: Name of the index that makes browse ordering walkable. Declared in
+#: ``_SCHEMA`` (so every newly created store has it) and probed at run time by
+#: ``browse_web_rows``, which falls back to the sorting statement when a store
+#: predating it is opened.
+BROWSE_INDEX = "idx_pages_browse"
+
+
 def browse_web_rows(
     store_root: Path,
     *,
@@ -956,6 +964,18 @@ def browse_web_rows(
     Ordering reproduces the previous two-pass Python sort (source priority
     ascending, then newest ``crawled_at``) via a CASE over the caller's
     priority list, with ``seq`` as a deterministic tiebreak.
+
+    When ``idx_pages_browse`` exists the ORDER BY stops being a full sort: the
+    priority CASE is a function of ``source`` alone, so the result is a merge of
+    per-``(source, aux_flag, derived_flag)`` partitions, each of which
+    ``idx_pages_browse`` already stores in the final order
+    (``crawled_at DESC, seq``). Each arm walks that index — never the table,
+    which is why it is not paying to read 747k rows' metadata — and stops after
+    K rows; the arms are then merged under the contract keys. The single
+    statement this replaces had to materialise and sort every matching row,
+    measured 8-9.5s on the real store for ``limit=20``. The fast path is
+    skipped entirely when the index is absent (stores written before it was
+    added), where the statement below still answers with identical results.
 
     Only caller-resolved value sets are bound; nothing is interpolated.
     """
@@ -996,12 +1016,119 @@ def browse_web_rows(
     # Parameter binding is positional: the WHERE placeholders are bound before
     # the ORDER BY ones, so `params` must come first even though the CASE
     # appears later in the statement text.
-    phase1_params = params + rank_params + [max(int(limit or 0), 0)]
+    bound = max(int(limit or 0), 0)
+    phase1_params = params + rank_params + [bound]
+    browse_index = BROWSE_INDEX
+
+    def _ordered_keys(active: sqlite3.Connection) -> list[tuple[str, str]]:
+        """Primary keys of the K winners, read in ``idx_pages_browse`` order.
+
+        One ordered probe per admissible partition. The predicates are the
+        statement's own, transcribed literally (``NOT (derived_flag = 1 AND
+        aux_flag = 0)`` first, then ``aux_flag = 0`` unless overlays are
+        included) rather than re-derived, and the partition tuples come from
+        the store, so a row can only be dropped by a predicate the statement
+        would also have dropped.
+
+        The arms are merged under the same key sequence the statement sorts by,
+        and K rows per arm is enough for the global top K: an arm can place at
+        most K rows inside it.
+
+        ``id`` appears in the merge but deliberately *not* in the arm's
+        ``ORDER BY``: ``web_pages`` is ``WITHOUT ROWID``, so SQLite appends the
+        primary key to every secondary index — this index is stored in
+        ``(source, crawled_at DESC, seq, ..., id)`` order — and the arm's K rows
+        are therefore already chosen by ``id`` within ties. Naming ``id`` in the
+        arm would make SQLite sort each partition in a temp B-tree instead of
+        walking it (measured on a 400k fully-tied store: 0.00004s walking vs
+        0.081s sorting), with no change in which rows come back. The merge
+        still spells the full key out over its at-most-K-per-arm input.
+        """
+        enum_sql = (
+            f"SELECT DISTINCT source, aux_flag, derived_flag FROM web_pages "
+            f"INDEXED BY {browse_index}"
+        )
+        enum_params: list[Any] = []
+        if source_ids:
+            enum_sql += f" WHERE source IN ({','.join('?' * len(source_ids))})"
+            enum_params.extend(source_ids)
+        arms: list[str] = []
+        arm_params: list[Any] = []
+        for source_id, aux_flag, derived_flag in active.execute(enum_sql, enum_params):
+            if int(aux_flag) == 0 and int(derived_flag) == 1:
+                continue
+            if not include_overlay and int(aux_flag) != 0:
+                continue
+            rank = (
+                priority.index(source_id) if source_id in priority else len(priority)
+            )
+            predicates = ["source = ?", "aux_flag = ?", "derived_flag = ?"]
+            arm_values: list[Any] = [rank, source_id, aux_flag, derived_flag]
+            if language:
+                predicates.append("language = ?")
+                arm_values.append(language)
+            if kinds:
+                predicates.append(f"LOWER(kind) IN ({','.join('?' * len(kinds))})")
+                arm_values.extend([str(k).lower() for k in kinds])
+            arms.append(
+                f"SELECT * FROM (SELECT source, id, crawled_at, seq, ? AS browse_rank "
+                f"FROM web_pages INDEXED BY {browse_index} "
+                f"WHERE {' AND '.join(predicates)} "
+                f"ORDER BY crawled_at DESC, seq LIMIT ?)"
+            )
+            arm_params.extend(arm_values)
+            arm_params.append(bound)
+        if not arms:
+            return []
+        merge_sql = (
+            f"SELECT source, id FROM ({' UNION ALL '.join(arms)}) "
+            f"ORDER BY browse_rank, crawled_at DESC, source, seq, id LIMIT ?"
+        )
+        return [
+            (row[0], row[1])
+            for row in active.execute(merge_sql, arm_params + [bound])
+        ]
+
+
+    def _metadata_for_keys(
+        active: sqlite3.Connection, keys: list[tuple[str, str]]
+    ) -> list[dict[str, Any]]:
+        """Fetch the winners' metadata by primary key, in ``keys`` order."""
+        if not keys:
+            return []
+        placeholders = ",".join("(?,?)" for _ in keys)
+        key_params: list[Any] = []
+        for source_id, page_id in keys:
+            key_params.extend([source_id, page_id])
+        cursor = active.execute(
+            f"SELECT source, {columns}, aux_flag, derived_flag, extra_json, seq "
+            f"FROM web_pages WHERE (source, id) IN (VALUES {placeholders})",
+            key_params,
+        )
+        cursor.row_factory = sqlite3.Row
+        found = {
+            (row["source"], row["id"]): _web_page_row_to_dict(row, include_text=False)
+            for row in cursor
+        }
+        return [found[key] for key in keys if key in found]
 
     def _rows(active: sqlite3.Connection) -> list[dict[str, Any]]:
-        cursor = active.execute(sql, phase1_params)
-        cursor.row_factory = sqlite3.Row
-        rows = [_web_page_row_to_dict(row, include_text=False) for row in cursor]
+        # The partitioned fast path reproduces `ORDER BY <rank>, ...` only when
+        # there is a rank expression to reproduce: with an empty priority list
+        # the statement uses the constant `0`, which SQLite rejects as an
+        # ORDER BY term. That case is left on the statement below so its
+        # behaviour (and its error) is unchanged rather than silently diverging
+        # between stores that do and do not carry the index.
+        use_index = bool(priority) and bound > 0 and active.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (browse_index,),
+        ).fetchone() is not None
+        if use_index:
+            rows = _metadata_for_keys(active, _ordered_keys(active))
+        else:
+            cursor = active.execute(sql, phase1_params)
+            cursor.row_factory = sqlite3.Row
+            rows = [_web_page_row_to_dict(row, include_text=False) for row in cursor]
         if not rows:
             return rows
         # Phase 2: read text-derived values for the winners only.

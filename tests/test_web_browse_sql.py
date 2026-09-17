@@ -344,6 +344,289 @@ class FilterValueResolutionTest(unittest.TestCase):
         self.assertIn("event_story", resolved.get("kinds") or [])
 
 
+class BrowseIndexedOrderTest(unittest.TestCase):
+    """P06 follow-up — the browse ORDER BY must not sort the whole table.
+
+    The remaining cost of ``web_browse(limit=20)`` after the SQL pushdown was
+    the sort: ``ORDER BY <priority CASE>, crawled_at DESC, source, seq`` cannot
+    be answered from any index, so SQLite materialised and sorted every
+    matching row (measured 8-9.5s median on the 752k-row real store).
+
+    ``idx_pages_browse`` makes each ``(source, aux_flag, derived_flag)``
+    partition readable in final order, so the winners are a merge of per-arm
+    top-K probes. These tests pin both halves of that claim:
+
+    1. both paths (index present / dropped) return byte-identical rows, so the
+       index is an accelerator and never a semantics change — including the
+       all-ties cases where the tiebreak is the only thing deciding the order;
+    2. the store written before the index existed still gets it, and the fast
+       path is *actually* used when the index is there (a silently-still-slow
+       path would otherwise pass every equivalence test).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="test_browse_idx_")
+        self.store = Path(self._tmp.name) / "store"
+        # Tie-heavy by construction: same crawled_at and same source, so only
+        # the `seq` tiebreak orders these rows.
+        pages = [
+            WebPage(
+                id=f"web:ms:wordings:{index:02d}",
+                source="altsource_ms",
+                url=f"https://pjsk.moe/ja-jp/wordings/{index}",
+                title=f"wordings {index}",
+                language="ja",
+                kind="wordings",
+                text=f"本文 {index}",
+                crawled_at="2026-08-01T00:00:00+00:00",
+                hash=f"w{index}",
+            )
+            for index in range(8)
+        ]
+        pages.append(
+            WebPage(
+                id="web:sv:event_story:1:1",
+                source="altsource_sv",
+                url="https://storage.sekai.best/event_story/1/1.asset",
+                title="event 1-1",
+                language="ja",
+                kind="event_story",
+                text="イベント本文",
+                crawled_at="2026-08-02T00:00:00+00:00",
+                hash="e1",
+            )
+        )
+        save_web_pages(self.store, "altsource_ms", pages[:8])
+        save_web_pages(self.store, "altsource_sv", [pages[8]])
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _set_index(self, present: bool) -> None:
+        from sekaisync import dbstore
+
+        with dbstore.connect(self.store) as conn:
+            if present:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {dbstore.BROWSE_INDEX} ON web_pages(source, crawled_at DESC, seq, aux_flag, derived_flag, kind, language)")
+            else:
+                conn.execute(f"DROP INDEX IF EXISTS {dbstore.BROWSE_INDEX}")
+            conn.commit()
+
+    def test_schema_declares_the_browse_index(self):
+        """New stores must get the index from the schema, not from a test.
+
+        ``initialize`` / ``initialize_new_store`` both run ``_SCHEMA`` with
+        ``executescript``, so declaring the index there is what makes every
+        newly created store (and the ``source_migrate`` bootstrap) carry it.
+        A store that predates the index keeps the fallback statement and can
+        be upgraded with the same idempotent DDL.
+        """
+        from sekaisync import dbstore
+
+        self.assertIn(
+            f"CREATE INDEX IF NOT EXISTS {dbstore.BROWSE_INDEX} ON web_pages",
+            dbstore._SCHEMA,
+            "the browse index is not in the schema, so no new store gets it",
+        )
+
+    def test_a_freshly_initialized_store_carries_the_index(self):
+        """`sqlite_master` on a new store is the end-to-end version of the above."""
+        from sekaisync import dbstore
+
+        fresh = Path(self._tmp.name) / "fresh_store"
+        dbstore.initialize(fresh)
+        with dbstore.connect(fresh) as conn:
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='web_pages'"
+                )
+            }
+        self.assertIn(dbstore.BROWSE_INDEX, names)
+
+    def test_fast_path_and_fallback_return_identical_rows(self):
+        """Both orderings must produce the same ids in the same order.
+
+        Dropping the index exercises the pre-index statement; the fallback is
+        the oracle here because it is the shape the contract test above still
+        pins end-to-end against the Python implementation.
+        """
+        from sekaisync import dbstore
+        from sekaisync.webindex import DEFAULT_SOURCE_PRIORITY
+
+        cases = [
+            dict(limit=3),
+            dict(limit=50),
+            dict(limit=1),
+            dict(limit=50, language="ja"),
+            dict(limit=50, kind="wordings"),
+            dict(limit=50, source="altsource_ms"),
+            dict(limit=50, source_priority=("altsource_ms", "altsource_sv")),
+            dict(limit=50, include_overlay=True),
+        ]
+        self._set_index(True)
+        with dbstore.connect(self.store) as conn:
+            fast = {
+                repr(sorted(case.items())): dbstore.browse_web_rows(
+                    self.store,
+                    source_ids=None,
+                    language=case.get("language"),
+                    kinds=None,
+                    limit=case["limit"],
+                    include_overlay=case.get("include_overlay", False),
+                    source_priority=case.get("source_priority", DEFAULT_SOURCE_PRIORITY),
+                    conn=conn,
+                )
+                for case in cases
+            }
+        self._set_index(False)
+        with dbstore.connect(self.store) as conn:
+            fallback = {
+                repr(sorted(case.items())): dbstore.browse_web_rows(
+                    self.store,
+                    source_ids=None,
+                    language=case.get("language"),
+                    kinds=None,
+                    limit=case["limit"],
+                    include_overlay=case.get("include_overlay", False),
+                    source_priority=case.get("source_priority", DEFAULT_SOURCE_PRIORITY),
+                    conn=conn,
+                )
+                for case in cases
+            }
+        self._set_index(True)
+        for key in fast:
+            self.assertEqual(
+                [(r["source"], r["id"]) for r in fast[key]],
+                [(r["source"], r["id"]) for r in fallback[key]],
+                f"indexed and fallback ordering disagree for {key}",
+            )
+
+    def test_tiebreak_order_matches_with_and_without_the_index(self):
+        """Identical ``crawled_at`` everywhere: `seq` alone decides the order."""
+        from sekaisync import dbstore
+
+        self._set_index(True)
+        indexed = [
+            item["id"] for item in web_browse(self.store, source="altsource_ms", limit=8)
+        ]
+        self._set_index(False)
+        plain = [
+            item["id"] for item in web_browse(self.store, source="altsource_ms", limit=8)
+        ]
+        self._set_index(True)
+        self.assertEqual(indexed, plain)
+        self.assertEqual(
+            indexed,
+            [f"web:ms:wordings:{index:02d}" for index in range(8)],
+            "all-ties rows did not come back in insertion (`seq`) order",
+        )
+
+    def test_fast_path_is_used_when_the_index_exists(self):
+        """The accelerator must actually engage, not just be equivalent.
+
+        Asserted on the executed SQL rather than on wall-clock time: the fast
+        path issues one ordered probe per partition, the fallback issues the
+        single sorting statement. ``set_trace_callback`` reports statements
+        after parameter binding, so the probes appear with their literals.
+        """
+        from sekaisync import dbstore
+
+        self._set_index(True)
+        statements: list[str] = []
+        with dbstore.connect(self.store) as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                dbstore.browse_web_rows(
+                    self.store, limit=2, source_priority=("altsource_sv", "altsource_ms"),
+                    conn=conn,
+                )
+            finally:
+                conn.set_trace_callback(None)
+        joined = "\n".join(statements)
+        self.assertIn(
+            f"INDEXED BY {dbstore.BROWSE_INDEX}",
+            joined,
+            "the browse index exists but the query never used it",
+        )
+        # One ordered probe per partition. `union all` merges them inside a
+        # single statement, so count the arms rather than the statements.
+        arm_pattern = f"INDEXED BY {dbstore.BROWSE_INDEX}"
+        arms = [
+            statement for statement in statements
+            if arm_pattern in statement
+            and "ORDER BY crawled_at DESC, seq" in statement
+        ]
+        self.assertEqual(
+            sum(statement.count(arm_pattern) for statement in arms),
+            2,
+            "expected one ordered index probe per partition (two sources), "
+            f"so the winners were sorted rather than walked: {statements}",
+        )
+
+    def test_large_tie_heavy_store_answers_from_the_index(self):
+        """A store far larger than the limit must not sort every row.
+
+        The trace shows the fast path reading K rows per partition and then
+        hydrating only those keys, never the whole store. The old statement
+        read (and sorted) every matching row, so a store-wide read showing up
+        in the trace is the regression this test exists to catch.
+        """
+        from sekaisync import dbstore
+
+        pages = [
+            WebPage(
+                id=f"web:bulk:wordings:{index:05d}",
+                source="altsource_ms",
+                url=f"https://example.invalid/bulk/{index}",
+                title="bulk",
+                language="ja",
+                kind="wordings",
+                text="本文",
+                crawled_at="2026-08-01T00:00:00+00:00",
+                hash=f"b{index}",
+            )
+            for index in range(4000)
+        ]
+        save_web_pages(self.store, "altsource_ms", pages)
+        self._set_index(True)
+        statements: list[str] = []
+        with dbstore.connect(self.store) as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                rows = dbstore.browse_web_rows(
+                    self.store, limit=20, source_priority=("altsource_ms",),
+                    conn=conn,
+                )
+            finally:
+                conn.set_trace_callback(None)
+        self.assertEqual(len(rows), 20)
+        ordered_probe = [
+            statement for statement in statements
+            if f"INDEXED BY {dbstore.BROWSE_INDEX}" in statement
+            and "ORDER BY crawled_at DESC, seq" in statement
+            and "LIMIT 20" in statement
+        ]
+        self.assertTrue(
+            ordered_probe,
+            "no ordered index probe was issued; the winners were sorted, not "
+            f"walked: {statements}",
+        )
+        # The sort key is walked from the index, so no statement may order the
+        # whole table: the only ORDER BY left is the merge over the 20-row
+        # arms.
+        sorting = [
+            statement for statement in statements
+            if "ORDER BY" in statement and "UNION ALL" not in statement
+            and "ORDER BY crawled_at DESC, seq" not in statement
+        ]
+        self.assertEqual(
+            sorting,
+            [],
+            f"a table-wide ORDER BY survived alongside the probes: {sorting}",
+        )
+
+
 class WebSearchStreamingTest(unittest.TestCase):
     """P06 — search streams the scoring window instead of loading every body.
 
