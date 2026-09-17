@@ -115,5 +115,98 @@ class ReadSnapshotIsolationTest(unittest.TestCase):
         )
 
 
+class PublicRequestIsolationTest(unittest.TestCase):
+    def setUp(self):
+        from sekaisync import dbstore
+        from sekaisync.models import Entity
+        from sekaisync.termindex import TermRecord
+        self.tmp = tempfile.TemporaryDirectory(prefix="test_public_view_")
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name)
+        dbstore.initialize(self.store)
+        dbstore.save_entities(self.store, [Entity(
+            id="character:1", type="character", region="jp", regions=["jp"],
+            names={"en": "Needle"}, facts={"value": "old"}, source="master_db:jp")])
+        dbstore.upsert_terms(self.store, [TermRecord(
+            id="term:1", canonical="Needle", source_language="en", names={"en": "Needle"},
+            evidence=[{"story_key": "story:1", "language": "en", "sentence": "old"}])],
+            evidence_updates={"term:1": dbstore.EvidenceUpdate(
+                mode="replace", items=[{"story_key": "story:1", "language": "en", "sentence": "old"}])})
+        self.core = SekaiSyncCore(self.store)
+
+    def test_public_query_is_fixed_across_thread_commit(self):
+        from unittest.mock import patch
+        from sekaisync import dbstore
+        import json
+        started, committed = threading.Event(), threading.Event()
+        errors = []
+        original = self.core.lookup
+
+        def writer():
+            try:
+                if not started.wait(5):
+                    raise AssertionError("reader never reached barrier")
+                with dbstore.connect(self.store) as conn:
+                    conn.execute("UPDATE entities SET facts_json=?", (json.dumps({"value": "new"}),))
+                    conn.execute("UPDATE term_evidence SET sentence='new'")
+                    dbstore.bump_revision(conn)
+                    conn.commit()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                committed.set()
+
+        def blocked_lookup(*args, **kwargs):
+            result = original(*args, **kwargs)
+            started.set()
+            self.assertTrue(committed.wait(5))
+            return result
+
+        worker = threading.Thread(target=writer)
+        worker.start()
+        try:
+            with patch.object(self.core, "lookup", side_effect=blocked_lookup):
+                old = self.core.query("Needle", include_web=False)
+        finally:
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(old["metadata"][0]["facts"]["value"], "old")
+        self.assertEqual(old["terms"][0]["evidence"][0]["sentence"], "old")
+        new = self.core.query("Needle", include_web=False)
+        self.assertEqual(new["metadata"][0]["facts"]["value"], "new")
+        self.assertEqual(new["terms"][0]["evidence"][0]["sentence"], "new")
+
+    def test_snapshot_and_returned_mutations_are_detached(self):
+        with self.core.request_view() as view:
+            view.registry[0].names["en"] = "corrupted"
+            view.snapshot.registry[0].facts["value"] = "corrupted"
+            row = self.core.lookup("Needle")[0]
+            row["names"]["en"] = "corrupted"
+            row["facts"]["value"] = "corrupted"
+            self.assertEqual(self.core.lookup("Needle")[0]["facts"]["value"], "old")
+        self.assertEqual(self.core.lookup("Needle")[0]["names"]["en"], "Needle")
+
+    def test_cross_core_cache_revision(self):
+        from sekaisync import dbstore
+        other = SekaiSyncCore(self.store)
+        self.assertEqual(other.trust_summary()["totals"]["registry"], 1)
+        with dbstore.connect(self.store) as conn:
+            conn.execute("DELETE FROM entities")
+            dbstore.bump_revision(conn)
+            conn.commit()
+        self.assertEqual(other.trust_summary()["totals"]["registry"], 0)
+        self.assertEqual(self.core.lookup("Needle"), [])
+
+    def test_read_entry_skips_legacy_import_and_all_writes(self):
+        from sekaisync import dbstore
+        from unittest.mock import patch
+        with patch.object(dbstore, "import_legacy_domains", side_effect=AssertionError("hidden import")), \
+             patch.object(dbstore, "initialize", side_effect=AssertionError("hidden initialization")):
+            self.core.lookup("Needle")
+            self.core.term_lookup("Needle")
+            self.core.refresh()
+
+
 if __name__ == "__main__":
     unittest.main()

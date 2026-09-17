@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from types import MappingProxyType
+from typing import Iterable, Mapping, Optional
 
 from sekaisync.config import REGIONS
 from sekaisync.layout import generation_master_dir, region_master_dir
-from sekaisync.models import Entity
+from sekaisync.models import Entity, RegionFacts
+from sekaisync.regions import (
+    entity_for_region, project_common_facts, region_facts_from_dict, region_facts_to_dict,
+)
 from sekaisync.normalize import best_match, normalize_name
 from sekaisync.trust import trust_for_source
 
@@ -138,6 +144,62 @@ _KIND_ALIASES = {
 REGISTRY_TABLES = frozenset(_KIND_ALIASES)
 
 
+def _read_active_generations(store_root: Path) -> dict[str, str]:
+    """Read pointers without dbstore.connect's mkdir/WAL/schema side effects."""
+    from sekaisync.layout import ACTIVE_GENERATION_KEY, db_path
+
+    path = db_path(store_root)
+    if not path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            row = conn.execute('SELECT value FROM meta WHERE key=?',
+                               (ACTIVE_GENERATION_KEY,)).fetchone()
+        finally:
+            conn.close()
+        data = json.loads(row[0]) if row else {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (sqlite3.Error, ValueError):
+        return {}
+
+
+@dataclass(frozen=True)
+class RawSnapshot:
+    """Pinned raw directories and generation IDs for a registry build.
+
+    This is a local adapter until the shared P02/P16 snapshot is integrated.
+    Explicit snapshots never resolve active pointers or fall back on absence.
+    Legacy directories are mutable; their inputs are read once per build and
+    must not be advertised as an immutable historical snapshot.
+    """
+
+    master_dirs: Mapping[str, Path]
+    generations: Mapping[str, str]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'master_dirs', MappingProxyType(
+            {r: Path(p) for r, p in self.master_dirs.items()}))
+        object.__setattr__(self, 'generations', MappingProxyType(dict(self.generations)))
+
+
+def capture_raw_snapshot(store_root: Path, regions: Iterable[str],
+                         generation: Optional[str] = None) -> RawSnapshot:
+    active = _read_active_generations(store_root)
+    directories, generations = {}, {}
+    for region in sorted(set(regions)):
+        selected = generation
+        if not selected or not generation_master_dir(store_root, region, selected).exists():
+            selected = active.get(region)
+        path = generation_master_dir(store_root, region, selected) if selected else None
+        if path is None or not path.exists():
+            path, selected = region_master_dir(store_root, region), None
+        directories[region] = path
+        if selected:
+            generations[region] = selected
+    return RawSnapshot(directories, generations)
+
+
 def _active_or_legacy_dir(store_root: Path, region: str) -> Path:
     """The region's active generation dir, or the legacy in-place dir.
 
@@ -146,12 +208,7 @@ def _active_or_legacy_dir(store_root: Path, region: str) -> Path:
     pre-generation layout. That keeps path resolution safe to call before the
     store is initialized.
     """
-    from sekaisync import dbstore
-
-    try:
-        active = dbstore.active_generations(store_root).get(region)
-    except Exception:  # noqa: BLE001 - absence of a store means "no pointer"
-        active = None
+    active = _read_active_generations(store_root).get(region)
     if active:
         candidate = generation_master_dir(store_root, region, active)
         if candidate.exists():
@@ -191,6 +248,10 @@ def data_files_for_region(
     generation: Optional[str] = None,
 ) -> list[Path]:
     base = master_dir_for(store_root, region, generation)
+    return _data_files_under(base)
+
+
+def _data_files_under(base: Path) -> list[Path]:
     candidates = [
         base / "versions" / "**" / "*.json",
         base / "master" / "*.json",
@@ -279,119 +340,119 @@ def extract_facts(record: dict, names: dict[str, str], language: str = "ja") -> 
     return facts
 
 
-def _story_metadata(
-    store_root: Path, regions: Iterable[str]
-) -> dict[str, list[dict]]:
-    """Collect event outline and episode titles from eventStories tables."""
-    metadata: dict[str, list[dict]] = {}
-    for region in regions:
-        language = REGIONS[region].language if region in REGIONS else "ja"
-        for path in data_files_for_region(store_root, region):
-            table = path.name.removesuffix(".json")
-            if table != "eventStories":
-                continue
-            for record in load_records(path):
-                event_id = str(record.get("eventId") or record.get("id") or "")
-                if not event_id:
-                    continue
-                metadata.setdefault(event_id, []).append(
-                    {
-                        "language": language,
-                        "outline": record.get("outline"),
-                        "episodes": record.get("eventStoryEpisodes") or [],
-                    }
-                )
-    return metadata
-
-
-def _enrich_event_stories(entities: list[Entity], metadata: dict[str, list[dict]]) -> None:
-    events = {entity.id: entity for entity in entities if entity.type == "event"}
-    stories = {entity.id: entity for entity in entities if entity.type == "event_story"}
-    for event_id, records in metadata.items():
-        event = events.get(f"event:{event_id}")
-        story = stories.get(f"event_story:{event_id}")
-        for record in records:
-            language = record["language"]
-            if record["outline"] and event is not None:
-                event.facts.setdefault(f"outline_{language}", record["outline"])
-            for episode in record["episodes"]:
-                title = episode.get("title")
-                if not title or story is None:
-                    continue
-                episode_no = episode.get("episodeNo")
-                if episode_no is not None:
-                    story.names.setdefault(f"episode{episode_no}_{language}", str(title))
-                story.names.setdefault(language, str(title))
+def _read_registry_table(path: Path) -> tuple[list[dict], dict]:
+    """Parse and hash the same bytes, rejecting invalid rather than empty input."""
+    raw = path.read_bytes()
+    data = json.loads(raw.decode('utf-8-sig'))
+    records = data
+    if isinstance(data, dict):
+        records = next((data[key] for key in ('records', 'items', 'data')
+                        if isinstance(data.get(key), list)), None)
+    if not isinstance(records, list) or any(not isinstance(r, dict) for r in records):
+        raise ValueError(f'invalid registry table: {path}')
+    retrieval = dict(path=str(path.resolve()), table=path.stem,
+                     sha256=hashlib.sha256(raw).hexdigest(), effective_source='local')
+    # Do not manufacture an upstream retrieval time from file mtime or build time.
+    return records, retrieval
 
 
 def build_registry(
     store_root: Path,
     regions: Iterable[str],
     generation: Optional[str] = None,
+    *,
+    raw_snapshot: Optional[RawSnapshot] = None,
 ) -> list[Entity]:
-    grouped: dict[str, Entity] = {}
+    """Build lossless regional facts; positional generation remains supported.
 
+    Only the configured Sekai master adapters share the global identity space.
+    Unknown region adapters are rejected rather than merged by numerical ID.
+    An explicit snapshot is authoritative, including missing directories.
+    """
+    regions = sorted(set(regions))
+    unknown = set(regions) - set(REGIONS) - {'demo'}
+    if unknown:
+        raise ValueError(f'unconfirmed master identity namespace: {sorted(unknown)}')
+    if raw_snapshot is not None and generation is not None:
+        raise ValueError('pass raw_snapshot or generation, not both')
+    snapshot = raw_snapshot or capture_raw_snapshot(store_root, regions, generation)
+    grouped: dict[str, Entity] = {}
+    name_candidates: dict[str, dict[str, set[str]]] = {}
+    story_inputs = []
     for region in regions:
-        for path in data_files_for_region(store_root, region, generation):
-            table = path.name.removesuffix(".json")
-            if table not in REGISTRY_TABLES:
+        base = snapshot.master_dirs.get(region)
+        if base is None:
+            continue
+        language = REGIONS[region].language if region in REGIONS else 'ja'
+        for path in _data_files_under(base):
+            if path.stem not in REGISTRY_TABLES:
                 continue
             kind = kind_from_path(path)
-            for record in load_records(path):
+            records, retrieval = _read_registry_table(path)
+            version = snapshot.generations.get(region)
+            retrieval['generation'] = version
+            for record in records:
                 game_id = record_id(record, kind)
-                if region == "demo":
-                    entity_id = f"demo:{kind}:{game_id}"
-                else:
-                    entity_id = f"{kind}:{game_id}"
-                if region in REGIONS:
-                    language = REGIONS[region].language
-                else:
-                    language = "ja"
+                prefix = 'demo:' if region == 'demo' else ''
+                entity_id = f'{prefix}{kind}:{game_id}'
                 names = extract_names(record)
                 facts = extract_facts(record, names, language=language)
-                names = {k: v for k, v in names.items() if v}
-                fallback_name = (
-                    names.get("full")
-                    or names.get("name")
-                    or names.get("unitName")
-                    or names.get("unitProfileName")
-                    or names.get("songName")
-                    or names.get("eventName")
-                    or names.get("cardName")
-                    or names.get("title")
-                    or ""
-                )
-                names.setdefault(language, fallback_name)
+                fallback = next((names[key] for key in (
+                    'full', 'name', 'unitName', 'unitProfileName', 'songName',
+                    'eventName', 'cardName', 'title') if names.get(key)), '')
+                if fallback:
+                    names.setdefault(language, fallback)
+                entity = grouped.setdefault(entity_id, Entity(
+                    id=entity_id, type=kind, region='', demo=(region == 'demo'),
+                    source='master_db', trust=trust_for_source(
+                        f'master_db:{region}', kind=kind, demo=(region == 'demo'))))
+                if region in entity.region_facts:
+                    # Multiple raw revisions/duplicate IDs cannot be arbitrarily
+                    # selected. The adapter must select a validated table first.
+                    raise ValueError(f'duplicate region entity: {entity_id} / {region}')
+                entity.region_facts[region] = RegionFacts(
+                    region, facts, f'master_db:{region}', version, dict(retrieval))
+                candidates = name_candidates.setdefault(entity_id, {})
+                for key, value in names.items():
+                    if value:
+                        candidates.setdefault(key, set()).add(value)
+                if path.stem == 'eventStories':
+                    event_id = record.get('eventId') or record.get('id')
+                    story_inputs.append((f'{prefix}event:{event_id}', entity_id,
+                                         region, language, record, retrieval))
 
-                existing = grouped.get(entity_id)
-                if existing is None:
-                    grouped[entity_id] = Entity(
-                        id=entity_id,
-                        type=kind,
-                        region=region,
-                        regions=[region],
-                        names=names,
-                        facts=facts,
-                        source=f"master_db:{region}",
-                        version=None,
-                        demo=(region == "demo"),
-                        trust=trust_for_source(
-                            f"master_db:{region}",
-                            kind=kind,
-                            demo=(region == "demo"),
-                        ),
-                    )
-                else:
-                    existing.regions.append(region)
-                    for language, value in names.items():
-                        existing.names.setdefault(language, value)
-                    for key, value in facts.items():
-                        existing.facts.setdefault(key, value)
-                    existing.demo = existing.demo or region == "demo"
+    for event_id, story_id, region, language, record, retrieval in story_inputs:
+        event = grouped.get(event_id)
+        if event is not None and region in event.region_facts and record.get('outline'):
+            rf = event.region_facts[region]
+            key = f'outline_{language}'
+            if key not in rf.facts:
+                rf.facts[key] = record['outline']
+                rf.retrieval.setdefault('field_sources', {})[key] = dict(retrieval)
+        candidates = name_candidates[story_id]
+        for episode in record.get('eventStoryEpisodes') or []:
+            title = episode.get('title')
+            if not title:
+                continue
+            if episode.get('episodeNo') is not None:
+                key = f"episode{episode['episodeNo']}_{language}"
+                candidates.setdefault(key, set()).add(str(title))
+            if language not in candidates:
+                candidates[language] = {str(title)}
 
-    entities = list(grouped.values())
-    _enrich_event_stories(entities, _story_metadata(store_root, regions))
-    return entities
+    for entity_id, entity in grouped.items():
+        entity.regions = sorted(entity.region_facts)
+        entity.facts, _ = project_common_facts(entity.region_facts, entity.regions)
+        # A multi-region entity has no privileged region/source/version.
+        if len(entity.regions) == 1:
+            rf = entity.region_facts[entity.regions[0]]
+            entity.region, entity.source, entity.version = rf.region, rf.source, rf.version
+        # Real language keys survive; conflicting generic name/title slots do
+        # not get an arbitrary first-region value.
+        entity.names = {key: next(iter(values))
+                        for key, values in sorted(name_candidates[entity_id].items())
+                        if len(values) == 1}
+    return [grouped[key] for key in sorted(grouped)]
 
 
 def save_registry(entities: Iterable[Entity], path: Path) -> Path:
@@ -404,6 +465,7 @@ def save_registry(entities: Iterable[Entity], path: Path) -> Path:
             "regions": entity.regions,
             "names": entity.names,
             "facts": entity.facts,
+            "region_facts": region_facts_to_dict(entity),
             "source": entity.source,
             "version": entity.version,
             "demo": entity.demo,
@@ -430,7 +492,9 @@ def load_registry(path: Path) -> list[Entity]:
             region=str(item.get("region", "")),
             regions=[str(r) for r in item.get("regions", [])],
             names={k: str(v) for k, v in item.get("names", {}).items() if v},
-            facts={k: v for k, v in item.get("facts", {}).items() if v not in (None, "")},
+            # Preserve old evidence exactly, including null/empty fields.
+            facts=dict(item.get("facts", {})),
+            region_facts=region_facts_from_dict(item.get("region_facts")),
             source=str(item.get("source", "")),
             version=item.get("version"),
             demo=bool(item.get("demo", False)),
@@ -465,9 +529,11 @@ def lookup_entity(
         names = list(entity.names.values())
         if entity.canonical_name not in names:
             names.append(entity.canonical_name)
+        selected_facts = (entity_for_region(entity, region)['facts']
+                          if entity.region_facts or region else entity.facts)
         fact_values = [
             str(value)
-            for value in entity.facts.values()
+            for value in selected_facts.values()
             if isinstance(value, (str, int, float))
             and not str(value).isdigit()
         ]
