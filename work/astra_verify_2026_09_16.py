@@ -257,13 +257,21 @@ def probe_activity_input(root: Path) -> dict:
 
 
 def probe_news_identity(root: Path) -> dict:
-    from sekaisync.news import _news_key, merge_news
+    from sekaisync.news import _news_key, news_identity_key, merge_news
     first_key = _news_key("ja", "Maintenance", "fixture-first", "1")
     second_key = _news_key("ja", "Maintenance", "fixture-second", "2")
     new = {"id": "1", "canonical_key": first_key, "language": "ja", "source": "altsource_ms", "text": "new"}
     old = {**new, "text": "old and much longer fixture summary"}
     merged = merge_news([new, old])
+    # P17 replaced the title-derived key with namespace/id/language identity;
+    # _news_key survives only for legacy snapshot reads and still collides.
+    distinct_ids = [{"id": "1", "language": "ja", "source": "altsource_ms",
+                     "source_id": "1", "title": "Maintenance"},
+                    {"id": "2", "language": "ja", "source": "altsource_ms",
+                     "source_id": "2", "title": "Maintenance"}]
     return {"distinct_ids_same_title_collide": first_key == second_key,
+            "distinct_ids_current_identity_collide":
+                news_identity_key(distinct_ids[0]) == news_identity_key(distinct_ids[1]),
             "old_longer_revision_wins": merged[0]["text"] == old["text"]}
 
 
