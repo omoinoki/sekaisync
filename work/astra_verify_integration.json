@@ -1,0 +1,419 @@
+{
+  "purpose": "Offline observations of baseline defects; not a post-fix regression test suite",
+  "real_store_accessed": false,
+  "settings_read": false,
+  "python": "3.13.14",
+  "sqlite": "3.50.4",
+  "results": {
+    "terms_snapshot_and_evidence": {
+      "removed_record_survives": true,
+      "empty_replacement_advertised_count": 0,
+      "empty_replacement_actual_count": 0
+    },
+    "aggregate_version_race": {
+      "computed": {
+        "value": "old"
+      },
+      "after_version_bump": {
+        "value": "new"
+      },
+      "expected": "new"
+    },
+    "region_facts_loss": {
+      "jp_startAt": 1700000000000,
+      "en_startAt": 1800000000000,
+      "jp_then_en_source": "master_db:jp",
+      "same_regions": true,
+      "common_facts_exclude_region_specific_startAt": true,
+      "region_facts_order_independent": true
+    },
+    "temporal_and_language_contract": {
+      "future_state": "future",
+      "future_payload_contains_unreleased_name": false,
+      "future_region_scope": "entity",
+      "undated_state": "undated",
+      "undated_past_nonempty": false,
+      "english_pack_uses_japanese_outline": false,
+      "english_pack_uses_english_outline": true
+    },
+    "missing_translation_fallback": {
+      "requested": "ko",
+      "target_name": null,
+      "target_exists": false
+    },
+    "verification_absence_as_conflict": {
+      "missing_fact_status": "unknown",
+      "facts": {}
+    },
+    "web_read_filter_and_provenance": {
+      "metadata_query": "SELECT source, id, url, title, language, kind, crawled_at, hash, tos_accepted, derived, trust, canonical_key, source_hash, text_hash, untranslated, untranslated_placeholder, original_text_hash, asset_mismatch, scenario_id_mismatch, content_language_mismatch, source_last_modified, source_etag, auxiliary, translation_source, source_language, namespace, event_id, episode_no, overlay, source_type, instance, aux_flag, derived_flag, extra_json, seq, length(text) AS text_length FROM web_pages ORDER BY source, seq",
+      "metadata_preserves_source_type": true,
+      "stored_trust": "B",
+      "recomputed_metadata_trust": "B",
+      "search_kind_limit_one_count": 1,
+      "browse_same_kind_count": 1,
+      "lookup_calls_full_load": false
+    },
+    "unsupported_schema_version": {
+      "unsupported_version_before": "99",
+      "version_after_ensure": "99",
+      "refused_instead_of_downgraded": true,
+      "refusal_error": "SchemaVersionError"
+    },
+    "event_relationship_identity": {
+      "input_relationships": 3,
+      "merged_relationships": 3,
+      "remaining": [
+        {
+          "eventId": 1,
+          "musicId": 101,
+          "seq": 1
+        },
+        {
+          "eventId": 2,
+          "musicId": 102,
+          "seq": 1
+        },
+        {
+          "eventId": 3,
+          "musicId": 103,
+          "seq": 1
+        }
+      ]
+    },
+    "activity_inputs_and_unknowns": {
+      "wl0": null,
+      "wl1000": null,
+      "long_input": "no error",
+      "empty_store_activity": {
+        "query": "khn1",
+        "kind": "unresolved",
+        "reason": "no World Link or character box numbering; mixed-unit or unnumbered event",
+        "confidence": "high"
+      }
+    },
+    "news_identity_and_revision": {
+      "distinct_ids_same_title_collide": true,
+      "distinct_ids_current_identity_collide": false,
+      "old_longer_revision_wins": false
+    },
+    "integrity_missing_hash": {
+      "different_text_conflict_groups": 1,
+      "mirror_duplicates": 0
+    },
+    "term_authority_and_conflict_shape": {
+      "merged_name": "CorrectName",
+      "merged_trust": "A",
+      "merged_official": true,
+      "merged_source": "master_db:jp",
+      "area_index_polluted_name": "STAR GARDEN",
+      "cli_conflict_proposal": {
+        "en": [
+          "SEKAI",
+          "SEKAI2"
+        ]
+      }
+    },
+    "review_lifecycle": {
+      "ordinary_submit": {
+        "accepted": 1,
+        "rejected": 0,
+        "replaced": 0,
+        "methodology_added": 0,
+        "methodology_updated": 0,
+        "decisions_added": 1,
+        "unknown": 0,
+        "errors": [],
+        "remaining": 0
+      },
+      "ordinary_reused": {
+        "decision": "accept",
+        "value": "Good",
+        "entry": {
+          "decision_id": "rd:36e4c29ea2ef4d7a",
+          "item_id": "rv:a0d42d3f229b",
+          "term": "FixtureTerm",
+          "language": "en",
+          "candidate": "Good",
+          "decision": "accept",
+          "value": "Good",
+          "rationale": "",
+          "created_at": "2026-09-17T08:34:27.104306+00:00"
+        },
+        "candidate": "Good",
+        "source": "decision",
+        "rejected": []
+      },
+      "ordinary_requeued": {
+        "added": 0,
+        "skipped_dup": 0,
+        "skipped_settled": 1,
+        "queue_size": 0
+      },
+      "invalid_pattern_submit": {
+        "accepted": 1,
+        "rejected": 0,
+        "replaced": 0,
+        "methodology_added": 0,
+        "methodology_updated": 0,
+        "decisions_added": 1,
+        "unknown": 0,
+        "errors": [
+          "rv:a0d42d3f229b: pattern 未通过泛化校验：正则能匹配空串，过于宽泛"
+        ],
+        "remaining": 0
+      },
+      "replacement_submit": {
+        "accepted": 0,
+        "rejected": 0,
+        "replaced": 1,
+        "methodology_added": 1,
+        "methodology_updated": 0,
+        "decisions_added": 1,
+        "unknown": 0,
+        "errors": [],
+        "remaining": 0
+      },
+      "replacement_lookup_original": null,
+      "replacement_lookup_empty": null
+    }
+  },
+  "source_inventory": {
+    "module_count": 46,
+    "module_lines": 33271,
+    "test_file_count": 54,
+    "direct_trinity_import_in_tests": true,
+    "modules": [
+      {
+        "path": "sekaisync/__init__.py",
+        "lines": 3,
+        "sha256": "5108d3ffc505feee432b26553dd3e3b9b4aa0728cf8eeb333ba1a802be0c7f13"
+      },
+      {
+        "path": "sekaisync/__main__.py",
+        "lines": 4,
+        "sha256": "457f0b4e59e42da77eaa3b89caba4b06b62a184345a5f0758fdb3e20c6d0fb6a"
+      },
+      {
+        "path": "sekaisync/agent_review.py",
+        "lines": 1848,
+        "sha256": "6c4a045c9ed233c811b2a40d94c4915df84b7a7b3948c259ce1ad8e3d614e577"
+      },
+      {
+        "path": "sekaisync/candidate_tiers.py",
+        "lines": 566,
+        "sha256": "242e632fe962624a131fadb834dd58cdd1212087de1a47bfca97b60d61f62dd2"
+      },
+      {
+        "path": "sekaisync/cli.py",
+        "lines": 1897,
+        "sha256": "086f2273e2291f9593a638576dd30ef95140d9883e6cacb6c9bd90bf3bb38e15"
+      },
+      {
+        "path": "sekaisync/config.py",
+        "lines": 693,
+        "sha256": "f29f8ec00e691736925942dbf013c5d44f36d3710f0c69b237be006d356279e8"
+      },
+      {
+        "path": "sekaisync/core.py",
+        "lines": 1321,
+        "sha256": "614de29aaa7c977eb5d5d2f60c4b50d28543af1f92dc6af8a4344c3e2e67ac07"
+      },
+      {
+        "path": "sekaisync/coverage.py",
+        "lines": 313,
+        "sha256": "99b39abbb91c15f8e7940880fb89b187e7617a9ede2d9e59ece633887517c32f"
+      },
+      {
+        "path": "sekaisync/crawler.py",
+        "lines": 3584,
+        "sha256": "3a7164774ef927f0285ce92ad654798a448006aa12656954fcaffc10ad3abbfe"
+      },
+      {
+        "path": "sekaisync/dbstore.py",
+        "lines": 2396,
+        "sha256": "16aed1149bb40d18f300e71551ab5b658dfb455cc5819ec37ff3976752a20a58"
+      },
+      {
+        "path": "sekaisync/endpoints.py",
+        "lines": 166,
+        "sha256": "3088b05196f009cb212a695b989636e420df42f46832f01b6fe6fad8e7ba27e9"
+      },
+      {
+        "path": "sekaisync/event_detection.py",
+        "lines": 669,
+        "sha256": "4e420523b1f86a3cbadf8d15bd8e5f1f7242a3f42653b0b70566ce68d464d42c"
+      },
+      {
+        "path": "sekaisync/eventalias.py",
+        "lines": 542,
+        "sha256": "1f68caf2890d9274bc4e4e1ee8b34a6cc3072dd584e497617e6c9334b4c65c39"
+      },
+      {
+        "path": "sekaisync/factpacks.py",
+        "lines": 440,
+        "sha256": "ad8f071ebe4fa5606ca2898d2cc5da32f173ab5c49ce6f4c49c10d0d94c33545"
+      },
+      {
+        "path": "sekaisync/fetcher.py",
+        "lines": 1373,
+        "sha256": "263226a54df83b3fed13e9a05f6d19948e1689117713a1731719ef9a0f351b64"
+      },
+      {
+        "path": "sekaisync/filecache.py",
+        "lines": 116,
+        "sha256": "ad5e1c6fcf23fd54d0728f6e3b436db6d94f27e972f4ee03d8e6507bcd1a2d89"
+      },
+      {
+        "path": "sekaisync/glossary.py",
+        "lines": 208,
+        "sha256": "1f50e35571fb64a1ad4c343c1fde9deab8b29b8a45318c6f7c7740d618101467"
+      },
+      {
+        "path": "sekaisync/http_server.py",
+        "lines": 608,
+        "sha256": "53686c279c74c6d5bec961b2595d98699b512d9b3df7750b60801f6ad1a89158"
+      },
+      {
+        "path": "sekaisync/integrity.py",
+        "lines": 365,
+        "sha256": "d742a9cb42d722fda3a1230cef0e00548ada65968ce06c5371c1938d6fa2c0c0"
+      },
+      {
+        "path": "sekaisync/layout.py",
+        "lines": 316,
+        "sha256": "fd30999a925282074d09a30bbe879bd4e74d194fefc975afe793579c617ee7e6"
+      },
+      {
+        "path": "sekaisync/llm_client.py",
+        "lines": 194,
+        "sha256": "d8673dbdd103cc18b04c658cfec423d12253223b68df7d704cc0bd32299d2536"
+      },
+      {
+        "path": "sekaisync/mcp_server.py",
+        "lines": 437,
+        "sha256": "efab112005f9a730d64f911f48a4512c4995967c13c224f4754018a269c58138"
+      },
+      {
+        "path": "sekaisync/models.py",
+        "lines": 111,
+        "sha256": "6edde6fbcdff96f2e76230f6cd5e37a15e12de1527760783e4d5d2788dce423c"
+      },
+      {
+        "path": "sekaisync/news.py",
+        "lines": 820,
+        "sha256": "2bdb9427f6292f92dd453c477e1dc366c509882a3168642d84ac729a12f25507"
+      },
+      {
+        "path": "sekaisync/normalize.py",
+        "lines": 135,
+        "sha256": "73a86dad24022d6512b85d08e127c9fd4a71e2ad90d89a954c4e9545bece586b"
+      },
+      {
+        "path": "sekaisync/penetrate_channels.py",
+        "lines": 1158,
+        "sha256": "4403728b58c67a53327927d303870358cca068a3ddf321fd4fb044e3576134f2"
+      },
+      {
+        "path": "sekaisync/postprocess.py",
+        "lines": 117,
+        "sha256": "95632b50f7eed534dcbeceb24427bc1b38b328cfe408e435f3392ff8c89b6a92"
+      },
+      {
+        "path": "sekaisync/progress.py",
+        "lines": 635,
+        "sha256": "c3d1848406757bbb07e35d69df52ae9d7e08765154246047c94b3903dd0682bd"
+      },
+      {
+        "path": "sekaisync/regions.py",
+        "lines": 114,
+        "sha256": "63ef905dc9c733698b87801c933220fd8cd1f2c7e790209fff60391697be35c5"
+      },
+      {
+        "path": "sekaisync/registry.py",
+        "lines": 562,
+        "sha256": "0b62cff553d7fd6cefb4221de52243818c4c17caca001d69e75dfdd4a0135c89"
+      },
+      {
+        "path": "sekaisync/romaji.py",
+        "lines": 334,
+        "sha256": "e72fd080e92f11d5f894a2504dd5f2ef8e8f73fef9e99fb3ffedf99495611984"
+      },
+      {
+        "path": "sekaisync/runtime.py",
+        "lines": 238,
+        "sha256": "76e94e411b15fb7020316e05d4fc1ae96b5833497433b241103aa72f66a566be"
+      },
+      {
+        "path": "sekaisync/slot_evaluation.py",
+        "lines": 121,
+        "sha256": "6e87d5613bda4babf119aba72e732eb0849153a211f608715c9770ca3e705f1e"
+      },
+      {
+        "path": "sekaisync/source_migrate.py",
+        "lines": 437,
+        "sha256": "ce0a78ee15e1927894c5873c05de3349b0bd38498a4ce500a3eedb1bc0058d9b"
+      },
+      {
+        "path": "sekaisync/sources.py",
+        "lines": 160,
+        "sha256": "c9e2a37615c70559dfddf0fae72673b41d07e9d9da9509d453fdaf58b3a91576"
+      },
+      {
+        "path": "sekaisync/term_merge.py",
+        "lines": 57,
+        "sha256": "9ada80d93248551e7092fa6698a7816cea6849f3801c41cbb00eb326a70d6384"
+      },
+      {
+        "path": "sekaisync/term_proposals.py",
+        "lines": 101,
+        "sha256": "ffd6105e1c2e47983b7d5446156ac9c76144478b1d0d6adc1e829dee486722da"
+      },
+      {
+        "path": "sekaisync/term_slots.py",
+        "lines": 701,
+        "sha256": "3e7402b8070d247a209cc3da3375bfbab3dfc3ca1e8f7ccc97abd2858aeb0799"
+      },
+      {
+        "path": "sekaisync/termindex.py",
+        "lines": 3056,
+        "sha256": "b5cec34f5431caad5f396c96a723c62ba6aad67fa4e7e169f23a6f06bacbb9a7"
+      },
+      {
+        "path": "sekaisync/tools.py",
+        "lines": 906,
+        "sha256": "6c9b5cffe83ca12ca4882369446e1e801097db4f9185fc9e1ec5b2b20fe84544"
+      },
+      {
+        "path": "sekaisync/trinity.py",
+        "lines": 2533,
+        "sha256": "257e4166976be08ce23d39ce7a5b02b87108e32f2386cadb9fdb63160c0d641a"
+      },
+      {
+        "path": "sekaisync/trust.py",
+        "lines": 123,
+        "sha256": "11fbb052e3fde08b3a86d075f9f91d653df4c384fa6fae9478c0603bd63c5057"
+      },
+      {
+        "path": "sekaisync/webindex.py",
+        "lines": 1041,
+        "sha256": "7fb70669e1fb087936d2b684ba93e0e26b4b14196f545c3ba19d1d69953a6244"
+      },
+      {
+        "path": "sekaisync/wordseg.py",
+        "lines": 178,
+        "sha256": "b5eda4d355f7d922c4f9e715658e887061669bb8868e18112240be7a4b4b4be5"
+      },
+      {
+        "path": "sekaisync/worldlink.py",
+        "lines": 608,
+        "sha256": "b6bf42761c308f71b93453a3933a623d5f7fe467cac7e90109a0e1e24462e7a4"
+      },
+      {
+        "path": "sekaisync/zhfirst.py",
+        "lines": 966,
+        "sha256": "a1623c6685a3ac6bdbef6f7eb8fd225932ad064b57171cbf35ad2f43f9b35098"
+      }
+    ]
+  }
+}

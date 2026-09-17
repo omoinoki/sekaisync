@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
@@ -10,6 +11,20 @@ from sekaisync.trust import trust_for_entity
 
 def estimate_tokens(text: str) -> int:
     return max(1, int(len(text) / 3))
+
+
+#: Cross-language body fields: the requested language first, then the remaining
+#: ones, then the unsuffixed field.  The previous fixed order always put ja in
+#: front, so an English request silently received Japanese text.
+_BODY_LANGUAGE_ORDER = ("ja", "zh_hans", "zh_hant", "en", "ko")
+
+
+def _body_keys(prefix: str, language: str) -> list[str]:
+    """``("outline", "en")`` -> ``["outline_en", "outline_ja", ...]``."""
+    wanted = str(language or "").strip()
+    order = [wanted] if wanted in _BODY_LANGUAGE_ORDER else []
+    order += [lang for lang in _BODY_LANGUAGE_ORDER if lang != wanted]
+    return [f"{prefix}_{lang}" for lang in order] + [prefix]
 
 
 def _pick(facts: dict, keys: list[str]) -> str | None:
@@ -84,48 +99,21 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
             lines.append(f"Start: {start}")
         if end:
             lines.append(f"End: {end}")
+        # The registry folds each story's outline onto its event, so an event
+        # carries a body too; it belongs in the pack the prompt is built from.
+        outline = _pick(facts, _body_keys("outline", language))
+        if outline:
+            lines.append(f"Outline: {outline}")
     elif entity.type == "event_story":
-        outline = _pick(
-            facts,
-            [
-                "outline_ja",
-                "outline_zh_hans",
-                "outline_zh_hant",
-                "outline_en",
-                "outline_ko",
-                "outline",
-            ],
-        )
+        outline = _pick(facts, _body_keys("outline", language))
         if outline:
             lines.append(f"Outline: {outline}")
     elif entity.type == "unit":
-        profile = _pick(
-            facts,
-            [
-                "profileSentence_ja",
-                "profileSentence_zh_hans",
-                "profileSentence_zh_hant",
-                "profileSentence_en",
-                "profileSentence_ko",
-                "profileSentence",
-                "profile",
-            ],
-        )
+        profile = _pick(facts, _body_keys("profileSentence", language) + ["profile"])
         if profile:
             lines.append(f"Profile: {profile}")
     elif entity.type == "character_profile":
-        profile = _pick(
-            facts,
-            [
-                "profileSentence_ja",
-                "profileSentence_zh_hans",
-                "profileSentence_zh_hant",
-                "profileSentence_en",
-                "profileSentence_ko",
-                "profileSentence",
-                "profile",
-            ],
-        )
+        profile = _pick(facts, _body_keys("profileSentence", language) + ["profile"])
         if profile:
             lines.append(f"Profile: {profile}")
     elif entity.type == "gacha":
@@ -163,24 +151,37 @@ _TIME_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def entity_timestamp(entity: Entity) -> int | None:
-    """实体的时间戳（毫秒）；无时间字段则返回 None。
+def entity_timestamp(entity: Entity, *, region: str) -> int | None:
+    """实体的公开时间戳（毫秒）；该区服无可靠时间字段则返回 None。
 
-    用途是时序分段："在某个时点，Agent 应该知道什么"。取字段的优先级由
-    ``_TIME_FIELDS`` 决定，未知类型退回扫描 facts 里第一个 ``*At`` 键。
+    只认 ``_TIME_FIELDS`` 里**按实体类型明确列出**的字段：旧实现还有一条
+    "扫描任意 ``*At``" 的兜底，那会把 ``closedAt``、``updatedAt`` 甚至活动
+    结束时间当成公开时间，于是未公开内容被判成 past。没有可靠时间就是
+    undated，内容随之被扣下——不从其他字段推断。
+
+    ``region`` 是必需的：公开时间随区服不同，让调用方显式说明区服，
+    胜过函数默默挑一个。
     """
-    facts = entity.facts or {}
+    facts = _facts_for_region(entity, region)
     for field in _TIME_FIELDS.get(entity.type, ()):
-        value = facts.get(field)
-        ts = _to_ms(value)
+        ts = _to_ms(facts.get(field))
         if ts is not None:
             return ts
-    for key, value in facts.items():
-        if key.endswith("At"):
-            ts = _to_ms(value)
-            if ts is not None:
-                return ts
     return None
+
+
+def _facts_for_region(entity: Entity, region: str) -> dict:
+    """该区服的事实；无逐区服数据时退回实体级 facts。
+
+    退回是一种**明确降级**：调用方从 ``entity.region_facts`` 是否为空即可
+    知道这些值不具区服归属（见返回的 ``region_scope``）。
+    """
+    if not region:
+        raise ValueError("region is required for region-aware fact packs")
+    scoped = entity.region_facts.get(region)
+    if scoped is not None:
+        return dict(scoped.facts or {})
+    return dict(entity.facts or {})
 
 
 def _to_ms(value: object) -> int | None:
@@ -198,6 +199,7 @@ def build_fact_pack_at(
     entity: Entity,
     language: str = "en",
     *,
+    region: str,
     as_of: int | None = None,
     as_of_iso: str | None = None,
 ) -> dict:
@@ -212,13 +214,20 @@ def build_fact_pack_at(
     后者需要逐章节/逐事实的 ``knowledge_at`` 证据，尚未建模。不要把它宣传为
     "任意剧集进度防剧透"。
 
+    ``region`` 必填：公开时间随区服不同，所以调用方必须说明问的是哪个区服，
+    而不是让函数默认挑一个。没有该区服的逐区服数据时退回实体级 facts，并在
+    ``region_scope`` 里标明这是降级（``entity``）而非该区服的确切数据。
+
     ``as_of`` 为毫秒时间戳，``as_of_iso`` 为 ISO 字符串（二者互斥，都不给则
     视为"现在"）。返回::
 
         {
           "entity_id": ..., "entity_type": ..., "language": ...,
+          "region": ..., "region_scope": "region" | "entity",
           "as_of": <ms>, "as_of_iso": ...,
           "state":  "past" | "future" | "undated",
+          "content_status": "available" | "missing" | "withheld",
+          "effective_language": <正文实际语言>,
           "past":   {"text": ..., "fact_pack_tokens": ...},
           "future": {"text": "", "fact_pack_tokens": 0},   # 始终为空
           "withheld": {...},
@@ -252,7 +261,7 @@ def build_fact_pack_at(
                 f"as_of must be a positive epoch-millisecond integer, got {raw_as_of!r}"
             )
 
-    ts = entity_timestamp(entity)
+    ts = entity_timestamp(entity, region=region)
     if ts is None:
         state = "undated"
     elif ts <= as_of:
@@ -260,8 +269,12 @@ def build_fact_pack_at(
     else:
         state = "future"
 
+    region_scope = "region" if region in entity.region_facts else "entity"
+
     if state == "past":
-        pack = build_fact_pack(entity, language=language)
+        scoped = _entity_for_region(entity, region)
+        pack = build_fact_pack(scoped, language=language)
+        effective = _effective_body_language(scoped.facts, scoped.type, language)
         past = {"text": pack.text, "fact_pack_tokens": pack.fact_pack_tokens}
         future = {"text": "", "fact_pack_tokens": 0}
         withheld = {
@@ -269,6 +282,11 @@ def build_fact_pack_at(
             "fields": [],
             "fact_pack_tokens": 0,
         }
+        # A pack with no body in any language is not "available": the caller
+        # asked for content and there is none, which is different from the
+        # entity simply not being public yet.
+        content_status = "missing" if effective is None else "available"
+        effective_language = effective
     else:
         # Withhold everything: no text, no name, no summary.  Count what was
         # held back so callers can report coverage without seeing content.
@@ -282,20 +300,69 @@ def build_fact_pack_at(
             "fields": ["text"],
             "fact_pack_tokens": held.fact_pack_tokens,
         }
+        content_status = "withheld"
+        effective_language = None
 
     return {
         "entity_id": entity.id,
         "entity_type": entity.type,
         "language": language,
+        "region": region,
+        "region_scope": region_scope,
         "as_of": as_of,
         "as_of_iso": _ms_to_iso(as_of),
         "state": state,
         "entity_at": _ms_to_iso(ts) if ts is not None else None,
-        "content_status": "available" if state == "past" else "withheld",
+        "content_status": content_status,
+        "effective_language": effective_language,
         "past": past,
         "future": future,
         "withheld": withheld,
     }
+
+
+def _entity_for_region(entity: Entity, region: str) -> Entity:
+    """The entity as its region sees it, for the fact-pack body."""
+    facts = _facts_for_region(entity, region)
+    if facts == (entity.facts or {}):
+        return entity
+    return replace(entity, facts=facts)
+
+
+#: Which fact fields carry the multilingual body for each entity type.  An
+#: event carries its story outlines (the registry folds ``outline_<lang>`` from
+#: eventStories onto the event's region facts), so it has a body as well as a
+#: public time.
+_BODY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "event": ("outline",),
+    "event_story": ("outline",),
+    "unit": ("profileSentence", "profile"),
+    "character_profile": ("profileSentence", "profile"),
+}
+
+
+def _effective_body_language(facts: dict, entity_type: str, language: str) -> str | None:
+    """The language of the body actually present, or None when there is none.
+
+    ``build_fact_pack`` already prefers the requested language; this reports
+    which one it ended up using so a caller can tell "here is your language"
+    from "no body in your language, here is another one" instead of receiving
+    a silent substitution.
+    """
+    prefixes = _BODY_PREFIXES.get(entity_type, ())
+    if not prefixes:
+        return language  # not a body-carrying type: nothing to substitute
+    for prefix in prefixes:
+        # Same order _pick uses: the first key with a value is the body that
+        # was rendered, so its language is the effective one.
+        for key in _body_keys(prefix, language):
+            if not str(facts.get(key) or "").strip():
+                continue
+            for lang in _BODY_LANGUAGE_ORDER:
+                if key.endswith("_" + lang):
+                    return lang
+            return ""  # unsuffixed field: its language is unknown
+    return None
 
 
 def _parse_iso_ms(value: str) -> int:

@@ -130,15 +130,19 @@ def probe_factpacks(root: Path) -> dict:
         facts={"outline_ja": "JAPANESE_FIXTURE", "outline_en": "ENGLISH_FIXTURE"},
         source="master_db:jp", trust="A",
     )
-    future_result = build_fact_pack_at(future, as_of=1_700_000_000_000)
-    undated_result = build_fact_pack_at(undated, as_of=1_700_000_000_000)
+    # P05 made ``region`` a required keyword: public times are per-server, so
+    # the probe states the region instead of relying on an implicit default.
+    future_result = build_fact_pack_at(future, region="jp", as_of=1_700_000_000_000)
+    undated_result = build_fact_pack_at(undated, region="jp", as_of=1_700_000_000_000)
     requested_en = build_fact_pack(undated, language="en")
     return {
         "future_state": future_result["state"],
         "future_payload_contains_unreleased_name": "UNRELEASED_FIXTURE" in json.dumps(future_result),
+        "future_region_scope": future_result["region_scope"],
         "undated_state": undated_result["state"],
         "undated_past_nonempty": bool(undated_result["past"]["text"]),
         "english_pack_uses_japanese_outline": "JAPANESE_FIXTURE" in requested_en.text,
+        "english_pack_uses_english_outline": "ENGLISH_FIXTURE" in requested_en.text,
     }
 
 

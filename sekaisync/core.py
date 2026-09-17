@@ -17,7 +17,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
 
 from sekaisync.config import REGIONS
 from sekaisync import dbstore
-from sekaisync.factpacks import build_fact_pack, load_fact_packs
+from sekaisync.factpacks import build_fact_pack, build_fact_pack_at, load_fact_packs
 from sekaisync.glossary import find_terms, load_glossary, resolve_name
 from sekaisync.layout import (
     db_path,
@@ -451,10 +451,27 @@ class SekaiSyncCore:
         )
 
     @request_scoped
-    def fact_pack(self, entity_id: str, language: str = "en") -> Optional[dict]:
+    def fact_pack(self, entity_id: str, language: str = "en", *,
+                  region: Optional[str] = None,
+                  as_of: Optional[int] = None) -> Optional[dict]:
+        """Compact fact pack; the plain form stays the current snapshot.
+
+        Without ``as_of`` this is the existing "current snapshot" contract the
+        consumers already depend on.  Passing ``as_of`` switches to the
+        region-aware public-time filter, and then ``region`` is required —
+        public times differ per server, so the caller must say which one it is
+        asking about rather than letting this pick a default (Astra P05).
+        """
         entity = entity_by_id(self.registry, entity_id)
         if entity is None:
             return None
+        if as_of is not None:
+            if not region:
+                raise ValueError(
+                    "fact_pack with as_of requires an explicit region: public "
+                    "times are per-server, so there is no default to assume"
+                )
+            return build_fact_pack_at(entity, language=language, region=region, as_of=as_of)
         pack = build_fact_pack(entity, language=language)
         return {
             "entity_id": pack.entity_id,
