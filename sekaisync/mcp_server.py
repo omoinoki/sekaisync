@@ -67,14 +67,22 @@ RESOURCE_SPECS = [
         "description": "Entity/web/term counts plus per-region freshness, without the full status aggregate.",
         "mimeType": "application/json",
     },
+]
+
+#: Parameterized resources.  MCP keeps these in ``resources/templates/list``,
+#: separate from the concrete ``resources/list``: a template URI contains
+#: variables, so it is not itself readable.  Listing it as a plain resource
+#: (which this server used to do) invites clients to GET the literal
+#: ``sekaisync://terms/{query}`` and get a lookup for the text "{query}".
+RESOURCE_TEMPLATES = [
     {
-        "uri": "sekaisync://terms/{query}",
+        "uriTemplate": "sekaisync://terms/{query}",
         "name": "术语查询",
         "description": "Cross-language names for a term, addressed by URI (e.g. sekaisync://terms/ネットパラダイス).",
         "mimeType": "application/json",
     },
     {
-        "uri": "sekaisync://news/{language}",
+        "uriTemplate": "sekaisync://news/{language}",
         "name": "公告列表",
         "description": "Official announcements for one language (ja/en/zh_hans/zh_hant/ko); omit the language for all.",
         "mimeType": "application/json",
@@ -98,7 +106,13 @@ class McpServer:
         索引规模、公告列表）作为可寻址的只读 URI 暴露，而不必为它们各造一个
         tool —— 后者会把工具列表撑大、增加每轮 prefill 成本。全部复用 core
         的既有查询方法，不重复实现逻辑。
+
+        带变量的 URI 只能作为 **模板**（见 ``RESOURCE_TEMPLATES``）使用：
+        读取一个字面含 ``{``/``}`` 的 URI 会被拒绝，而不是拿模板文本去查询
+        —— 后者会把 ``{query}`` 当成搜索词，返回看似合理却毫无意义的答案。
         """
+        if "{" in uri or "}" in uri:
+            raise KeyError(uri)
         key, _, arg = uri.partition("://")
         if key != "sekaisync":
             raise KeyError(uri)
@@ -236,6 +250,12 @@ class McpServer:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {"resources": RESOURCE_SPECS},
+            }
+        if method == "resources/templates/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"resourceTemplates": RESOURCE_TEMPLATES},
             }
         if method == "resources/read":
             uri = params.get("uri")

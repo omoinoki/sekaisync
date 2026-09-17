@@ -138,7 +138,7 @@
           "decision": "accept",
           "value": "Good",
           "rationale": "",
-          "created_at": "2026-09-17T08:40:27.920151+00:00"
+          "created_at": "2026-09-17T09:02:53.138211+00:00"
         },
         "candidate": "Good",
         "source": "decision",
@@ -180,7 +180,7 @@
   },
   "source_inventory": {
     "module_count": 46,
-    "module_lines": 33292,
+    "module_lines": 33318,
     "test_file_count": 54,
     "direct_trinity_import_in_tests": true,
     "modules": [
@@ -291,8 +291,8 @@
       },
       {
         "path": "sekaisync/mcp_server.py",
-        "lines": 437,
-        "sha256": "efab112005f9a730d64f911f48a4512c4995967c13c224f4754018a269c58138"
+        "lines": 457,
+        "sha256": "0b30a2dd60c3c3c38e7c0c14cce5092635c992e84391d1bd184dfdd16d64e9e8"
       },
       {
         "path": "sekaisync/models.py",
@@ -396,8 +396,8 @@
       },
       {
         "path": "sekaisync/webindex.py",
-        "lines": 1041,
-        "sha256": "7fb70669e1fb087936d2b684ba93e0e26b4b14196f545c3ba19d1d69953a6244"
+        "lines": 1047,
+        "sha256": "3ee52b5d1f38ad723ac326d2566ec277b8ba9cb88e458c033a4d027bddc8a797"
       },
       {
         "path": "sekaisync/wordseg.py",

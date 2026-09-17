@@ -355,6 +355,47 @@ class McpEnvelopeTest(unittest.TestCase):
         })
         self.assertEqual(response["error"]["code"], -32602)
 
+    def test_templates_are_listed_separately_from_concrete_resources(self):
+        """A parameterized URI is a template, not a readable resource.
+
+        Listing it under ``resources/list`` invites a client to read the
+        literal ``sekaisync://terms/{query}``, which would look up the text
+        "{query}" and return a plausible but meaningless answer.
+        """
+        from sekaisync.mcp_server import RESOURCE_SPECS, RESOURCE_TEMPLATES
+
+        listed = self.server.handle({
+            "jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {},
+        })["result"]["resources"]
+        uris = {item["uri"] for item in listed}
+        self.assertEqual(uris, {"sekaisync://gaps", "sekaisync://registry/summary"})
+        self.assertFalse(any("{" in uri for uri in uris))
+
+        templates = self.server.handle({
+            "jsonrpc": "2.0", "id": 2, "method": "resources/templates/list", "params": {},
+        })["result"]["resourceTemplates"]
+        self.assertEqual(
+            {item["uriTemplate"] for item in templates},
+            {"sekaisync://terms/{query}", "sekaisync://news/{language}"},
+        )
+
+    def test_reading_a_template_uri_is_rejected_not_answered(self):
+        for uri in ("sekaisync://terms/{query}", "sekaisync://news/{language}"):
+            with self.subTest(uri=uri):
+                response = self._codes({
+                    "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+                    "params": {"uri": uri},
+                })
+                self.assertEqual(response["error"]["code"], -32602)
+
+    def test_a_filled_template_reads_normally(self):
+        response = self._codes({
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": "sekaisync://terms/星乃一歌"},
+        })
+        payload = json.loads(response["result"]["contents"][0]["text"])
+        self.assertEqual(payload["query"], "星乃一歌")
+
 class McpStdioTest(unittest.TestCase):
     """P15/D15: the stdio loop is bounded and recovers from bad frames."""
 
