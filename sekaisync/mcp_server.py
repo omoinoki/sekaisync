@@ -44,7 +44,7 @@ def _text_result(data: Any) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": json.dumps(data, ensure_ascii=False),
+                "text": _json_text(data),
             }
         ]
     }
@@ -192,7 +192,10 @@ class McpServer:
         if not has_id:
             self._handle_notification(method)
             return None
-        return self._handle_request(request_id, method, params)
+        try:
+            return self._handle_request(request_id, method, params)
+        except Exception:  # response construction/serialization, not business failures
+            return self._error(request_id, INTERNAL_ERROR, "Internal error")
 
     def _handle_notification(self, method: str) -> None:
         """Notifications get no response but still run their state handling.
@@ -254,7 +257,7 @@ class McpServer:
                         {
                             "uri": uri,
                             "mimeType": "application/json",
-                            "text": json.dumps(payload, ensure_ascii=False),
+                            "text": _json_text(payload),
                         }
                     ]
                 },
@@ -366,25 +369,59 @@ def _read_bounded_line(stream, limit: int):
 
     Returns ``None`` at EOF, the line otherwise, or :data:`_OVERSIZE` when
     the frame was over budget.  The defining property is that an over-long
-    frame is **consumed to its newline**: the leftover half-line is never
-    handed back as if it were the next request.
+    frame is **consumed up to its newline**: the leftover half-line is never
+    handed back as if it were the next request, and the drain is bounded by
+    the same byte budget (an attacker cannot substitute a newline-free
+    stream for unbounded reads).  The budget is measured with
+    ``len()`` of what was read (characters on str streams, bytes on byte
+    streams), so a trailing newline cannot be used to bypass it: any line
+    whose content is longer than ``limit`` is discarded even when it ends
+    with a newline.
     """
     line = stream.readline(limit + 1)
     if line == "":
         return None
     if line.endswith("\n") or len(line) <= limit:
         return line
-    # Over budget: the newline has not been seen yet, so drain the rest of
-    # the frame before reporting it as discarded.
+    # Over budget: drain the rest of the frame in bounded chunks.
     while True:
-        rest = stream.readline()
+        rest = stream.readline(limit + 1)
         if rest == "" or rest.endswith("\n"):
             break
     return _OVERSIZE
 
 
+def _line_len(line) -> int:
+    """Budget length of one frame, excluding its newline.
+
+    ``str`` streams measure characters and ``bytes`` streams measure bytes
+    (``str.encode`` and ``len(bytes)`` are skipped for the common str case).
+    """
+    if isinstance(line, str):
+        return len(line) - 1 if line.endswith("\n") else len(line)
+    return len(line[:-1]) if line.endswith(b"\n") else len(line)
+
+
+def _json_text(payload: Any) -> str:
+    """Construct valid JSON and verify UTF-8 before any transport writes."""
+    text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    text.encode("utf-8")
+    return text
+
+
+def _mcp_json_text(payload: dict) -> str:
+    try:
+        return _json_text(payload)
+    except Exception:  # serialization only; never retry a failed transport write
+        request_id = payload.get("id") if isinstance(payload, dict) else None
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+            request_id = None
+        # ASCII escaping also keeps an invalid Unicode id from breaking recovery.
+        return json.dumps(McpServer._error(request_id, INTERNAL_ERROR, "Internal error"))
+
+
 def _write_line(stdout, payload: dict) -> None:
-    stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    stdout.write(_mcp_json_text(payload) + "\n")
     try:
         stdout.flush()
     except (AttributeError, ValueError):

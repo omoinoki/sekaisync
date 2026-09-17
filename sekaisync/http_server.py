@@ -270,7 +270,19 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             self._slot_reserved = False
 
     def _send_mcp_json(self, payload: Any) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
+            # Serialize before touching the transport so a failure cannot
+            # corrupt a half-written response; recover as a sanitized
+            # internal error (ASCII, always encodable).
+            request_id = payload.get("id") if isinstance(payload, dict) else None
+            if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+                request_id = None
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32603, "message": "Internal error"},
+            }).encode("utf-8")
         accept = self._header("Accept")
         cors = self._cors_headers()
         if "text/event-stream" in accept:
@@ -294,7 +306,16 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_json(self, status: int, payload: Any) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
+            # Serialization failure must not raise out of the handler (it
+            # would kill the connection mid-response); fall back to a plain
+            # internal error envelope.  ASCII keeps this fallback always
+            # encodable, including for an invalid-Unicode id or a lone
+            # surrogate that the primary dumps() call leaked into a str.
+            body = b'{"error": "Internal error"}'
+            status = 500
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
