@@ -138,7 +138,7 @@
           "decision": "accept",
           "value": "Good",
           "rationale": "",
-          "created_at": "2026-09-17T08:34:27.104306+00:00"
+          "created_at": "2026-09-17T08:40:27.920151+00:00"
         },
         "candidate": "Good",
         "source": "decision",
@@ -180,7 +180,7 @@
   },
   "source_inventory": {
     "module_count": 46,
-    "module_lines": 33271,
+    "module_lines": 33292,
     "test_file_count": 54,
     "direct_trinity_import_in_tests": true,
     "modules": [
@@ -206,8 +206,8 @@
       },
       {
         "path": "sekaisync/cli.py",
-        "lines": 1897,
-        "sha256": "086f2273e2291f9593a638576dd30ef95140d9883e6cacb6c9bd90bf3bb38e15"
+        "lines": 1901,
+        "sha256": "8dda84a051932b0a8d6b2e765b6f89c434b96aa3a80880e7c692662612873a6d"
       },
       {
         "path": "sekaisync/config.py",
@@ -216,8 +216,8 @@
       },
       {
         "path": "sekaisync/core.py",
-        "lines": 1321,
-        "sha256": "614de29aaa7c977eb5d5d2f60c4b50d28543af1f92dc6af8a4344c3e2e67ac07"
+        "lines": 1338,
+        "sha256": "778a436824580512ef41b63a2c7a543ed2df0d41ac19d3c05b55bf75b54e0f28"
       },
       {
         "path": "sekaisync/coverage.py",
