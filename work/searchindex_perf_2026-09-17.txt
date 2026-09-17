@@ -1,0 +1,8 @@
+index current: (True, '')
+index size: 340.9 MB | rows: 752372
+  web_search('星乃一歌'): median    202.8ms  rows=8  cand=1018
+  web_search('Miku'): median   3674.2ms  rows=8  cand=9728
+  web_search('Leo/need'): median  33417.0ms  rows=8  cand=117069
+  web_search('セカイ'): median   2979.0ms  rows=8  cand=8142
+  web_search('Hoshino Ichika'): median 112054.8ms  rows=8  cand=scan
+  web_search('N25'): median    316.0ms  rows=8  cand=548
