@@ -56,7 +56,7 @@
 | B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` | 852 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **854**。**全绿**（`c86adb1`，冻结树
+**测试账本**：基线 **361** → 当前 **857**。**全绿**（`ebec6d0`，冻结树
 `python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
@@ -118,6 +118,7 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `c95787b` | **P05 逐区服公开时间过滤 + 正文语言如实**（849 测试绿） |
 | `81570a1` | **P14 Core 联网方法走自身 runtime + serve 入口建 runtime**（852 测试绿） |
 | `c86adb1` | **P06 无过滤时跳过唯一值枚举**（`web_browse` 19.0s → 11.2s；854 测试绿） |
+| `ebec6d0` | **P15 MCP resource templates 分离 + 字面模板读取拒答**（857 测试绿） |
 
 **`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
 与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
@@ -827,7 +828,10 @@ e0996ba/d44c720/0872418）：
   遗留导入均走槽决策）。**但三通道算法（P08 的 `SlotDecision`/`scrub_trinity` 逐槽采纳）
   尚未产出槽决策**——`trinity.py` 仍输出旧的 accepted/pending/conflicts 结构，
   layered 流水线未接 `apply_scrub_result`。不要宣称三通道端到端逐槽权威闭环
-- ❌ 不说"协议已符合 MCP 2025-06-18" —— 边界校验与序列化恢复已做，未做完整一致性
+- ❌ 不说"协议已符合 MCP 2025-06-18" —— 边界校验、序列化恢复、resource templates
+  分离（`ebec6d0`）已做，但**固定协议标识仍是 `2024-11-05`**：未实现 2025-06-18 的
+  initialize 协商、协议版本头、通知 202 与 Streamable HTTP 能力逐项对照，
+  也未在真实 MCP 客户端/浏览器做互操作验收。换字符串不等于升级，故不宣称符合
 - ❌ 不说"P14/P16 全部完成" —— P14 线程参数化+缓存键（`8e7ea48`）、Core/serve 入口
   接入（`81570a1`）均已完成，但 worker 仍经 ContextVar 读取而非直接接收 CrawlContext；
   P16 TableRead 四态**已于 `dea142c` 完成**（本行 2026-09-17 前记录已过期），
