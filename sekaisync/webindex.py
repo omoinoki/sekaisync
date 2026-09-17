@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from sekaisync import dbstore
+from sekaisync import searchindex
 from sekaisync.filecache import cached_json
 from sekaisync.layout import web_category_dir, web_index_path, web_pages_path, web_root
 from sekaisync.models import WebPage
@@ -742,6 +743,20 @@ def web_search(
         store_root, wanted_source=wanted_source, kind=None
     )
 
+    # Candidate prefilter (Astra P06 follow-up). The index proposes which rows
+    # *could* match; the scorer below still decides every result and its order.
+    # ``None`` means the index is unavailable, stale, or cannot answer this
+    # query — all ordinary, and all resolved by scanning exactly as before.
+    # Recall is unchanged rather than merely measured: see
+    # ``sekaisync/searchindex.py`` for the per-tier superset argument.
+    candidate_keys = searchindex.candidates(
+        store_root,
+        query,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        include_overlay=include_overlay,
+    )
+
     # (rank, -score, seq) ordering, so the heap keeps the same winners a full
     # sort would: lower source rank first, then higher score.
     heap: list[tuple[int, int, int, dict[str, Any]]] = []
@@ -751,6 +766,7 @@ def web_search(
         source_ids=resolved.get("source_ids"),
         language=language,
         include_overlay=include_overlay,
+        keys=candidate_keys,
     ):
         if is_derived_page(page) and not is_auxiliary_page(page):
             continue

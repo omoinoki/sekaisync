@@ -826,8 +826,18 @@ def upsert_web_pages(store_root: Path, source: str, page_dicts: Iterable[dict[st
     with connect(store_root) as conn:
         _ensure_initialized(store_root)
         rows = [_page_dict_to_row(source, item) for item in page_dicts]
-        conn.executemany(_PAGE_INSERT, rows)
-        conn.commit()
+        # Astra P02: every authoritative write advances the revision in its own
+        # transaction, so a reader (or a cached derived index) can tell one
+        # committed generation from the next. This used to commit without it,
+        # which left derived state with no way to notice that pages changed.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executemany(_PAGE_INSERT, rows)
+            bump_revision(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         return len(rows)
 
 
@@ -1036,6 +1046,7 @@ def iter_web_search_rows(
     score_chars: int = 20000,
     batch_size: int = 512,
     conn: Optional[sqlite3.Connection] = None,
+    keys: Optional[Iterable[tuple[str, str]]] = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the columns search needs to score a page, one batch at a time.
 
@@ -1062,7 +1073,30 @@ def iter_web_search_rows(
         where.append("language = ?")
         params.append(language)
 
+    # Candidate prefilter: an explicit (source, id) list from
+    # ``searchindex.candidates``. This narrows which rows are *scored*; the
+    # caller's scorer still decides which ones match, and the resulting order
+    # matches the SQL ``ORDER BY source, seq`` the unfiltered path uses, which
+    # the caller's top-K heap relies on for its equal-quality tie-break. An
+    # empty set is meaningfully different from ``None``: empty means "no
+    # candidates", ``None`` means "no prefilter".
+    #
+    # Candidates are fetched by primary key, one statement per candidate, and
+    # sorted in Python. Measured on the real store (752k rows), the natural SQL
+    # spellings were ~250x slower: SQLite answered both ``IN (VALUES ...)`` and
+    # a temp-table join by scanning ``web_pages`` through ``idx_pages_seq`` and
+    # probing per row (~11s for 1k candidates), whereas a primary-key lookup is
+    # ~40µs. Asking SQL for ``ORDER BY source, seq`` alongside a candidate
+    # filter is what invited that plan, so the ordering is applied here too.
+    candidate_rows: list[tuple[str, str]] = []
+    if keys is not None:
+        candidate_rows = sorted(set(keys))
+        if not candidate_rows:
+            return
+
     index_columns = tuple(c for c in _PAGE_COLUMNS if c != "text")
+    if candidate_rows:
+        where.append("source = ? AND id = ?")
     sql = (
         f"SELECT source, {', '.join(index_columns)}, aux_flag, derived_flag, "
         f"extra_json, seq, length(text) AS text_length, "
@@ -1071,19 +1105,32 @@ def iter_web_search_rows(
     )
     bound = [score_chars] + params
 
+    def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
+        item = _web_page_row_to_dict(row, include_text=False)
+        item["text_length"] = int(row["text_length"] or 0)
+        item["source"] = row["source"]
+        item["text_head"] = str(row["text_head"] or "")
+        return item
+
     def _iterate(active: sqlite3.Connection) -> Iterator[dict[str, Any]]:
+        active.row_factory = sqlite3.Row
+        if candidate_rows:
+            fetched: list[tuple[str, int, dict[str, Any]]] = []
+            for source_id, page_id in candidate_rows:
+                row = active.execute(sql, bound + [source_id, page_id]).fetchone()
+                if row is not None:
+                    fetched.append((row["source"], int(row["seq"] or 0), _row_to_item(row)))
+            fetched.sort(key=lambda entry: (entry[0], entry[1]))
+            for _source, _seq, item in fetched:
+                yield item
+            return
         cursor = active.execute(sql, bound)
-        cursor.row_factory = sqlite3.Row
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
                 return
             for row in batch:
-                item = _web_page_row_to_dict(row, include_text=False)
-                item["text_length"] = int(row["text_length"] or 0)
-                item["source"] = row["source"]
-                item["text_head"] = str(row["text_head"] or "")
-                yield item
+                yield _row_to_item(row)
 
     if conn is not None:
         yield from _iterate(conn)
@@ -1284,21 +1331,35 @@ def save_web_pages_full(
     """Replace every row of one source with ``merged`` (crawler save path)."""
     _ensure_initialized(store_root)
     with connect(store_root) as conn:
-        conn.execute("DELETE FROM web_pages WHERE source=?", (source,))
-        rows = []
-        for seq, item in enumerate(merged, start=1):
-            row = list(_page_dict_to_row(source, item))
-            row[-1] = seq
-            rows.append(tuple(row))
-        conn.executemany(_PAGE_INSERT, rows)
-        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM web_pages WHERE source=?", (source,))
+            rows = []
+            for seq, item in enumerate(merged, start=1):
+                row = list(_page_dict_to_row(source, item))
+                row[-1] = seq
+                rows.append(tuple(row))
+            conn.executemany(_PAGE_INSERT, rows)
+            # Same reasoning as upsert_web_pages: the replacement is one
+            # committed generation, and the revision must say so.
+            bump_revision(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def delete_source_pages(store_root: Path, source: str) -> None:
     _ensure_initialized(store_root)
     with connect(store_root) as conn:
-        conn.execute("DELETE FROM web_pages WHERE source=?", (source,))
-        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM web_pages WHERE source=?", (source,))
+            bump_revision(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 # ── entities / glossary ───────────────────────────────────────────
