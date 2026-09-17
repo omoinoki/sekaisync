@@ -53,9 +53,13 @@
 | B1 | 最小保护 P07/P12/P15/P20d/P19/P04/P05 | ✅ **7/7 完成** | 见下表 | 563 | 全部已提交并独立验证 |
 | B2 | 存储止损与快照 P13/P01/P02 | 🟡 P01/P02 完成；P13 部分 | 见下表 | — | P13 的 raw 代际发布未做（见"未完成"） |
 | B3 | 查询去放大 P06 | 🟡 部分 | `517980a` | — | 元数据投影已做；browse/search 未做 |
+| B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` | 844 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化均已提交；剩三通道逐槽采纳与 CLI/MCP runtime 接入 |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **563**（+202）。**全绿**。
+**测试账本**：基线 **361** → 当前 **844**。**全绿**（`8e7ea48`，冻结树
+`python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
+`work/b0_contract_snapshot.py --check` → `drifted: []`；
+`work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
 
 ---
 
@@ -109,6 +113,12 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `3dae60e` | **P01 调用者迁移完成**（产品代码不再调用旧含糊写接口） |
 | `0ab18e3` | **P08 定点修复**（缩写形态≠实体证据；edge-only 不再静默消失） |
 | `7e0ea9b` | **P09 官方合并只提升其实际供给的槽**（WrongName/A 组合消除） |
+| `dea142c` | **P16 TableRead 四态**（missing/invalid/valid_empty/valid；不完整表阻断 up_to_date 与合并） |
+| `8e7ea48` | **P03 v3 区域事实 + P08 槽权威接线 + P14 线程/缓存参数化**（844 测试绿） |
+
+**`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
+与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
+各自确认变红（分别复现"删词留幽灵队列"与"空操作快照顶 revision"），加回后全绿。
 
 **红测双向验证**（移除修复后确认变红）：
 P04/P05 13 处失败 · P19 5 处失败 · P02 竞态复现 · P07 `99→1` 复现 · P01 `t1` 残留复现 ·
@@ -371,8 +381,17 @@ B 配置之后 A 的值        : https://BBB.example    <-- A 被静默替换
 **已验证**：A/B 交错隔离（含 B 嵌套在 A 内）、两线程各 100 次迭代互不串台、
 异常后上下文恢复、派生快照不改动全局。新增 14 项测试。
 
-**未做（P14 其余部分）**：线程任务的 `instance_id`/`cache_namespace` 显式参数化、
-缓存键纳入 backend+instance+完整 URL+解析器版本、`CrawlContext` 直接传 worker 取代 ContextVar。
+**已更新（2026-09-17，提交 `8e7ea48`）**：线程任务参数化与缓存键已完成 ——
+`CrawlTaskContext` 显式携带 endpoints/ms+sv instance/cache_root/cache_namespace，
+每个任务独立 `copy_context()` 提交；`_runtime_scope` 与两个公开 crawl 在 finally 中恢复
+cache root 与 namespace；缓存键 = backend+instance+完整 URL（含影响内容的 query）+解析器版本，
+元数据校验 instance/url，旧无 host 键缓存既不沿用也不删除。另修：同 backend 多实例不再
+last-wins（`endpoints_for` 每实例独立快照）、snapshot 映射字段不可变、settings-only
+scope 改为在环境快照之上合并（不再把未配置字段清空）。
+
+**仍未做（P14 其余部分）**：CLI/MCP 服务入口尚未 `build_runtime`/`activate` 集成；
+Core 的联网方法（event_check/progress）仍走全局 endpoints；
+worker 仍经 ContextVar 读取而非直接接收 CrawlContext 参数。
 **不要宣称 P14 全部完成。**
 
 ---
@@ -518,11 +537,17 @@ worldlink / eventalias / progress / event_detection 均解析到代际目录，�
 剩余成本是 752k 行的线性扫描本身。Astra 原文明确要求**不得宣称已获得 0.281s**。
 进一步的降低需要索引/引擎级改动 + 经过测量的召回等价设计，属明确的后阶段工作。
 
-### B6 / P03 — 逐区服事实（未开始，本轮范围外）
+### B6 / P03 — 逐区服事实（**存储层已完成 `8e7ea48`，读取端仍未走区服**）
 
-`facts` 仍是单份无区服归属的 dict，所以 `verify_claims` 对多区服实体的区服敏感字段返回
-`needs_region_data`（已实现该保守行为），`build_fact_pack_at` **没有 `region` 参数**。
-有测试钉住这两点，加了 region 支持会失败并提示回来核对。**在此之前不得宣称逐区服正确或防剧透。**
+`entity_region_facts`（composite PK `(entity_id, region)`）已在 schema v3 实现：写入与
+`entities` 快照同事务、替换实体时连同区服行一起删、v1/v2 上的 scoped 写入被拒并指明迁移、
+显式 v2→v3 迁移带新建备份与 plan digest。新库直接建于当前 schema，遗留 registry 导入的
+逐区服事实因此不再被丢弃（`build_registry` 产出 `region_facts`，demo 实体验证过
+`jp` 逐区事实往返）。
+
+**仍然不能说的**：`build_fact_pack_at` **仍无 `region` 参数**，`verify_claims` 在未指定
+region 时对有区服数据的实体返回 `unknown`（coverage 不足即保守拒绝，不再依赖"legacy facts"
+分支）。逐区服防剧透的**读取链路**未完成，不要宣称已完整。
 
 ---
 
@@ -777,11 +802,16 @@ e0996ba/d44c720/0872418）：
 
 - ❌ 不说"layered 已可靠落库" —— P08 的 SlotDecision/term_slots/v2 迁移**代码已实现**
   （`term_slots.py` + `dbstore.migrate_store`，2026-09-17；18 项迁移/事务测试绿），
-  但 **与 termindex/core 消费者的接线（v3 持久化路径）未完成**——不要宣称端到端逐槽权威闭环
+  **v2/v3 持久化接线已于 `8e7ea48` 完成**（名称唯一权威 = accepted 槽；读取/检索只认
+  accepted 槽，未核验旧值只作 audit payload；CLI `terms init`/`extract`/zhfirst 与
+  遗留导入均走槽决策）。**但三通道算法（P08 的 `SlotDecision`/`scrub_trinity` 逐槽采纳）
+  尚未产出槽决策**——`trinity.py` 仍输出旧的 accepted/pending/conflicts 结构，
+  layered 流水线未接 `apply_scrub_result`。不要宣称三通道端到端逐槽权威闭环
 - ❌ 不说"协议已符合 MCP 2025-06-18" —— 边界校验与序列化恢复已做，未做完整一致性
-- ❌ 不说"P14/P16 全部完成" —— P14 RuntimeContext 核心已修但线程任务的显式参数化未做；
-  P16 关系行自然键已修但 TableRead 四态区分未做（progress.py 的四态是 P18 的
-  compute_progress，不是 P16 的 TableRead）
+- ❌ 不说"P14/P16 全部完成" —— P14 线程参数化+缓存键已于 `8e7ea48` 完成，但
+  CLI/MCP 入口未接 runtime、Core 联网方法仍走全局 endpoints、worker 仍经 ContextVar；
+  P16 TableRead 四态**已于 `dea142c` 完成**（本行 2026-09-17 前记录已过期），
+  但事件关系表的自然键以外完整性仍以 `check_events` 的 incomplete_local 为准
 - ❌ 不说"性能已达标" —— `web_browse` 约 21s（原 50.2s），`web_search` 仍约 195s；均未达方案预期的 <1s
 - ❌ 不说"逐区服事实防剧透已完整" —— region_facts 已实现，但 `build_fact_pack_at` 仍无 region 参数，
 
