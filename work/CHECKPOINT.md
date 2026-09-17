@@ -51,13 +51,13 @@
 | :--- | :--- | :--- | :--- | ---: | :--- |
 | B0 | 契约基线（核实诊断 + 建红测） | ✅ 完成 | 快照在 `work/contract_snapshots/` | 361→ | 观察器 94 键 0 差异 |
 | B1 | 最小保护 P07/P12/P15/P20d/P19/P04/P05 | ✅ **7/7 完成** | 见下表 | 563 | 全部已提交并独立验证 |
-| B2 | 存储止损与快照 P13/P01/P02 | 🟡 P01/P02 完成；P13 部分 | 见下表 | — | P13 的 raw 代际发布未做（见"未完成"） |
-| B3 | 查询去放大 P06 | 🟡 部分 | `517980a` | — | 元数据投影已做；browse/search 未做 |
-| B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` | 852 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
+| B2 | 存储止损与快照 P13/P01/P02 | 🟡 基本完成 | `62eabd0` `e122cfc` `54d1fff` | — | P01/P02 完成；P13 raw 代际发布**已做**（`prepare_raw_generation` + SQL 单事务翻转 active 指针，`active_raw_generation` 在 `fetcher.py:1284`）。P02 的最后缺口（web 页写入不递增 revision）由 `ae101fb` 补上 |
+| B3 | 查询去放大 P06 | 🟡 部分 | `517980a` `c86adb1` `ae101fb` | — | 元数据投影已做；`web_search` 已索引化（选择性查询 163s→0.18s）；**`web_browse` 仍是全表有序扫描（11–14s）未做** |
+| B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` `24a26fb` `ae101fb` | 879 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **860**。**全绿**（`24a26fb`，冻结树
-`python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
+**测试账本**：基线 **361** → 当前 **879**。**全绿**（`ae101fb`，冻结树
+`python -X utf8 -m unittest discover -s tests` → `Ran 879 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
 
