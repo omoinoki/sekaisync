@@ -1089,28 +1089,30 @@ class SekaiSyncCore:
                 "agent_guidance": "Character mission details for CN are not available from the local master data.",
             },
             {
-                # Astra B2/P13. raw/ master tables now publish as immutable
-                # generations with a single active pointer committed in the same
-                # transaction as the indexes, so a master-data read is pinned to
-                # one generation. kb/news is still written in place, so an
-                # aggregate spanning news plus raw can still mix. The gap is
-                # narrowed, not closed — do not describe it as resolved.
+                # Astra B2/P13/P17. raw/ master tables and kb/news both publish
+                # as immutable generations with a single active pointer committed
+                # atomically (raw: indexes+pointer; news: manifest+pointer).
+                # A request-pinned reader resolves both pointers through its
+                # bound connection, so a mixed generation across domains still
+                # remains possible only for callers that read outside one
+                # request snapshot — narrowed, not closed.
                 "domain": "multi_file_generation_consistency",
-                "scope": "kb/news (raw master tables are now generation-pinned)",
+                "scope": "raw master tables and kb/news are generation-pinned",
                 "severity": "partial",
                 "description": (
-                    "raw/ region master tables publish as immutable generations "
-                    "with an active pointer committed atomically with the derived "
-                    "indexes, so master-data reads are pinned to one generation. "
-                    "kb/news is still written in place, so an aggregate that "
-                    "combines news with raw or with several news files can still "
-                    "mix content from before and after a concurrent sync."
+                    "raw/ region master tables and kb/news publish as immutable "
+                    "generations with an active pointer committed atomically "
+                    "with the derived state; request-pinned reads resolve the "
+                    "pointer through the request's snapshot connection. An "
+                    "aggregate assembled from reads outside a single request "
+                    "snapshot can still mix content from before and after a "
+                    "concurrent sync."
                 ),
                 "agent_guidance": (
-                    "Master-data reads (entities/terms/web pages) are pinned to a "
-                    "generation and self-consistent. Do not present an aggregate "
-                    "that includes news as a single consistent snapshot until news "
-                    "also publishes as a generation (Astra P13)."
+                    "Master-data and news reads are pinned to a generation and "
+                    "self-consistent within one request snapshot. Do not present "
+                    "an aggregate assembled from separate unpinned reads as a "
+                    "single consistent snapshot."
                 ),
             },
         ]

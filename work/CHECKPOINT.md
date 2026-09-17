@@ -731,19 +731,31 @@ git log --oneline 4c07f67..HEAD
 Astra §3.4 说 B1–B3 可先发布一个**明确标识为安全/可用性修正**的小版本，
 但**不得**宣称完成完整术语闭环、全区服事实或防剧透。
 
-**本轮完成度**：B0–B3 主体完成；B4/P13 完成核心机制（raw 代际发布、指针原子提交），
-但 **B4 的 P14/P16/P17 集成契约与发布验收未完成**；P05/P08/P09 的若干局部修复已实现
-（P01 调用者迁移、P08 缩写证据降级、P09 官方合并提升范围、P10 裁决日志、P11 冲突契约）。
-（提交数见 `git log`；当前测试 738 项全绿，2026-09-17）
+**本轮完成度**：B0–B4 主体完成。**2026-09-17 下午：三个被配额中断的子智能体
+（P15 协议恢复、P13 发布原子性、P17 news 代际）已恢复并完成**，遗留的 22 项失败全部
+清零后分 10 个提交落库（738421f/fee6b4d/d26e1b9/be361a4/48ec0e5/72dede7/3cf3cd0/
+e0996ba/d44c720/0872418）：
+- **P17**：kb/news 以不可变代际发布（manifest sha256 绑定 SQL 指针、与 revision 同事务原子翻转、
+  损坏即 fail-closed），身份改为 upstream namespace + id + language；
+  `Core.news` 请求级作用域、单次加载、items 与 summary 同源（回归 `test_core_news_snapshot`）。
+- **P15**：MCP/HTTP/REST 序列化失败在任何传输字节写出前降级为净化的 internal error；
+  stdio 超长帧按字节预算有界排水，无换行流无法逼出无界读（12 项回归）。
+- **P13**：freshness 与派生文件投影只在 SQL 提交后写出；source_migrate 改为 DB→DB 改名
+  （保留 DB-only 行与未知元数据、冲突不删行、陈旧 JSON 永不覆盖 DB，8 项故障注入回归）。
+- **P03/P18/P09/P08/P20**：region_facts 逐区服事实、progress 四态表状态、
+  ExtractionContext 显式上下文、提案校验、候选信号、integrity 样本语义，各带回归。
+- **两个真缺陷由验证器残差定位并修复**：`metadata_preserves_source_type`（投影丢
+  source_type/instance，trust 重算降级 B→C，48ec0e5）；`empty_replacement_actual_count`
+  （弃用写入器空证据替换不清行，d44c720）。探针复跑分别转为
+  `true` / `actual_count=0`（`work/ASTRA_VERIFY_AFTER_2026-09-17.json`）。
+（当前测试 **788 项全绿**，2026-09-17）
 
-**独立验收**：Astra 观察器复跑（2026-09-16：13 项缺陷证据多数转为正确行为；
-2026-09-17 复跑 `work/astra_verify_2026_09_16.py`：14 项探针全部可运行，
-`region_facts_loss` 已显示 region_facts 无损、`temporal_and_language_contract` 中
-future 不再外泄，但 `terms_snapshot_and_evidence.empty_replacement_actual_count=1`、
-`news_identity_and_revision.distinct_ids_same_title_collide=true`、
-`web_read_filter_and_provenance.metadata_preserves_source_type=false` 等
-**仍显示未修复的缺陷**——并非"全部转为正确行为"）
-（详见上文《独立验收证据》一节与 `work/ASTRA_VERIFY_AFTER_FIXES_2026-09-16.json`）。
+**独立验收**：Astra 观察器复跑（2026-09-17 最终复跑：14 项探针全部可运行，exit 0；
+此前三项残差全部处置——`empty_replacement_actual_count` 1→0 为真修复，
+`metadata_preserves_source_type` false→true 为真修复，
+`distinct_ids_same_title_collide` 为探针过时：现同时报告废弃标题键仍碰撞（仅旧快照读取）
+与当前身份契约不碰撞 `distinct_ids_current_identity_collide=false`）。
+（详见 `work/ASTRA_VERIFY_AFTER_2026-09-17.json`）。
 这是比"我们的测试全绿"更强的证据 —— 它用的是 Astra 自己的探针。
 
 **因此可以对外说的**：
@@ -755,21 +767,22 @@ future 不再外泄，但 `terms_snapshot_and_evidence.empty_replacement_actual_
 - 完整性审计的"总数"不再是样本数；不同正文不再被误判为镜像
 - 并发写入有单写者 lease（**7 个写入口全部覆盖**）；单文件 JSON 原子写
 - **raw 主数据表以不可变代际发布**，读取者按代际指针读取（仅同步某服不影响其他服）
-- 公告按**上游 id + 语言**标识，不再因标题相同而丢失记录
-- 缓存不再把旧计算结果当成新版本；Web 元数据读取不再拉全文
+- **kb/news 也以不可变代际发布**（P17，2026-09-17）：manifest 绑定 SQL 指针、原子翻转、
+  fail-closed；含 news 的聚合与 items/summary 单次加载同源
+- 公告按**上游 namespace + id + 语言**标识，不再因标题相同而丢失记录
+- 缓存不再把旧计算结果当成新版本；Web 元数据读取不再拉全文且保留 source_type/instance
+- 传输层序列化失败可恢复；stdio 超长帧有界排水
 
 **明确不能说的**（接手方务必遵守）：
 
-- ❌ 不说"性能已达标" —— `web_browse` 约 21s（原 50.2s），`web_search` 仍约 195s；均未达方案预期的 <1s
-- ❌ 不说"逐区服事实正确" —— **B6/P03 的 region_facts 已实现**
-  （`registry.py` RegionFacts + `regions.py` 投影，2026-09-17 探针确认无损、顺序无关；
-  但 v3 持久化表未建，region_facts 尚不落库）
-- ❌ 不说"任意剧情进度防剧透" —— 只有实体级公开时间过滤（`build_fact_pack_at` 无 region 参数）
 - ❌ 不说"layered 已可靠落库" —— P08 的 SlotDecision/term_slots/v2 迁移**代码已实现**
   （`term_slots.py` + `dbstore.migrate_store`，2026-09-17；18 项迁移/事务测试绿），
   但 **与 termindex/core 消费者的接线（v3 持久化路径）未完成**——不要宣称端到端逐槽权威闭环
-- ❌ 不说"文件发布已整代一致" —— **raw 代际已完成**（指针与索引原子提交），但 **kb/news 仍是就地写**；
-  含 news 的聚合仍可能混代，`data_gaps()` 已有声明，接手方需完成 news 代际后才可去掉该声明
-- ❌ 不说"协议已符合 MCP 2025-06-18" —— 只做了边界校验，未做完整一致性
+- ❌ 不说"协议已符合 MCP 2025-06-18" —— 边界校验与序列化恢复已做，未做完整一致性
+- ❌ 不说"P14/P16 全部完成" —— P14 RuntimeContext 核心已修但线程任务的显式参数化未做；
+  P16 关系行自然键已修但 TableRead 四态区分未做（progress.py 的四态是 P18 的
+  compute_progress，不是 P16 的 TableRead）
+- ❌ 不说"性能已达标" —— `web_browse` 约 21s（原 50.2s），`web_search` 仍约 195s；均未达方案预期的 <1s
+- ❌ 不说"逐区服事实防剧透已完整" —— region_facts 已实现，但 `build_fact_pack_at` 仍无 region 参数，
 
 **真实 store 未被修改**：全部破坏性验证都在临时库上完成；真实库仅做过只读查询与性能测量。
