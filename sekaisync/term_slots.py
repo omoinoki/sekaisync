@@ -113,15 +113,27 @@ def _certificate(slot: dict, evidence: list[dict], verifier: Verifier | None) ->
         if proof.get(key) != expected:
             return None
     refs = proof.get('evidence_refs')
-    if not isinstance(refs, (list, tuple)) or not refs or any(not isinstance(r, str) for r in refs):
+    if not isinstance(refs, (list, tuple)) or any(not isinstance(r, str) for r in refs):
         return None
+    value = slot['value']
+    if not isinstance(value, str) or not value:
+        return None
+    if not refs:
+        # P08 L0: this store's own official index is authority for a name it
+        # carries for exactly one entity in that language. Such a certificate
+        # names the entity instead of citing corpus evidence; only the callback
+        # can produce it (a candidate cannot inject one), and it must claim
+        # official A, so an unverified self-report still needs evidence.
+        entity_ref = proof.get('verified_entity')
+        if not (isinstance(entity_ref, str) and entity_ref.strip()):
+            return None
+        if proof.get('official') is not True or proof.get('trust') not in {'A', 'B', 'C', 'D'}:
+            return None
+        return proof
     index = {ev['evidence_id']: ev for ev in evidence}
     if any(ref not in index for ref in refs):
         return None
     support = [index[ref] for ref in refs]
-    value = slot['value']
-    if not isinstance(value, str) or not value:
-        return None
     # The callback verifies upstream authority; local checks prevent accidental
     # certificate reuse across subjects, slots, values or sources.
     if not all(ev.get('language') == slot['language'] and
@@ -139,6 +151,63 @@ def _certificate(slot: dict, evidence: list[dict], verifier: Verifier | None) ->
     elif len({ev.get('story_key') for ev in support if ev.get('story_key')}) < 2:
         return None
     return proof
+
+
+def index_verifier(conn: sqlite3.Connection) -> Verifier:
+    """Certify a slot against this store's own official name index (P08 L0).
+
+    Astra's adoption rule accepts a slot outright when it matches the same
+    already-verified official entity, that language's value and source. That
+    check needs the store's index, not the candidate's self-report, so it lives
+    here as a callback the caller passes in — a candidate can never produce one.
+
+    Two rules keep this from borrowing authority:
+
+    - a surface shared by more than one entity is *ambiguous* and is refused
+      outright, rather than picking whichever entity came first;
+    - the certificate reports the index row's own trust, so a demo or community
+      index certifies at its real level instead of the 'A' the legacy record
+      claimed for itself.
+    """
+    index: list[tuple] = []
+    for row in conn.execute(
+        "SELECT id, canonical, names_json, source, trust FROM glossary_terms WHERE official=1"
+    ):
+        names = json.loads(row[2] or '{}')
+        surfaces = {value for value in names.values() if value}
+        surfaces.add(row[1])
+        index.append((row[0], surfaces, {k: v for k, v in names.items() if v},
+                      row[3] or '', row[4] or ''))
+
+    def verify(slot: dict, evidence: list[dict]) -> Mapping[str, Any] | None:
+        value = slot.get('value')
+        language = slot.get('language')
+        term_id = slot.get('term_id')
+        if not isinstance(value, str) or not value or not isinstance(term_id, str):
+            return None
+        row = conn.execute("SELECT canonical FROM terms WHERE id=?", (term_id,)).fetchone()
+        if row is None:
+            return None
+        canonical = row[0]
+        matches = [
+            (entity_id, source, trust) for entity_id, surfaces, names, source, trust in index
+            if names.get(language) == value and canonical in surfaces
+            and not (source and slot.get('source') and source != slot.get('source'))
+        ]
+        if len(matches) != 1:
+            # Zero matches: the index does not carry this name for this subject.
+            # Several matches: a homograph — the pipeline must not borrow one
+            # entity's authority for a surface it shares with others.
+            return None
+        entity_id, source, trust = matches[0]
+        return {
+            'subject_id': term_id, 'language': language, 'value': value,
+            'source': slot.get('source') or source, 'official': True,
+            'trust': trust, 'verifier': f'official-index:{entity_id}',
+            'verified_entity': entity_id, 'evidence_refs': [],
+        }
+
+    return verify
 
 
 def _prepare_slot(raw: Mapping, evidence: list[dict], verifier: Verifier | None,
@@ -223,7 +292,7 @@ def load_term_slots(store_root: Path, *, conn: sqlite3.Connection | None = None)
     if conn is not None:
         return _load_slots(conn)
     state = dbstore.inspect_schema(store_root)
-    if state.version != '2':
+    if state.version not in {'2', '3'}:
         raise ValueError('term slots require an explicitly initialized or migrated v2 store')
     with contextlib.closing(sqlite3.connect(dbstore._readonly_uri(dbstore.db_file(store_root)), uri=True)) as owned:
         return _load_slots(owned)
@@ -396,7 +465,7 @@ def commit_slot_decisions_conn(conn: sqlite3.Connection, decisions: Iterable[Map
     dbstore.require_write_connection(conn)
     if not conn.in_transaction:
         raise ValueError('slot writes require an active transaction and writer lease')
-    if dbstore._meta_get(conn, 'schema_version') != '2':
+    if dbstore._meta_get(conn, 'schema_version') not in {'2', '3'}:
         raise ValueError('slot decisions require explicit v2 migration')
     if type(expected_revision) is not int or dbstore.current_revision(conn) != expected_revision:
         raise dbstore.RevisionConflictError('slot input revision is stale; recompute')
@@ -478,13 +547,146 @@ def _commit(conn, decisions, records, evidence_updates, revision, verifier):
                for status in ('accepted', 'pending', 'conflict', 'rejected')}}
 
 
+def ingest_legacy_terms(store_root: Path, records: Iterable[Mapping], *,
+                        expected_revision: int) -> dict:
+    """Queue legacy names without replacing existing decisions or borrowing trust."""
+    dbstore.require_unbound_writer(store_root)
+    from sekaisync.fetcher import store_writer_lock
+
+    records = list(records)
+    with store_writer_lock(store_root), dbstore.connect(store_root) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            existing = {(s['term_id'], s['language']) for s in _load_slots(conn)}
+            verify = index_verifier(conn)
+            decisions = []
+            evidence_by_id = {}
+            for record in records:
+                term_id = record['id']
+                evidence = evidence_with_ids(term_id, record.get('evidence') or [])
+                if evidence:
+                    evidence_by_id[term_id] = evidence
+                for language, value in record.get('names', {}).items():
+                    key = (term_id, language)
+                    if key in existing:
+                        continue
+                    existing.add(key)
+                    decisions.append({
+                        'term_id': term_id, 'language': language, 'value': value,
+                        'status': 'accepted', 'source': record.get('source', ''),
+                        'reason': 'legacy_unverified',
+                        'legacy_payload': {'value': value, 'official': record.get('official', False),
+                                           'reported_trust': record.get('trust', ''),
+                                           'source': record.get('source', ''),
+                                           'confidence': record.get('confidence', 0.0)},
+                        'evidence_refs': [ev['evidence_id'] for ev in evidence
+                                          if ev.get('language') == language],
+                    })
+            result = commit_slot_decisions_conn(
+                conn, decisions, records=records, evidence_by_id=evidence_by_id,
+                expected_revision=expected_revision, verifier=verify,
+            )
+            conn.commit()
+            return result
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def decisions_from_record(record: Mapping) -> list[dict]:
+    """A record's names as candidate slot decisions for a v2/v3 store.
+
+    The decision is proposed as accepted and carries the record's own claims
+    only as ``legacy_payload``: ``_prepare_slot`` still runs the certificate
+    check, so an unverified name ends up pending/legacy_unverified and the
+    accepted projection is never borrowed from a self-report.
+    """
+    term_id = str(record.get('id') or '')
+    if not term_id:
+        raise ValueError('every term record needs a non-empty id')
+    evidence = evidence_with_ids(term_id, record.get('evidence') or [])
+    out = []
+    for language in sorted(language for language, value in (record.get('names') or {}).items() if value):
+        out.append({
+            'term_id': term_id, 'language': language, 'value': (record['names'])[language],
+            'status': 'accepted', 'source': record.get('source', ''),
+            'reason': 'legacy_unverified',
+            'legacy_payload': {'value': (record['names'])[language],
+                               'official': record.get('official', False),
+                               'reported_trust': record.get('trust', ''),
+                               'source': record.get('source', ''),
+                               'confidence': record.get('confidence', 0.0)},
+            'evidence_refs': [ev['evidence_id'] for ev in evidence
+                              if ev.get('language') == language],
+        })
+    return out
+
+
+def ingest_record_snapshot(store_root: Path, records: Sequence[Mapping], *,
+                           expected_revision: int) -> dict:
+    """Express a P01 terms snapshot as slot decisions on a v2/v3 store.
+
+    ``terms init`` publishes a whole snapshot, but on a slot store the caller
+    may not write ``names_json``: every name goes through the same decision
+    path as any other candidate, so a record's self-reported trust stays audit
+    data and only the store's own official index can certify a slot.  Absent
+    ids are removed together with their evidence and slots, so a snapshot never
+    leaves an orphaned subject behind.
+    """
+    dbstore.require_unbound_writer(store_root)
+    from sekaisync.fetcher import store_writer_lock
+
+    records = list(records)
+    with store_writer_lock(store_root), dbstore.connect(store_root) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            keep = {str(record['id']) for record in records}
+            for (term_id,) in conn.execute('SELECT id FROM terms').fetchall():
+                if term_id in keep:
+                    continue
+                for table in ('term_evidence', 'term_slots', 'review_queue', 'review_decisions'):
+                    conn.execute(f'DELETE FROM {table} WHERE term_id=?', (term_id,))
+                conn.execute('DELETE FROM terms WHERE id=?', (term_id,))
+            existing = {(s['term_id'], s['language']) for s in _load_slots(conn)}
+            verify = index_verifier(conn)
+            decisions = []
+            evidence_by_id = {}
+            for record in records:
+                term_id = str(record['id'])
+                evidence = evidence_with_ids(term_id, record.get('evidence') or [])
+                if evidence and evidence != evidence_with_ids(
+                    term_id, dbstore._load_evidence_items(conn, term_id)
+                ):
+                    # Only a real change is stated: re-stating identical
+                    # evidence would re-project the term and bump the
+                    # revision, so an unchanged snapshot would look like a
+                    # writer conflict to every concurrent reader.
+                    evidence_by_id[term_id] = evidence
+                # An existing slot is left alone: this snapshot's job is to
+                # state which subjects exist, not to overwrite decisions a
+                # reviewer already made about their languages.
+                decisions.extend(
+                    decision for decision in decisions_from_record(dict(record, evidence=evidence))
+                    if (decision['term_id'], decision['language']) not in existing
+                )
+            result = commit_slot_decisions_conn(
+                conn, decisions, records=records, evidence_by_id=evidence_by_id,
+                expected_revision=expected_revision, verifier=verify,
+            )
+            conn.commit()
+            return result
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 def commit_slot_decisions(store_root: Path, decisions: Iterable[Mapping], *,
                           records: Iterable[Mapping] = (),
                           evidence_by_id: Mapping[str, Sequence[Mapping]] | None = None,
                           expected_revision: int, verifier: Verifier | None = None) -> dict:
     """P11 atomic slot + append evidence + review-queue + revision write API."""
     dbstore.require_unbound_writer(store_root)
-    if dbstore.inspect_schema(store_root).version != '2':
+    if dbstore.inspect_schema(store_root).version not in {'2', '3'}:
         raise ValueError('slot decisions require explicit v2 migration')
     from sekaisync.fetcher import store_writer_lock
     with store_writer_lock(store_root), dbstore.connect(store_root) as conn:

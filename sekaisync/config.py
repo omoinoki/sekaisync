@@ -208,6 +208,13 @@ class MoesekaiSettings:
     )
     fallback_to_viewer_cdn: bool = True
 
+    def __post_init__(self) -> None:
+        # Python callers may supply lists despite the tuple annotations.
+        for name in ("metadata_bases", "asset_bases"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        for name in ("locale_servers", "locale_languages"):
+            object.__setattr__(self, name, tuple(tuple(pair) for pair in getattr(self, name)))
+
     def server_for(self, locale: str) -> str:
         key = (str(locale or "")).strip().lower()
         for item_key, server in self.locale_servers:
@@ -292,6 +299,9 @@ class ViewerSettings:
         ("cn", "sekai-cn-assets"),
     )
     i18n_base: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "asset_buckets", tuple(tuple(pair) for pair in self.asset_buckets))
 
     def bucket_for(self, region: str) -> str:
         for key, bucket in self.asset_buckets:

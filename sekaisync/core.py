@@ -796,6 +796,15 @@ class SekaiSyncCore:
             source_priority=source_priority,
         )
 
+    def commit_term_slots(self, decisions, *, expected_revision: int,
+                          records=(), evidence_by_id=None, verifier=None) -> dict:
+        from sekaisync.term_slots import commit_slot_decisions
+
+        return commit_slot_decisions(
+            self.store_root, decisions, expected_revision=expected_revision,
+            records=records, evidence_by_id=evidence_by_id, verifier=verifier,
+        )
+
     @request_scoped
     def term_lookup(
         self,
@@ -1220,6 +1229,24 @@ class SekaiSyncCore:
             cache_file.write_text(
                 json.dumps(zh_data, ensure_ascii=False), encoding="utf-8"
             )
+
+        if dbstore.inspect_schema(self.store_root).version in {"2", "3"}:
+            from sekaisync.term_slots import ingest_legacy_terms
+            from sekaisync.termindex import term_to_dict
+
+            with dbstore.connect(self.store_root) as conn:
+                revision = dbstore.current_revision(conn)
+            existing_by_canonical = {t.canonical: t for t in self.terms}
+            records = []
+            for item in zh_data:
+                canonical = str(item.get("canonical", ""))
+                if len(canonical) < 2:
+                    continue
+                existing = existing_by_canonical.get(canonical)
+                record = dict(item, id=existing.id if existing else make_term_id("zh_hans", canonical),
+                              source_language="zh_hans", source="zhfirst")
+                records.append(record)
+            return ingest_legacy_terms(self.store_root, records, expected_revision=revision)
 
         existing_by_canonical = {t.canonical: t for t in self.terms}
         added = 0

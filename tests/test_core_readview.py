@@ -110,7 +110,10 @@ class VerifyClaimsRegionTest(unittest.TestCase):
         self.store = _demo_store(self._tmp.name)
         self.core = SekaiSyncCore(self.store)
         # Give one entity a region-scoped field with multiple regions, the
-        # shape the v1 store cannot attribute to a single region.
+        # shape a legacy v1 store cannot attribute to a single region. The
+        # per-region rows are removed as well: this fixture stands for the
+        # legacy store that has no regional provenance at all, so leaving the
+        # demo region's rows in place would test a different (v3) state.
         from sekaisync import dbstore
         entity = self.core.registry[0]
         entity.facts["start_at"] = "2026-01-01"
@@ -123,6 +126,9 @@ class VerifyClaimsRegionTest(unittest.TestCase):
                     json.dumps(entity.facts, ensure_ascii=False),
                     entity.id,
                 ),
+            )
+            conn.execute(
+                "DELETE FROM entity_region_facts WHERE entity_id=?", (entity.id,)
             )
             conn.commit()
 

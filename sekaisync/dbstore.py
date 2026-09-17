@@ -18,10 +18,9 @@ moved away, so post-archive reads never re-trigger an import. ``raw/``
 region master tables, ``kb/news``, ``kb/events`` and the derived
 ``cache/`` files stay JSON by design.
 
-Schema gate (P07): a store whose ``schema_version`` stamp is older, newer
-or unreadable is refused with ``SchemaVersionError`` instead of being
-restamped as the current version. Reads never rewrite a stamp; migration
-is an explicit admin operation and is deliberately not implemented here.
+Schema gate (P07): only explicitly supported schema stamps are accepted.
+Reads never rewrite a stamp. Migration is an explicit, backed-up admin
+operation: v1→v2 adds term slots and v2→v3 adds per-region entity facts.
 """
 
 from __future__ import annotations
@@ -42,14 +41,18 @@ from sekaisync.layout import (
     registry_path,
     terms_path,
 )
-from sekaisync.models import Entity, GlossaryTerm
+from sekaisync.models import Entity, GlossaryTerm, RegionFacts
 from sekaisync.trust import trust_for_page
 
 # Compatibility initializer remains v1 until all old writers are adapted.
 SCHEMA_VERSION = "1"
-LATEST_SCHEMA_VERSION = "2"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"1", "2"})
-RESERVED_REGION_SCHEMA_VERSION = "3"
+LATEST_SCHEMA_VERSION = "3"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
+#: P03/P07: schema 3 adds ``entity_region_facts`` on top of the unchanged v2
+#: tables.  It is created only through the explicit entry points
+#: (``initialize_new_store(target_version=3)`` / :func:`migrate_store`);
+#: the compatibility initializers stay at v1/v2.
+REGION_SCHEMA_VERSION = "3"
 
 _PAGE_COLUMNS = (
     "id", "url", "title", "language", "kind", "text", "crawled_at", "hash",
@@ -139,6 +142,23 @@ CREATE INDEX IF NOT EXISTS idx_pages_canonical ON web_pages(canonical_key);
 CREATE INDEX IF NOT EXISTS idx_pages_seq ON web_pages(source, seq);
 """
 
+_REGION_SCHEMA = (
+    """CREATE TABLE entity_region_facts (
+        entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        region TEXT NOT NULL CHECK(region != ''),
+        facts_json TEXT NOT NULL DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT '', version TEXT,
+        retrieval_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (entity_id, region)
+    ) WITHOUT ROWID""",
+    "CREATE INDEX idx_region_facts_region ON entity_region_facts(region)",
+)
+
+
+def _create_region_schema(conn: sqlite3.Connection) -> None:
+    for statement in _REGION_SCHEMA:
+        conn.execute(statement)
+
 def db_file(store_root: Path) -> Path:
     return db_path(store_root)
 
@@ -225,9 +245,8 @@ def require_write_connection(conn: sqlite3.Connection) -> None:
 
 # ── schema version gate (P07) ─────────────────────────────────────
 #
-# B1 scope is rejection only: this build refuses to open a store it does
-# not understand and never restamps one.  Migration (v1→v2→v3) is an
-# explicit admin operation and is deliberately NOT implemented here.
+# Unknown stamps are never restamped. Known v1/v2/v3 schemas remain readable;
+# adding slot or region tables requires the explicit migration entry point.
 
 #: status values reported by ``inspect_schema``
 SCHEMA_ABSENT = "absent"      # no DB file (or an empty one) — safe to create
@@ -440,19 +459,25 @@ def initialize(store_root: Path) -> None:
         conn.commit()
 
 
-def initialize_new_store(store_root: Path) -> None:
-    """Explicitly create a v2 slot store (never an automatic path).
+def initialize_new_store(store_root: Path, *, target_version: int = 2) -> None:
+    """Explicitly create a v2 slot store or a v3 region store (never automatic).
 
-    v2 adds ``term_slots`` plus the review queue/decision/rule tables.  The
-    v3 ``entity_region_facts`` table is reserved for a separate integration and
-    is deliberately not created here.  Existing v1 stores are not touched by
-    this function; they move to v2 only through :func:`migrate_store`.
+    v2 adds ``term_slots`` plus the review queue/decision/rule tables.  v3
+    (Astra P03/P07) adds ``entity_region_facts`` on top of the unchanged v2
+    tables; it is created only when ``target_version=3`` is passed.  Existing
+    v1 stores are not touched by this function; they move to v2/v3 only
+    through :func:`migrate_store`.
     """
     from sekaisync.term_slots import create_schema
 
+    require_unbound_writer(store_root)
+    if type(target_version) is not int or target_version not in (2, 3):
+        raise ValueError(
+            f"initialize_new_store supports target_version 2 or 3, got {target_version!r}"
+        )
     state = inspect_schema(store_root)
     if state.status == SCHEMA_CURRENT:
-        if state.version != "2":
+        if state.version != str(target_version):
             raise _schema_error(state)
         return
     if state.status != SCHEMA_ABSENT:
@@ -460,9 +485,16 @@ def initialize_new_store(store_root: Path) -> None:
     with connect(store_root) as conn:
         conn.executescript(_SCHEMA)
         create_schema(conn)
+        if target_version == 3:
+            _create_region_schema(conn)
+        meta = [("schema_version", str(target_version))]
+        if target_version == 2:
+            meta.append(("v2_migration", "explicit_new_store"))
+        else:
+            meta.append(("v3_migration", "explicit_new_store"))
         conn.executemany(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-            (("schema_version", "2"), ("v2_migration", "explicit_new_store")),
+            meta,
         )
         conn.commit()
 
@@ -476,16 +508,28 @@ def migrate_store(
     verifier: Optional[Any] = None,
     expected_plan_digest: Optional[str] = None,
 ) -> dict:
-    """Explicit v1→v2 migration entry point (thin delegation).
+    """Explicit v1→v2 / v2→v3 migration entry point.
 
-    Default is a read-only dry-run diff that preserves every legacy value as a
-    pending slot with the old provenance kept in ``legacy_payload`` (old
-    term-level ``trust`` is reported as ``reported_trust``, never certified).
-    Applying requires an explicit ``backup_path`` for a new consistent backup
-    and is atomic + idempotent; there is no startup auto-migration (P07/P08).
-    v3 (``entity_region_facts``) is reserved for a separate integration and is
-    not implemented here.
+    v1→v2 (per-language term slots) is delegated to ``term_slots``.  v2→v3
+    (``entity_region_facts``, Astra P03/P07) is implemented here: it is a
+    table-preserving migration — the v2 slot/review data is never regenerated,
+    legacy unscoped ``facts_json`` stays exactly as it is (it is NOT copied
+    into per-region rows), and the new table starts empty.
+
+    Default is a read-only dry-run diff.  Applying requires an explicit
+    ``backup_path`` for a new consistent backup (created inside the writer
+    lease before any schema change) and is atomic + idempotent; there is no
+    startup auto-migration (P07).
     """
+    if type(target_version) is not int:
+        raise ValueError('target_version must be an integer')
+    if target_version == 3:
+        return _migrate_store_v3(
+            store_root,
+            dry_run=dry_run,
+            backup_path=backup_path,
+            expected_plan_digest=expected_plan_digest,
+        )
     from sekaisync.term_slots import migrate_store as _migrate
 
     return _migrate(
@@ -498,6 +542,132 @@ def migrate_store(
     )
 
 
+def _migrate_store_v3(
+    store_root: Path,
+    *,
+    dry_run: bool,
+    backup_path: Optional[Path],
+    expected_plan_digest: Optional[str],
+) -> dict:
+    """Explicit v2→v3 migration (``entity_region_facts``).
+
+    Refuses anything that is not a current v2 store.  The plan digest covers
+    the observable pre-migration state so a caller authorizing a dry-run can
+    detect that the store changed before applying.
+    """
+    require_unbound_writer(store_root)
+    state = inspect_schema(store_root)
+    if state.version == "3":
+        if dry_run:
+            return {
+                "from_version": 3, "target_version": 3, "dry_run": True,
+                "already_current": True,
+            }
+        return {
+            "from_version": 3, "target_version": 3, "dry_run": False,
+            "already_current": True,
+        }
+    if state.status != SCHEMA_CURRENT:
+        raise _schema_error(state)
+    if state.version == "1":
+        raise ValueError(
+            "v1 stores must migrate to v2 (term slots) first; v3 migration "
+            "requires an explicitly authorized v2 store"
+        )
+    if state.version != "2":
+        raise _schema_error(state)
+
+    def _plan(conn: sqlite3.Connection) -> dict:
+        legacy_entities = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        # Hash the committed SQL state incrementally: even writers not yet
+        # participating in data_revision cannot invalidate an approved plan
+        # unnoticed. No full database dump is retained in memory.
+        from hashlib import sha256
+        digest = sha256()
+        for statement in conn.iterdump():
+            digest.update(statement.encode('utf-8'))
+            digest.update(b'\n')
+        payload = {"database_digest": digest.hexdigest()}
+        return {
+            "from_version": 2,
+            "target_version": 3,
+            "legacy_unscoped_entities": legacy_entities,
+            "region_facts": 0,
+            "already_current": False,
+            "plan_digest": _plan_digest(payload),
+            "note": (
+                "legacy unscoped facts are preserved as-is and are not copied "
+                "into per-region rows; entity_region_facts starts empty and is "
+                "repopulated only from verified raw snapshots"
+            ),
+        }
+
+    if dry_run:
+        with contextlib.closing(
+            sqlite3.connect(_readonly_uri(db_path(store_root)), uri=True)
+        ) as conn:
+            conn.execute("BEGIN")
+            return {**_plan(conn), "dry_run": True}
+
+    if backup_path is None:
+        raise ValueError("explicit migration apply requires a new backup_path")
+    from sekaisync.fetcher import store_writer_lock
+
+    backup_path = Path(backup_path)
+    if backup_path.resolve() == db_path(store_root).resolve():
+        raise ValueError("backup_path must not be the active database")
+    with store_writer_lock(store_root), connect(store_root) as conn:
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if _meta_get(conn, "schema_version") != "2":
+                raise RevisionConflictError(
+                    "schema changed while waiting for migration"
+                )
+            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("source quick_check failed")
+            plan = _plan(conn)
+            if (
+                expected_plan_digest is not None
+                and plan["plan_digest"] != expected_plan_digest
+            ):
+                raise RevisionConflictError(
+                    "migration plan changed; run dry-run and authorize again"
+                )
+            # Reserve a NEW path; never overwrite a prior recovery artifact.
+            with backup_path.open("xb"):
+                pass
+            # A separate RO connection backs up the committed pre-migration
+            # snapshot, including committed WAL pages.
+            with contextlib.closing(
+                sqlite3.connect(_readonly_uri(db_path(store_root)), uri=True)
+            ) as source:
+                with contextlib.closing(sqlite3.connect(str(backup_path))) as backup:
+                    source.backup(backup)
+                    if backup.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                        raise ValueError("backup quick_check failed")
+            _create_region_schema(conn)
+            if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                raise ValueError('migration foreign key check failed')
+            revision = bump_revision(conn)
+            _meta_set(conn, 'v3_migration', 'explicit_v2_migration')
+            # Stamp last, inside the same transaction as DDL and revision.
+            _meta_set(conn, 'schema_version', '3')
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    return {**plan, "dry_run": False, "revision": revision,
+            "backup_path": str(backup_path)}
+
+
+def _plan_digest(payload: dict) -> str:
+    from hashlib import sha256
+
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
 def _require_v1_write_store(store_root: Path) -> None:
     """v2 stores must not be written through the legacy terms API (fail closed).
 
@@ -507,7 +677,7 @@ def _require_v1_write_store(store_root: Path) -> None:
     """
     require_unbound_writer(store_root)
     state = inspect_schema(store_root)
-    if state.status == SCHEMA_CURRENT and state.version == "2":
+    if state.status == SCHEMA_CURRENT and state.version in {"2", "3"}:
         raise ValueError(
             "this store uses explicit per-language term slots (schema v2); "
             "write through sekaisync.term_slots.commit_slot_decisions instead"
@@ -558,7 +728,13 @@ def ensure_store(store_root: Path) -> None:
         return
     state = inspect_schema(store_root)
     if state.status == SCHEMA_ABSENT:
-        initialize(store_root)
+        # Astra P07: a brand-new store is created at the current schema, never
+        # stamped v1 "for compatibility with old logic". Creating it at v1 would
+        # also make the legacy bootstrap import fail: a registry.json carries
+        # per-region facts that v1 cannot hold, and v1 has no term slots.
+        # Existing stores are never touched here — they migrate only through the
+        # explicit ``migrate_store`` entry point.
+        initialize_new_store(store_root, target_version=int(LATEST_SCHEMA_VERSION))
     elif state.status != SCHEMA_CURRENT:
         raise _schema_error(state)
     pending = pending_legacy_domains(store_root)
@@ -1127,57 +1303,211 @@ def delete_source_pages(store_root: Path, source: str) -> None:
 
 # ── entities / glossary ───────────────────────────────────────────
 
+_REGION_FACTS_TABLE = "entity_region_facts"
+
+
+def _schema_version_of(conn: sqlite3.Connection) -> Optional[str]:
+    """Stamp as seen by this connection, or None when there is no stamp."""
+    try:
+        return _meta_get(conn, "schema_version")
+    except sqlite3.Error:
+        return None
+
+
+def _reject_unknown_region_stamp(store_root: Path, conn: sqlite3.Connection) -> Optional[str]:
+    """Schema gate for entity writers on an open connection.
+
+    Returns the on-disk version when this build may write entities, raises
+    ``SchemaVersionError`` otherwise.  Unreadable stamps are refused here even
+    though ``inspect_schema`` (which sees only committed state) cannot run
+    inside the caller's open transaction.
+    """
+    stamp = _schema_version_of(conn)
+    if stamp in SUPPORTED_SCHEMA_VERSIONS or stamp == REGION_SCHEMA_VERSION:
+        return stamp
+    if stamp is None:
+        raise SchemaVersionError(
+            f"store database {db_path(store_root)} has no readable schema_version "
+            f"stamp inside this transaction; refusing to write entities "
+            f"(supported: {SCHEMA_VERSION})",
+            status=SCHEMA_CORRUPT,
+            path=db_path(store_root),
+        )
+    raise _schema_error(inspect_schema(store_root))
+
+
+def _region_rows_for(entity: Entity) -> list[tuple]:
+    rows = []
+    for region in sorted(entity.region_facts):
+        rf = entity.region_facts[region]
+        if not isinstance(region, str) or not region.strip():
+            raise ValueError('region_facts requires a nonempty region key')
+        if not isinstance(rf, RegionFacts):
+            raise ValueError('region_facts values must be RegionFacts')
+        if not isinstance(rf.facts, dict) or not isinstance(rf.retrieval, dict):
+            raise ValueError('region facts and retrieval must be dictionaries')
+        if not isinstance(rf.source, str) or not (rf.version is None or isinstance(rf.version, str)):
+            raise ValueError('region source/version must be strings (version may be None)')
+        if rf.region != region:
+            raise ValueError(
+                f"region_facts key {region!r} does not match RegionFacts.region "
+                f"{rf.region!r} for entity {entity.id!r}"
+            )
+        rows.append(
+            (
+                entity.id, region,
+                json.dumps(rf.facts, ensure_ascii=False, sort_keys=True, allow_nan=False),
+                rf.source or "", rf.version,
+                json.dumps(rf.retrieval, ensure_ascii=False, sort_keys=True, allow_nan=False),
+            )
+        )
+    return rows
+
+
 def save_entities(
     store_root: Path,
     entities: Iterable[Entity],
     conn: Optional[sqlite3.Connection] = None,
 ) -> int:
-    """Replace the entity table.
+    """Replace the entity table, region facts included (schema v3).
 
-    ``conn`` lets a caller run this inside its own transaction. A publish must
-    commit the derived indexes and the generation pointer together, and
-    opening a second connection while a write transaction is open would
-    deadlock on the store's own lock.
+    On a v3 store each entity's :class:`~sekaisync.models.RegionFacts` rows are
+    written in the **same transaction** as the ``entities`` rows: replacement
+    of an entity removes its region rows with it, so a read never mixes an old
+    ``facts_json`` with new per-region rows.  Scoped facts on a v1/v2 store
+    (or a v2 one with no ``entity_region_facts`` table) are refused with
+    ``ValueError`` naming the migration, instead of being silently dropped —
+    an empty ``region_facts`` dict (legacy unscoped entities) stays writable
+    on every schema.  ``conn`` lets a caller run this inside its own
+    transaction; then no commit/revision happens here (caller-owned, P11
+    shape) and validation still runs inside that transaction.
+
+    A publish must commit the derived indexes and the generation pointer
+    together, and opening a second connection while a write transaction is
+    open would deadlock on the store's own lock.
     """
+    if conn is None:
+        require_unbound_writer(store_root)
+        _ensure_initialized(store_root)
+
     def _write(active: sqlite3.Connection) -> int:
+        # Deferred to first statement inside the caller's transaction, so a
+        # stale schema is caught before any row is written.
+        stamp = _reject_unknown_region_stamp(store_root, active)
+        materialized = list(entities)
+        seen: set[str] = set()
+        region_payload: list[tuple] = []
+        for entity in materialized:
+            if entity.id in seen:
+                raise ValueError(f"duplicate entity id in snapshot: {entity.id!r}")
+            seen.add(entity.id)
+            region_payload.extend(_region_rows_for(entity))
+        scoped_on_old_schema = bool(region_payload) and stamp != REGION_SCHEMA_VERSION
+        if scoped_on_old_schema:
+            raise ValueError(
+                f"store {store_root} uses schema {stamp!r}; persisting "
+                f"entity_region_facts requires an explicit migrate_store to "
+                f"schema 3 — this build will not silently drop region "
+                f"provenance"
+            )
+        has_region_table = active.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='entity_region_facts'"
+        ).fetchone() is not None
         rows = [
             (
                 e.id, e.type, e.region or "", json.dumps(e.regions, ensure_ascii=False),
                 json.dumps(e.names, ensure_ascii=False), json.dumps(e.facts, ensure_ascii=False),
                 e.source or "", e.version, 1 if e.demo else 0, e.trust or "", seq,
             )
-            for seq, e in enumerate(entities, start=1)
+            for seq, e in enumerate(materialized, start=1)
         ]
         active.execute("DELETE FROM entities")
+        if has_region_table:
+            # Region rows of surviving ids are rewritten too: a replacement is
+            # a whole-entity snapshot, never a partial region merge.
+            active.execute("DELETE FROM entity_region_facts")
         active.executemany(
             "INSERT OR REPLACE INTO entities VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows
         )
-        # Only commit when this call owns the connection.
-        if conn is None:
-            active.commit()
+        if region_payload:
+            active.executemany(
+                "INSERT INTO entity_region_facts "
+                "(entity_id, region, facts_json, source, version, retrieval_json) "
+                "VALUES(?,?,?,?,?,?)",
+                region_payload,
+            )
         return len(rows)
 
     if conn is not None:
-        return _write(conn)
-    _ensure_initialized(store_root)
-    with connect(store_root) as owned:
-        return _write(owned)
+        require_write_connection(conn)
+        if not conn.in_transaction:
+            raise ValueError(
+                "save_entities(conn=...) requires an active transaction "
+                "(BEGIN) owned by the caller"
+            )
+        conn.execute('SAVEPOINT entity_snapshot')
+        try:
+            result = _write(conn)
+            conn.execute('RELEASE entity_snapshot')
+            return result
+        except BaseException:
+            conn.execute('ROLLBACK TO entity_snapshot')
+            conn.execute('RELEASE entity_snapshot')
+            raise
+    from sekaisync.fetcher import store_writer_lock
+    with store_writer_lock(store_root), connect(store_root) as owned:
+        owned.execute('BEGIN IMMEDIATE')
+        try:
+            result = _write(owned)
+            bump_revision(owned)
+            owned.commit()
+            return result
+        except BaseException:
+            owned.rollback()
+            raise
 
 
 def load_entities(store_root: Path) -> list[Entity]:
     ensure_store(store_root)
     with connect(store_root) as conn:
-        out = []
-        for row in conn.execute("SELECT * FROM entities ORDER BY id"):
-            out.append(
-                Entity(
-                    id=row[0], type=row[1], region=row[2],
-                    regions=json.loads(row[3]), names=json.loads(row[4]),
-                    facts=json.loads(row[5]), source=row[6], version=row[7],
-                    demo=bool(row[8]), trust=row[9],
-                )
+        # Two SELECTs must share a snapshot even outside a Core ReadView.
+        owned_snapshot = not conn.in_transaction
+        if owned_snapshot:
+            conn.execute('BEGIN')
+        try:
+            return _load_entities_conn(conn)
+        finally:
+            if owned_snapshot:
+                conn.rollback()
+
+
+def _load_entities_conn(conn: sqlite3.Connection) -> list[Entity]:
+    region_facts: dict[str, dict[str, RegionFacts]] = {}
+    # Read scoped facts only when the transaction's schema promises them.
+    # A malformed v3 database with a missing table must fail, not invent an
+    # empty/legacy result. Unversioned additive tables on v1/v2 are not authority.
+    if _schema_version_of(conn) == REGION_SCHEMA_VERSION:
+        for row in conn.execute(
+            "SELECT entity_id, region, facts_json, source, version, retrieval_json "
+            "FROM entity_region_facts ORDER BY entity_id, region"
+        ):
+            region_facts.setdefault(row[0], {})[row[1]] = RegionFacts(
+                region=row[1], facts=json.loads(row[2]), source=row[3],
+                version=row[4], retrieval=json.loads(row[5]),
             )
-        return out
+    out = []
+    for row in conn.execute("SELECT * FROM entities ORDER BY id"):
+        out.append(
+            Entity(
+                id=row[0], type=row[1], region=row[2],
+                regions=json.loads(row[3]), names=json.loads(row[4]),
+                facts=json.loads(row[5]), source=row[6], version=row[7],
+                demo=bool(row[8]), trust=row[9],
+                region_facts=region_facts.get(row[0], {}),
+            )
+        )
+    return out
 
 
 def load_entity_keys(store_root: Path) -> list[tuple[str, str, list[str], str]]:
@@ -1694,6 +2024,12 @@ def load_terms_records(store_root: Path, include_sentences: bool = False) -> lis
             extra = json.loads(row[5] or "{}")
             entry.update(extra)
             evidence.setdefault(row[0], []).append(entry)
+        slots_by_id: dict[str, dict] | None = None
+        if _meta_get(conn, "schema_version") in {"2", "3"}:
+            from sekaisync.term_slots import load_term_slots
+            slots_by_id = {}
+            for slot in load_term_slots(store_root, conn=conn):
+                slots_by_id.setdefault(slot["term_id"], {})[slot["language"]] = slot
         out = []
         for row in conn.execute("SELECT * FROM terms ORDER BY id"):
             item = {
@@ -1704,6 +2040,8 @@ def load_terms_records(store_root: Path, include_sentences: bool = False) -> lis
                 "occurrences": row[11], "weight": row[12], "everyday": bool(row[13]),
                 "positions": json.loads(row[14]), "evidence": evidence.get(row[0], []),
             }
+            if slots_by_id is not None:
+                item["slots"] = slots_by_id.get(row[0], {})
             out.append(term_from_dict(item))
         return out
 
@@ -1773,10 +2111,16 @@ def term_status_from_db(store_root: Path) -> dict[str, Any]:
     from collections import Counter
 
     from sekaisync.normalize import normalize_name
-    from sekaisync.termindex import TAG_VOCAB
+    from sekaisync.termindex import TAG_VOCAB, term_status
 
     ensure_store(store_root)
     with connect(store_root) as conn:
+        if _meta_get(conn, "schema_version") in {"2", "3"}:
+            result = term_status(load_terms_records(store_root))
+            result["slot_statuses"] = dict(conn.execute(
+                "SELECT status, COUNT(*) FROM term_slots GROUP BY status"
+            ).fetchall())
+            return result
         total, official, with_evidence = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(official), 0), COALESCE(SUM(evidence_count > 0), 0) FROM terms"
         ).fetchone()
@@ -2000,13 +2344,21 @@ def import_legacy_domains(store_root: Path, domains: list[str]) -> dict[str, int
         # Astra P01: the legacy terms JSON is a full snapshot, so its import is
         # a snapshot replace (per-id evidence comes from the same records).
         records = load_terms(sources["terms"][0])
-        replace_terms_snapshot(
-            store_root,
-            records,
-            evidence_by_id={
-                record.id: list(record.evidence or []) for record in records
-            },
-        )
+        if inspect_schema(store_root).version in {"2", "3"}:
+            from sekaisync.term_slots import ingest_legacy_terms
+            from sekaisync.termindex import term_to_dict
+            with connect(store_root) as conn:
+                revision = current_revision(conn)
+            ingest_legacy_terms(store_root, [term_to_dict(record) for record in records],
+                                expected_revision=revision)
+        else:
+            replace_terms_snapshot(
+                store_root,
+                records,
+                evidence_by_id={
+                    record.id: list(record.evidence or []) for record in records
+                },
+            )
         counts["terms"] = count_rows(store_root)["terms"]
         counts["term_evidence"] = count_rows(store_root)["term_evidence"]
     if "pages" in domains and "pages" in sources:

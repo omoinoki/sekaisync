@@ -143,18 +143,23 @@ class RegionFactsTests(unittest.TestCase):
         self.assertEqual(status['flag'], 'needs_region')
         self.assertEqual(project_common_facts(regions, ['jp', 'en', 'cn'])[0], {})
 
-    def test_old_db_serializer_stays_callable_but_cannot_preserve_region_slots(self):
+    def test_db_serializer_requires_migration_and_preserves_region_slots(self):
         from sekaisync import dbstore
         from sekaisync.regions import entity_for_region
         self.write_events()
         event = build_registry(self.root, ['jp', 'en'])[0]
-        # Contract limitation pending P07 v3: the existing SQL serializer has
-        # fixed columns. New defaults keep it callable, but are not a migration.
+        dbstore.initialize(self.root)
+        with self.assertRaisesRegex(ValueError, 'migrat'):
+            dbstore.save_entities(self.root, [event])
+        dbstore.migrate_store(self.root, target_version=2, dry_run=False,
+                             backup_path=self.root / 'v1.sqlite')
+        dbstore.migrate_store(self.root, target_version=3, dry_run=False,
+                             backup_path=self.root / 'v2.sqlite')
         dbstore.save_entities(self.root, [event])
         loaded = dbstore.load_entities(self.root)[0]
-        self.assertEqual(loaded.id, event.id)
-        self.assertEqual(loaded.region_facts, {})
-        self.assertEqual(entity_for_region(loaded, 'jp')['coverage'], 'unknown')
+        self.assertEqual(asdict(loaded), asdict(event))
+        self.assertEqual(entity_for_region(loaded, 'jp')['facts']['startAt'], 100)
+        self.assertEqual(entity_for_region(loaded, 'en')['facts']['startAt'], 200)
         self.assertNotIn('startAt', loaded.facts)
 
     def test_old_json_preserves_unscoped_evidence_exactly(self):

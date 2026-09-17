@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import threading
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Optional
 
 from sekaisync.config import MoesekaiSettings, ViewerSettings
@@ -50,6 +51,30 @@ class SourceEndpoints:
     ALTSOURCE_SV_ASSET_BUCKETS: dict[str, str] = field(
         default_factory=lambda: dict(EMPTY_BUCKETS)
     )
+
+
+    def __post_init__(self) -> None:
+        for name in ("ALTSOURCE_MS_METADATA_BASES", "ALTSOURCE_MS_ASSET_BASES"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        # P14: the snapshot is shared across threads; the mapping fields are
+        # stored as read-only copies so a caller mutating the dict (or the
+        # settings-derived mapping after construction) cannot change a snapshot
+        # that other contexts are already using.
+        object.__setattr__(
+            self,
+            "ALTSOURCE_MS_LOCALE_SERVERS",
+            MappingProxyType(dict(self.ALTSOURCE_MS_LOCALE_SERVERS)),
+        )
+        object.__setattr__(
+            self,
+            "ALTSOURCE_MS_LOCALE_LANGUAGES",
+            MappingProxyType(dict(self.ALTSOURCE_MS_LOCALE_LANGUAGES)),
+        )
+        object.__setattr__(
+            self,
+            "ALTSOURCE_SV_ASSET_BUCKETS",
+            MappingProxyType(dict(self.ALTSOURCE_SV_ASSET_BUCKETS)),
+        )
 
 
 _current = SourceEndpoints()

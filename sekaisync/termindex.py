@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import sqlite3
 from copy import deepcopy
 from sekaisync.term_proposals import (
     proposal_items, source_proposal, translation_value, located_pair,
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from sekaisync import dbstore
+from sekaisync import term_slots as _term_slots
 from sekaisync.glossary import load_glossary
 from sekaisync.layout import glossary_path, web_index_path
 from sekaisync.llm_client import LLMClient
@@ -365,8 +368,17 @@ class TermRecord:
     # Per-line cross-language positions for the penetrate feature.
     # Each item: {story_key, line_index, language, sentence, term, trust, auxiliary}
     positions: list[dict] = field(default_factory=list)
+    # P08: authoritative per-language slot decisions. ``None`` on v1 stores
+    # where per-language slots do not exist; an empty dict means "explicitly
+    # no language has an accepted slot". Never derived from names_json.
+    slots: Optional[dict[str, dict]] = None
 
     def name_for(self, language: str) -> str:
+        if self.slots is not None:
+            slot = self.slots.get(language)
+            if slot is None or slot.get("status") != "accepted":
+                return ""
+            return str(slot.get("value") or "")
         return self.names.get(language) or self.canonical
 
 
@@ -736,6 +748,20 @@ def classify_tags(term: str, context: str = "", source_language: str = "ja") -> 
     return sorted(tags)
 
 
+def _slot_projection(slots: dict[str, dict]) -> dict:
+    accepted = [slot for slot in slots.values() if slot.get("status") == "accepted"]
+    sources = sorted({slot.get("source", "") for slot in accepted})
+    trusts = [slot.get("trust", "") for slot in accepted]
+    return {
+        "names": {lang: slot["value"] for lang, slot in slots.items()
+                  if slot.get("status") == "accepted" and slot.get("value")},
+        "official": bool(accepted) and all(slot.get("official") for slot in accepted),
+        "source": sources[0] if len(sources) == 1 else "",
+        "trust": max(trusts, key=lambda t: {"A": 0, "B": 1, "C": 2, "D": 3, "": 4}[t]) if trusts else "",
+        "confidence": min((slot.get("confidence", 0.0) for slot in accepted), default=0.0),
+    }
+
+
 def term_to_dict(
     term: TermRecord,
     score: Optional[int] = None,
@@ -771,6 +797,12 @@ def term_to_dict(
         "weight": round(term.weight, 4),
         "everyday": bool(term.everyday),
     }
+    if term.slots is not None:
+        data.update(_slot_projection(term.slots))
+        data["slots"] = [dict(term.slots[lang]) for lang in sorted(term.slots)]
+        data["unverified_languages"] = sorted(
+            lang for lang, slot in term.slots.items() if slot.get("status") != "accepted"
+        )
     if term.positions:
         data["positions"] = term.positions
     if score is not None:
@@ -806,12 +838,43 @@ def term_from_dict(data: dict) -> TermRecord:
         everyday=bool(data.get("everyday", False)),
         positions=[dict(p) for p in data.get("positions", []) if isinstance(p, dict)],
     )
+    if data.get("slots") is not None:
+        raw_slots = data["slots"]
+        rec.slots = ({lang: dict(slot) for lang, slot in raw_slots.items()}
+                     if isinstance(raw_slots, dict)
+                     else {slot["language"]: dict(slot) for slot in raw_slots})
+        for key, value in _slot_projection(rec.slots).items():
+            setattr(rec, key, value)
     # Self-heal: stores written before the occurrences fix carry the field
     # frozen at 1 while their evidence list kept growing. Recompute whenever
     # the two disagree so existing databases converge without a full re-extract.
     if rec.evidence and (rec.weight == 0.0 or rec.occurrences < len(rec.evidence)):
         _refresh_term_weight(rec)
     return rec
+
+
+def load_persisted_terms(store_root: Path, include_sentences: bool = False) -> list[TermRecord]:
+    return dbstore.load_terms_records(store_root, include_sentences=include_sentences)
+
+
+def persist_term_updates(store_root: Path, records: Iterable[TermRecord], *,
+                         slot_updates: Optional[dict] = None,
+                         expected_revision: int, verifier=None) -> dict:
+    records = list(records)
+    if dbstore.inspect_schema(store_root).version == "1":
+        if slot_updates:
+            raise ValueError("slot updates require explicit migration")
+        return dbstore.upsert_terms(store_root, records, expected_revision=expected_revision)
+    decisions = []
+    for (term_id, language), raw in (slot_updates or {}).items():
+        if raw.get("term_id", term_id) != term_id or raw.get("language", language) != language:
+            raise ValueError("slot update key disagrees with decision")
+        decisions.append(dict(raw, term_id=term_id, language=language))
+    return _term_slots.commit_slot_decisions(
+        store_root, decisions, records=[term_to_dict(record) for record in records],
+        evidence_by_id={record.id: record.evidence for record in records if record.evidence},
+        expected_revision=expected_revision, verifier=verifier,
+    )
 
 
 def load_terms(path: Path) -> list[TermRecord]:
@@ -846,7 +909,7 @@ def save_terms(terms: Iterable[TermRecord], path: Path, compact_evidence: bool =
     serialized = []
     for term in terms:
         item = term_to_dict(term)
-        if compact_evidence:
+        if compact_evidence and term.slots is None:
             item["evidence"] = _compact_evidence(item["evidence"])
         serialized.append(item)
     data = {
@@ -2685,7 +2748,8 @@ def lookup_terms(
     for term in terms:
         if tag_filter and tag_filter not in (term.tags or []):
             continue
-        names = list(term.names.values())
+        active_names = _slot_projection(term.slots)["names"] if term.slots is not None else term.names
+        names = list(active_names.values())
         if term.canonical and term.canonical not in names:
             names.append(term.canonical)
         matched = best_match(query, names)
@@ -2878,7 +2942,8 @@ def term_penetrate(
     best: Optional[TermRecord] = None
     best_score = -1
     for term in term_list:
-        names = list(term.names.values())
+        active_names = _slot_projection(term.slots)["names"] if term.slots is not None else term.names
+        names = list(active_names.values())
         if term.canonical and term.canonical not in names:
             names.append(term.canonical)
         m = best_match(query, names)

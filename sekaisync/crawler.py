@@ -9,11 +9,13 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -35,7 +37,8 @@ from sekaisync.fetcher import (
 )
 from sekaisync.layout import web_category_dir, web_consent_path, web_pages_path
 from sekaisync.models import WebPage
-from sekaisync.endpoints import configure_endpoints, current_endpoints
+from sekaisync.endpoints import SourceEndpoints, _set_override, _reset_override, configure_endpoints, current_endpoints
+from sekaisync.runtime import RuntimeContext
 from sekaisync.sources import (
     BACKEND_MOESEKAI,
     BACKEND_SEKAI_VIEWER,
@@ -170,6 +173,7 @@ def _runtime_scope(
     moesekai: Optional[MoesekaiSettings] = None,
     viewer: Optional[ViewerSettings] = None,
     instance: Optional[str] = None,
+    runtime: Optional[RuntimeContext] = None,
 ):
     """Scope endpoints to this call's settings for the duration of the block.
 
@@ -187,6 +191,24 @@ def _runtime_scope(
     from sekaisync.endpoints import _reset_override, _set_override, current_endpoints
     from sekaisync.runtime import endpoints_from_sites
 
+    if runtime is not None:
+        if moesekai is not None or viewer is not None:
+            raise ValueError("pass runtime or settings, not both")
+        # A runtime scope owns its store, so it also owns that store's crawl
+        # cache: binding the root here means a worker task captured inside the
+        # scope carries the right cache location instead of whatever ambient
+        # root happened to be set (or none at all). Restored on exit, so an
+        # outer crawl's cache root survives a nested scope.
+        namespace_token = _cache_namespace.set(runtime.cache_namespace_for(instance))
+        cache_token = _sv_cache_root.set(Path(runtime.store_root))
+        try:
+            with runtime.activate(instance):
+                yield current_endpoints()
+        finally:
+            _sv_cache_root.reset(cache_token)
+            _cache_namespace.reset(namespace_token)
+        return
+
     if moesekai is None and viewer is None:
         # Nothing configured for this call: leave the ambient snapshot alone.
         yield current_endpoints()
@@ -200,10 +222,16 @@ def _runtime_scope(
         moesekai=moesekai,
         viewer=viewer,
     )
-    token = _set_override(endpoints_from_sites((entry,)))
+    # Merged on top of the ambient snapshot: a settings-only scope configures
+    # one backend, so fields it does not set (the Viewer asset base a Moesekai
+    # CDN fallback fetches from) keep their configured value instead of
+    # resetting to the dataclass default.
+    token = _set_override(endpoints_from_sites((entry,), base=current_endpoints()))
+    namespace_token = _cache_namespace.set("")
     try:
         yield current_endpoints()
     finally:
+        _cache_namespace.reset(namespace_token)
         _reset_override(token)
 
 
@@ -689,6 +717,11 @@ _sv_cache_root: "contextvars.ContextVar[Optional[Path]]" = contextvars.ContextVa
 )
 
 
+_cache_namespace: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "crawl_cache_namespace", default=""
+)
+
+
 def _sv_master_cache_path(url: str) -> Optional[Path]:
     """Disk cache location for a master table URL.
 
@@ -699,11 +732,21 @@ def _sv_master_cache_path(url: str) -> Optional[Path]:
     root = _sv_cache_root.get()
     if root is None:
         return None
-    marker = "/sekai-master-db"
-    i = url.find(marker)
-    if i < 0:
-        return None
-    return Path(root) / "cache" / "sv_master" / url[i + 1:].replace("/", "_")
+    # Hash the full URL, including content-affecting query, rather than putting
+    # URL characters (notably Windows-invalid '?') into a filesystem name.
+    identity = json.dumps(_sv_master_cache_metadata(url), sort_keys=True)
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return Path(root) / "cache" / "sv_master" / "v2" / f"{key}.json"
+
+
+def _sv_master_cache_metadata(url: str) -> dict[str, str]:
+    return {
+        "backend": BACKEND_SEKAI_VIEWER,
+        "instance": _current_sv_instance(),
+        "url": url,
+        "parser_version": "sv-master-v2",
+        "cache_namespace": _cache_namespace.get(),
+    }
 
 
 def fetch_altsource_sv_master(
@@ -722,8 +765,12 @@ def fetch_altsource_sv_master(
     cache_path = _sv_master_cache_path(url)
     if cache_path is not None and cache_path.exists():
         try:
-            data = json.loads(cache_path.read_text(encoding="utf-8"))
-            return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (isinstance(cached, dict)
+                    and cached.get("metadata") == _sv_master_cache_metadata(url)
+                    and isinstance(cached.get("records"), list)
+                    and all(isinstance(item, dict) for item in cached["records"])):
+                return cached["records"]
         except (OSError, json.JSONDecodeError):
             pass
     last_error: Optional[Exception] = None
@@ -747,9 +794,21 @@ def fetch_altsource_sv_master(
         if cache_path is not None:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = cache_path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
-                tmp.replace(cache_path)
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=cache_path.stem, suffix=".tmp",
+                    dir=str(cache_path.parent),
+                )
+                tmp = Path(tmp_name)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        payload = {
+                            "metadata": _sv_master_cache_metadata(url),
+                            "records": records,
+                        }
+                        json.dump(payload, handle, ensure_ascii=False)
+                    tmp.replace(cache_path)
+                finally:
+                    tmp.unlink(missing_ok=True)
             except OSError:
                 pass
         return records
@@ -1045,6 +1104,22 @@ def _altsource_ms_detail_sitemaps(sitemap_xml: str, locales: Iterable[str]) -> l
     return detail_sitemaps or main_sitemaps
 
 
+def _crawl_binding(runtime, store_root, backend, instance, fetcher):
+    """Resolve one explicit runtime instance before acquiring locks or fetching."""
+    if runtime is None:
+        return instance, fetcher  # legacy configured callers remain supported
+    if Path(store_root).resolve() != runtime.store_root.resolve():
+        raise ValueError("crawl store_root does not match runtime.store_root")
+    if instance is None:
+        entry = next((s for s in runtime.enabled_sites() if s.backend == backend), None)
+    else:
+        entry = runtime.site(instance)
+    if entry is None or not entry.enabled or entry.backend != backend:
+        raise ValueError(f"no enabled {backend} instance {instance!r} in runtime")
+    runtime.endpoints_for(entry.id)
+    return entry.id, runtime.fetcher if fetcher is fetch_http_text and runtime.fetcher is not None else fetcher
+
+
 def crawl_altsource_ms_site(
     store_root: Path,
     locales: Iterable[str] = ("zh-cn",),
@@ -1055,8 +1130,10 @@ def crawl_altsource_ms_site(
     tos_already_checked: bool = False,
     settings: Optional[MoesekaiSettings] = None,
     instance: Optional[str] = None,
+    runtime: Optional[RuntimeContext] = None,
 ) -> dict[str, Any]:
-    with _ms_instance_scope(instance):
+    instance, fetcher = _crawl_binding(runtime, store_root, BACKEND_MOESEKAI, instance, fetcher)
+    with store_writer_lock(store_root), _ms_instance_scope(instance), _runtime_scope(moesekai=settings, instance=instance, runtime=runtime):
         return _crawl_altsource_ms_site_impl(
             store_root, locales=locales, limit=limit, accept_tos=accept_tos,
             delay=delay, fetcher=fetcher, tos_already_checked=tos_already_checked,
@@ -1074,8 +1151,6 @@ def _crawl_altsource_ms_site_impl(
     tos_already_checked: bool,
     settings: Optional[MoesekaiSettings],
 ) -> dict[str, Any]:
-    if settings is not None:
-        apply_source_settings(moesekai=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
     require_endpoint(_EP().ALTSOURCE_MS_SITEMAP, "sitemap_url", _current_ms_instance())
@@ -1698,6 +1773,38 @@ def _take_page(
     return remaining
 
 
+@dataclass(frozen=True)
+class CrawlTaskContext:
+    """Explicit immutable endpoint/identity/cache binding for a submitted task.
+
+    Helpers retain ContextVar access during this migration, but each task
+    receives its own snapshot rather than looking up caller state in a thread.
+    """
+
+    endpoints: SourceEndpoints
+    ms_instance: str
+    sv_instance: str
+    cache_root: Optional[Path]
+    cache_namespace: str
+
+    @classmethod
+    def capture(cls):
+        return cls(_EP(), _current_ms_instance(), _current_sv_instance(),
+                   _sv_cache_root.get(), _cache_namespace.get())
+
+    def run(self, worker, item):
+        endpoint_token = _set_override(self.endpoints)
+        cache_token = _sv_cache_root.set(self.cache_root)
+        namespace_token = _cache_namespace.set(self.cache_namespace)
+        try:
+            with _ms_instance_scope(self.ms_instance), _sv_instance_scope(self.sv_instance):
+                return worker(item)
+        finally:
+            _cache_namespace.reset(namespace_token)
+            _sv_cache_root.reset(cache_token)
+            _reset_override(endpoint_token)
+
+
 def _fetch_pages_parallel(
     items: Iterable[Any],
     worker: Callable[[Any], Optional[WebPage]],
@@ -1740,7 +1847,10 @@ def _fetch_pages_parallel(
                     break
                 if skip and skip(item):
                     continue
-                pending.add(executor.submit(worker, item))
+                # Each task owns its Context: a Context cannot be entered
+                # concurrently. Capture before submission, never inside the worker.
+                task = CrawlTaskContext.capture()
+                pending.add(executor.submit(contextvars.copy_context().run, task.run, worker, item))
             if not pending:
                 break
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -2320,6 +2430,7 @@ def crawl_altsource_ms(
     include_overlay: bool = True,
     settings: Optional[MoesekaiSettings] = None,
     instance: Optional[str] = None,
+    runtime: Optional[RuntimeContext] = None,
 ) -> dict[str, Any]:
     # Writer lease: a crawl read-modify-writes shared page state, so two
     # concurrent crawls against one store could interleave and lose updates.
@@ -2329,15 +2440,23 @@ def crawl_altsource_ms(
     # Endpoint scope comes from THIS call's settings (Astra P14/D14). Without
     # it, a second crawl configured with different settings would overwrite the
     # process-global snapshot and both crawls would share one set of endpoints.
+    instance, fetcher = _crawl_binding(runtime, store_root, BACKEND_MOESEKAI, instance, fetcher)
     with store_writer_lock(store_root), _ms_instance_scope(instance), _runtime_scope(
-        moesekai=settings, instance=instance or SOURCE_MS
+        moesekai=settings, instance=instance or SOURCE_MS, runtime=runtime
     ):
-        return _crawl_altsource_ms_impl(
-            store_root, depth=depth, locales=locales, limit=limit,
-            accept_tos=accept_tos, delay=delay, fetcher=fetcher,
-            tos_already_checked=tos_already_checked, workers=workers,
-            resume=resume, include_overlay=include_overlay, settings=settings,
-        )
+        # A crawl owns its store, so it also owns the crawl cache under it:
+        # scoping the root here keeps a task captured inside this crawl from
+        # inheriting an unrelated outer context's cache root (Astra P14).
+        cache_token = _sv_cache_root.set(Path(store_root))
+        try:
+            return _crawl_altsource_ms_impl(
+                store_root, depth=depth, locales=locales, limit=limit,
+                accept_tos=accept_tos, delay=delay, fetcher=fetcher,
+                tos_already_checked=tos_already_checked, workers=workers,
+                resume=resume, include_overlay=include_overlay, settings=settings,
+            )
+        finally:
+            _sv_cache_root.reset(cache_token)
 
 
 def _crawl_altsource_ms_impl(
@@ -2354,8 +2473,6 @@ def _crawl_altsource_ms_impl(
     include_overlay: bool,
     settings: Optional[MoesekaiSettings],
 ) -> dict[str, Any]:
-    if settings is not None:
-        apply_source_settings(moesekai=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
     require_endpoint(_EP().ALTSOURCE_MS_BASE, "site_base", _current_ms_instance())
@@ -3376,18 +3493,26 @@ def crawl_altsource_sv(
     include_i18n: bool = True,
     settings: Optional[ViewerSettings] = None,
     instance: Optional[str] = None,
+    runtime: Optional[RuntimeContext] = None,
 ) -> dict[str, Any]:
     # See crawl_altsource_ms: lease first, then any connection (Astra P13).
+    # ``_sv_cache_root`` was set without keeping the token, so it leaked past
+    # the crawl: after an exception, later code still cached under a store the
+    # crawl no longer owns. Scoped like the endpoint override.
+    instance, fetcher = _crawl_binding(runtime, store_root, BACKEND_SEKAI_VIEWER, instance, fetcher)
     with store_writer_lock(store_root), _sv_instance_scope(instance), _runtime_scope(
-        viewer=settings, instance=instance or SOURCE_SV
+        viewer=settings, instance=instance or SOURCE_SV, runtime=runtime
     ):
-        _sv_cache_root.set(Path(store_root))
-        return _crawl_altsource_sv_impl(
-            store_root, regions=regions, tables=tables, limit=limit,
-            accept_tos=accept_tos, delay=delay, fetcher=fetcher,
-            tos_already_checked=tos_already_checked, depth=depth, workers=workers,
-            resume=resume, include_i18n=include_i18n, settings=settings,
-        )
+        cache_token = _sv_cache_root.set(Path(store_root))
+        try:
+            return _crawl_altsource_sv_impl(
+                store_root, regions=regions, tables=tables, limit=limit,
+                accept_tos=accept_tos, delay=delay, fetcher=fetcher,
+                tos_already_checked=tos_already_checked, depth=depth, workers=workers,
+                resume=resume, include_i18n=include_i18n, settings=settings,
+            )
+        finally:
+            _sv_cache_root.reset(cache_token)
 
 
 def _crawl_altsource_sv_impl(
@@ -3405,8 +3530,6 @@ def _crawl_altsource_sv_impl(
     include_i18n: bool,
     settings: Optional[ViewerSettings],
 ) -> dict[str, Any]:
-    if settings is not None:
-        apply_source_settings(viewer=settings)
     if not tos_already_checked:
         require_tos_consent(accept_tos)
     require_endpoint(_EP().ALTSOURCE_SV_MASTER_BASE, "master_base", _current_sv_instance())

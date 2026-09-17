@@ -602,13 +602,24 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     # from `merged` are removed, and evidence travels with each record. The
     # snapshot contract requires evidence to be *stated* for every id, which is
     # what makes "this record has no evidence" different from "its evidence was
-    # not loaded".
-    dbstore.replace_terms_snapshot(
-        config.store_root,
-        merged,
-        evidence_by_id={rec.id: list(rec.evidence or []) for rec in merged},
-    )
-    path = dbstore.db_file(config.store_root)
+    # not loaded". On a slot store the same snapshot goes through slot
+    # decisions, because names_json there is only ever the accepted projection.
+    if dbstore.inspect_schema(config.store_root).version in {"2", "3"}:
+        from sekaisync.term_slots import ingest_record_snapshot
+
+        with dbstore.connect(config.store_root) as conn:
+            revision = dbstore.current_revision(conn)
+        ingest_record_snapshot(
+            config.store_root,
+            [term_to_dict(rec) for rec in merged],
+            expected_revision=revision,
+        )
+    else:
+        dbstore.replace_terms_snapshot(
+            config.store_root,
+            merged,
+            evidence_by_id={rec.id: list(rec.evidence or []) for rec in merged},
+        )
     print(
         json.dumps(
             {
@@ -923,14 +934,28 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
     # terms the pass did not touch must stay exactly as they are, and each
     # touched term's evidence is replaced with what this pass saw (records
     # were loaded with sentences, so their evidence lists are authoritative).
-    dbstore.upsert_terms(
-        config.store_root,
-        records,
-        evidence_updates={
-            rec.id: {"mode": "replace", "items": list(rec.evidence or [])}
-            for rec in records
-        },
-    )
+    # A slot store takes the same intent through slot decisions.
+    if dbstore.inspect_schema(config.store_root).version in {"2", "3"}:
+        from sekaisync import term_slots
+
+        with dbstore.connect(config.store_root) as conn:
+            revision = dbstore.current_revision(conn)
+        term_slots.commit_slot_decisions(
+            config.store_root,
+            [decision for rec in records for decision in term_slots.decisions_from_record(rec)],
+            records=[term_to_dict(rec) for rec in records],
+            evidence_by_id={rec.id: list(rec.evidence or []) for rec in records},
+            expected_revision=revision,
+        )
+    else:
+        dbstore.upsert_terms(
+            config.store_root,
+            records,
+            evidence_updates={
+                rec.id: {"mode": "replace", "items": list(rec.evidence or [])}
+                for rec in records
+            },
+        )
     print(
         json.dumps(
             {

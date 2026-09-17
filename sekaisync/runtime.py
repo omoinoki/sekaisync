@@ -23,8 +23,12 @@ using whatever was configured last.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field, replace
+import hashlib
+import json
+from dataclasses import dataclass, fields, replace
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Iterable, Optional
 
 from sekaisync.config import SekaiSyncConfig, SiteSettings
@@ -60,14 +64,49 @@ class RuntimeContext:
     #: Instance ids the profile enables, in priority order.
     source_ids: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "store_root", Path(self.store_root))
+        object.__setattr__(self, "sites", tuple(self.sites))
+        object.__setattr__(self, "source_ids", tuple(self.source_ids))
+        instances = {}
+        seen = set()
+        for entry in self.sites:
+            key = entry.id.lower()
+            if key in seen:
+                raise ValueError(f"duplicate instance {entry.id!r}")
+            seen.add(key)
+            if entry.enabled:
+                # Selected instance wins for its backend. Only another backend
+                # may supply an explicitly configured CDN fallback.
+                others = tuple(s for s in self.sites if s.backend != entry.backend)
+                instances[key] = endpoints_from_sites((entry,) + others)
+        object.__setattr__(self, "_instance_endpoints", MappingProxyType(instances))
+
     def endpoints_for(self, source_id: str) -> SourceEndpoints:
         """Endpoints configured for one instance.
 
-        Today all instances share one snapshot (the backend settings are
-        per-backend), so this returns the runtime's snapshot. It exists so a
-        future per-instance endpoint split has a single call site to change.
+        Each registered instance gets its own snapshot (derived once in
+        ``__post_init__``), so two instances of the same backend no longer
+        overwrite each other's fields. Unknown or disabled ids raise instead of
+        silently returning another instance's endpoints. The id-less backend
+        default stays available as ``self.endpoints``.
         """
-        return self.endpoints
+        wanted = str(source_id or "").strip().lower()
+        try:
+            return self._instance_endpoints[wanted]  # type: ignore[attr-defined]
+        except (AttributeError, KeyError):
+            raise ValueError(
+                f"no enabled instance {source_id!r} in this runtime; "
+                f"known: {sorted(getattr(self, '_instance_endpoints', {}))}"
+            ) from None
+
+    def cache_namespace_for(self, source_id: str) -> str:
+        """Stable instance + endpoint identity, independent of process globals."""
+        endpoints = self.endpoints_for(source_id)
+        payload = {f.name: dict(value) if isinstance(value, Mapping) else value
+                   for f in fields(endpoints) for value in (getattr(endpoints, f.name),)}
+        payload["instance"] = str(source_id).strip().lower()
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     def site(self, source_id: str) -> Optional[SiteSettings]:
         """The registered instance entry for ``source_id``, if any."""
@@ -81,14 +120,14 @@ class RuntimeContext:
         return tuple(entry for entry in self.sites if entry.enabled)
 
     @contextlib.contextmanager
-    def activate(self):
+    def activate(self, source_id: Optional[str] = None):
         """Make this runtime's endpoints current for the duration of the block.
 
         Context-scoped, so concurrent callers do not observe each other's
         endpoints, and the previous value is restored on exit — including when
         the body raises (Astra: 失败退出后上下文恢复).
         """
-        token = _set_override(self.endpoints)
+        token = _set_override(self.endpoints_for(source_id) if source_id is not None else self.endpoints)
         try:
             yield self
         finally:
@@ -117,18 +156,28 @@ def build_runtime(
     )
 
 
-def endpoints_from_sites(sites: Iterable[SiteSettings]) -> SourceEndpoints:
+def endpoints_from_sites(
+    sites: Iterable[SiteSettings],
+    *,
+    base: Optional[SourceEndpoints] = None,
+) -> SourceEndpoints:
     """Derive a snapshot from a site profile without touching global state.
 
-    Applies each enabled instance's backend settings in profile order, so the
-    result matches what the old ``apply_source_settings`` loop produced while
-    leaving the process-global snapshot alone.
+    The first enabled settings for each backend win, matching profile priority.
+    No settings are borrowed from another instance of the same backend.  With
+    ``base``, the profile is merged on top of that snapshot, so a field the
+    profile does not configure keeps its ambient value instead of resetting to
+    the dataclass default — the merge semantics ``configure_endpoints`` always
+    had.  A Moesekai-only scope therefore keeps the configured Viewer asset
+    base that its Viewer-CDN fallback fetches from.
     """
-    snapshot = SourceEndpoints()
+    snapshot = base if base is not None else SourceEndpoints()
+    have_ms = have_sv = False
     for entry in sites:
         if not entry.enabled:
             continue
-        if entry.moesekai is not None:
+        if entry.moesekai is not None and not have_ms:
+            have_ms = True
             snapshot = replace(
                 snapshot,
                 ALTSOURCE_MS_BASE=entry.moesekai.site_base,
@@ -147,7 +196,8 @@ def endpoints_from_sites(sites: Iterable[SiteSettings]) -> SourceEndpoints:
                 }
                 or snapshot.ALTSOURCE_MS_LOCALE_LANGUAGES,
             )
-        if entry.viewer is not None:
+        if entry.viewer is not None and not have_sv:
+            have_sv = True
             snapshot = replace(
                 snapshot,
                 ALTSOURCE_SV_I18N_BASE=entry.viewer.i18n_base,

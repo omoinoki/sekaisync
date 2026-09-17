@@ -1301,7 +1301,10 @@ def publish_generation(
     # the database file, and an existing file with no `meta` table is then
     # classified as unusable rather than absent — so letting the publish
     # connection create the file would make its own store unopenable.
-    dbstore.ensure_store(config.store_root)
+    if dbstore.inspect_schema(config.store_root).status == "absent":
+        dbstore.initialize_new_store(config.store_root, target_version=3)
+    else:
+        dbstore.ensure_store(config.store_root)
     with dbstore.connect(config.store_root) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
