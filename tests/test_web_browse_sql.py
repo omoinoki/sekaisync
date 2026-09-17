@@ -286,6 +286,64 @@ class WebBrowseSqlTest(unittest.TestCase):
         self.assertIn("web:tr:event_story:1:1:ja", with_overlay)
 
 
+class FilterValueResolutionTest(unittest.TestCase):
+    """Unfiltered browse must not pay for the filter-value enumeration.
+
+    `_sql_filter_values` turns a *filter* into a set of stored values by
+    evaluating the original Python rules over the store's distinct dimension
+    tuples. With no filter there is nothing to resolve, yet the enumeration
+    still ran — a full 752k-row scan (9.6s warm on the real store). The skip is
+    equivalent by construction, since every `resolved[...]` write sits inside a
+    `wanted_source`/`kind` guard; this pins it so the scan cannot come back.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="test_filter_values_")
+        self.store = Path(self._tmp.name) / "store"
+        save_web_pages(
+            self.store,
+            "altsource_ms",
+            [
+                WebPage(
+                    id="web:altsource_ms:event_story:1:1",
+                    source="altsource_ms",
+                    url="https://pjsk.moe/ja-jp/story/event/1/1/",
+                    title="活動1-1",
+                    language="ja",
+                    kind="event_story",
+                    text="本文",
+                    crawled_at="2026-01-01T00:00:00+00:00",
+                    hash="a",
+                ),
+            ],
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_filter_does_not_enumerate_distinct_values(self):
+        from unittest.mock import patch
+
+        from sekaisync import webindex
+
+        with patch.object(
+            webindex.dbstore, "connect",
+            side_effect=AssertionError("enumerated distinct values with no filter"),
+        ):
+            self.assertEqual(
+                webindex._sql_filter_values(self.store, wanted_source=None, kind=None), {}
+            )
+
+    def test_a_filter_still_resolves_values(self):
+        from sekaisync.webindex import _sql_filter_values
+
+        resolved = _sql_filter_values(
+            self.store, wanted_source="altsource_ms", kind="event_story"
+        )
+        self.assertEqual(resolved.get("source_ids"), ["altsource_ms"])
+        self.assertIn("event_story", resolved.get("kinds") or [])
+
+
 class WebSearchStreamingTest(unittest.TestCase):
     """P06 — search streams the scoring window instead of loading every body.
 

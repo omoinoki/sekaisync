@@ -862,6 +862,12 @@ def _sql_filter_values(
     Returns ``{}`` when a filter cannot be resolved, which the caller treats
     as "do not narrow".
     """
+    if not wanted_source and not kind:
+        # Neither filter needs a value set.  The rules below only turn a filter
+        # *into* a set of stored values, so with no filter there is nothing to
+        # resolve — and the enumeration is a full 752k-row scan (measured 9.6s
+        # warm, 46s cold on the real store) whose result the caller discards.
+        return {}
     resolved: dict[str, Any] = {}
     with dbstore.connect(store_root) as conn:
         rows = list(
