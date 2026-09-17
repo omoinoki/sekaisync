@@ -1,0 +1,6 @@
+python: 3.13.14 | sqlite: 3.50.4
+working set after Core init: 367.7 MB
+status(): cold=65.20s median=2.69s p95=2.81s min=2.53s rows=8 ws=524.4MB
+web_browse(limit=20): cold=13.77s median=14.13s p95=15.70s min=13.77s rows=20 ws=545.7MB
+web_lookup(limit=8): cold=177.26s median=144.81s p95=176.21s min=143.79s rows=8 ws=554.5MB
+final working set: 538.7 MB
