@@ -746,7 +746,7 @@ cd "C:/dsh_projects/sekaisync-handoff-2026-08-14"
 
 # 1. 全量测试（当前状态健康）
 python -X utf8 -m unittest discover -s tests -t .
-#    期望：Ran 563 tests / OK        （基线为 361）
+#    期望：Ran 864 tests / OK        （基线为 361）
 
 # 2. 提交整洁性
 git diff --check
@@ -767,8 +767,10 @@ import json
 e=Entity(id='c:f',type='character',region='demo',regions=['demo'],
          names={'en':'Unreleased'},facts={'startAt':1_800_000_000_000},
          source='master_db:demo',demo=True)
-p=build_fact_pack_at(e,as_of=1_700_000_000_000)
+# 注意 `region` 已是必填（P05，c95787b）：公开时间随区服不同，不再默选服。
+p=build_fact_pack_at(e, region='demo', as_of=1_700_000_000_000)
 print('future name leaked?', 'Unreleased' in json.dumps(p,ensure_ascii=False), '(期望 False)')
+print('region_scope:', p['region_scope'], '(期望 entity：无逐区服数据时明示降级)')
 "
 
 # 6. 查看全部提交
@@ -846,11 +848,40 @@ e0996ba/d44c720/0872418）：
   接入（`81570a1`）均已完成，但 worker 仍经 ContextVar 读取而非直接接收 CrawlContext；
   P16 TableRead 四态**已于 `dea142c` 完成**（本行 2026-09-17 前记录已过期），
   但事件关系表的自然键以外完整性仍以 `check_events` 的 incomplete_local 为准
-- ❌ 不说"性能已达标" —— `web_browse` 约 11.2s（原 50.2s；`c86adb1` 去掉无过滤时的 752k 行唯一值枚举后再降一档），`web_search` 仍约 173s（评分循环必须留在 Python，Astra D06 禁止用 LIKE 替换模糊匹配）；均未达方案预期的 <1s
+- ❌ 不说"性能已达标" —— B8 口径实测（`work/b8_perf_2026-09-17.txt`，Python 3.13.14 /
+  SQLite 3.50.4 / 真实库 752,372 页）：`status()` 冷 65.2s、热中位 2.69s（p95 2.81s）；
+  `web_browse(limit=20)` 冷 13.8s、热中位 14.1s（p95 15.7s，20 行）；
+  `web_lookup(limit=8)` 冷 177.3s、热中位 **144.8s**（p95 176.2s）——评分循环必须留在
+  Python（Astra D06 禁止用 LIKE 替换模糊匹配）。峰值 Windows 实际工作集约 555 MB。
+  均未达方案预期的 <1s；`web_lookup` 是最大缺口，需经证明召回等价的索引优化。
 - ❌ 不说"逐区服事实防剧透已完整" —— `build_fact_pack_at` 已于 `c95787b` 要求 region 并按
   逐区服事实判定公开时间（`region_scope` 明示是否降级），正文按请求语言选取并报告
   `effective_language`；但这是**公开时间过滤**，不是任意剧集进度防剧透——后者需要逐章节
   `knowledge_at` 证据，尚未建模。且仅有声明了 `_TIME_FIELDS` 的类型（event/card/gacha/
   virtual_live/song/area/shop_item）参与判定，其余类型一律 undated 并扣下正文
+
+
+---
+
+## B8 验收证据（2026-09-17 实测）
+
+Astra 明确要求 B8 各项"必须有真实证据，不能由 verifier/checkpoint/单元测试签署"。
+下表是本机**已实际执行**的结果；做不到的项列为"未验"，不代为签署。
+
+| B8 项 | 状态 | 证据 |
+| :--- | :--- | :--- |
+| ① 一致备份 / 不变量 | ✅ 已验 | `sqlite backup` 生成 2.269 GiB 副本（6.8s）；源与副本 `quick_check=ok`、`foreign_key_check` 均无违规；schema=1、entities 71,472、glossary 71,472、terms 8,727、term_evidence 164,027、web_pages 752,372 两侧一致。真实库全程只读 |
+| ② 子进程写者竞争 | ✅ 已验（已入回归） | 真实子进程：A 持 lease 时 B 被拒（`StoreBusyError`），A 释放后可用。`tests/test_writer_lease.py::CrossProcessLeaseTest` |
+| ② 崩溃恢复 | ✅ 已验（已入回归） | 子进程在 `sync` 写路径内 `os._exit(9)`（无 finally、无 clean close）：父进程验得 `quick_check=ok`、revision 保持 1、generation 未变、Core 仍可读、后续 sync 成功。`tests/test_publication_atomicity.py::ProcessCrashTest` |
+| ④ 冷/热性能与工作集 | ⚠️ 已测，**未达标** | `work/b8_perf_2026-09-17.txt`：status 冷 65.2s / 热中位 2.69s；web_browse 冷 13.8s / 热中位 14.1s；web_lookup 冷 177.3s / 热中位 144.8s（p95 176.2s）；峰值 Windows 实际工作集 ~555 MB。均**未达 <1s** |
+| ⑥ 无 skip/expectedFailure | ✅ 已验 | 全量 `discover`：864 tests、0 failure、0 error、**0 skipped、0 expectedFailures、0 unexpectedSuccess** |
+| ⑥ 无第三方运行依赖 | ✅ 已验 | AST 扫描 `sekaisync/`：**零**非标准库/非 sekaisync 导入；`pyproject.toml` `dependencies = []` |
+| ⑥ Python 版本矩阵 | ⚠️ 部分 | 实测仅 Python 3.13.14。全部源文件可用 3.10 语法解析（`ast.parse(feature_version=(3,10))`，唯一报错是 `__main__.py` 的既有 BOM，不影响导入）；**3.10/3.11/3.12 未实际运行过测试**，需平台矩阵实测 |
+| ⑤ 真实 MCP/浏览器/WinUI/DSH 互操作 | ❌ 未验 | 无客户端互操作测试；协议标识仍为 `2024-11-05`，未实现 2025-06-18 协商 |
+| ③ 发布故障点全矩阵 | ⚠️ 部分 | 已覆盖 late-failure、projection 失败、进程被杀；news/部分区域更新的故障点未逐一实测 |
+| ① 生产迁移授权 | ❌ 未做 | 未对真实库执行任何迁移；仅副本备份。生产迁移需另获授权 |
+
+**结论**：B8 **不具备签署发布的条件**（④性能、⑤互操作、⑥平台矩阵、③故障点矩阵均有缺口）。
+本机可给出的最大结论是"数据安全与崩溃/并发的实测证据已具备，且已固化为回归测试"。
 
 **真实 store 未被修改**：全部破坏性验证都在临时库上完成；真实库仅做过只读查询与性能测量。
