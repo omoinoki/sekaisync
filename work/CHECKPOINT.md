@@ -357,6 +357,20 @@ accept 裁决**只计数不落盘** —— `submit_judgments` 返回 `accepted: 
 `candidate_tiers.validate_slot_for_commit` 唯一资格门、按 `(subject_id, language)` 结算、
 `TermRecord` 落库。**layered 仍未真正持久化，不要宣称已落库。**
 
+**2026-09-17 复核（给出接手起点，避免重复摸索）**：`scrub_trinity` 已在返回值里逐槽
+产出 `result["slot_decisions"]`（`trinity.py:1538`，字段
+`{term, language, status, value, candidates, evidence:[{channel,value,payload}]}`），
+但**没有任何消费者**——`cli.py` 的 layered 分支只读 `accepted/pending/conflicts` 并打印计数，
+再走 `agent_review.enqueue`；`tests/` 里除本文件外无 `slot_decisions` 命中。
+
+接线前必须先解决一个数据缺口：槽证书（`term_slots._certificate`）要求
+`evidence_refs` 指向的每条证据带 `story_key`/`language`/`source`，而三个通道的
+`payload["evidence"]` 只有聚合计数（`stories: <n>`、`votes`、`sim`、`foreign_literal`
+字符串），**没有 story_key 列表**。因此这不是"把返回值转成决策"的接线题：要么让
+trunk/hub/translit 各自记录命中的 story_key（`_Corpus` 已有 `_term_stories` 与
+`line_index` 的按故事索引，数据源在），要么为三通道设计一个独立的资格门。
+在完成前者之前，任何"已落库"的说法都不成立。
+
 ---
 
 ### P14 — 显式 RuntimeContext（**核心缺陷已修**）
