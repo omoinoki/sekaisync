@@ -133,5 +133,52 @@ class ProposalsFromRowsTest(unittest.TestCase):
         self.assertEqual(proposals, {"T": {"ja": ["A"]}})
 
 
+class GlossaryIdentityTest(unittest.TestCase):
+    def test_filter_entities_before_indexing_surfaces(self):
+        from types import SimpleNamespace
+        from sekaisync.trinity import _glossary_name_index
+
+        area = SimpleNamespace(id="area:1", kind="area", canonical="星庭",
+                               names={"ja": "星庭", "en": "Star Garden"})
+        honor = SimpleNamespace(id="honor:2", kind="honor", canonical="星庭",
+                                names={"ja": "星庭", "en": "CANNED TUNA"})
+        for rows in ([area, honor], [honor, area]):
+            self.assertEqual(_glossary_name_index(rows)["星庭"]["en"], "Star Garden")
+
+    def test_same_surface_different_entities_is_not_an_official_answer(self):
+        from types import SimpleNamespace
+        from sekaisync.trinity import _glossary_name_index
+
+        rows = [SimpleNamespace(id=f"area:{i}", kind="area", canonical="星庭",
+                                names={"ja": "星庭", "en": name})
+                for i, name in enumerate(("Star Garden", "Another Garden"))]
+        self.assertNotIn("星庭", _glossary_name_index(rows))
+        self.assertNotIn("星庭", _glossary_name_index(reversed(rows)))
+
+
+class SlotIsolationTest(unittest.TestCase):
+    def test_official_chinese_cannot_approve_unverified_english(self):
+        from sekaisync.trinity import _Corpus, _merge_channels
+
+        result = _merge_channels(
+            {
+                "L0": {"セカイ": {"zh_hans": {"世界": {
+                    "value": "世界", "evidence": {"official": True},
+                }}}},
+                "hub": {"セカイ": {"en": {"WrongName": {
+                    "value": "WrongName", "evidence": {"verified": False},
+                }}}},
+            },
+            corpus=_Corpus({}, []),
+            source_language="ja",
+            glossary_names={"セカイ": {"zh_hans": "世界"}},
+        )
+        self.assertEqual(result["accepted"]["セカイ"]["names"], {"zh_hans": "世界"})
+        self.assertTrue(any(
+            row["term"] == "セカイ" and row["names"].get("en") == "WrongName"
+            for row in result["pending"]
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()

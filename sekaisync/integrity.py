@@ -328,6 +328,7 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
         + glossary["issues"]
         + terms["issues"]
     )
+    issues_sample = all_issues[:limit]
     issues_total = (
         web["issues_total"]
         + registry["issues_total"]
@@ -356,9 +357,9 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
             "scenario_id_mismatches": web["scenario_id_mismatches"],
             # Every problem found, not the size of the returned sample.
             "issues": issues_total,
-            "issues_sample_count": len(all_issues),
-            "issues_truncated": issues_total > len(all_issues),
+            "issues_sample_count": len(issues_sample),
+            "issues_truncated": issues_total > len(issues_sample),
             "sample_limit": limit,
         },
-        "issues": all_issues[:limit],
+        "issues": issues_sample,
     }

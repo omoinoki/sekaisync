@@ -1277,8 +1277,10 @@ def _glossary_name_index(
     这与上游 ``termindex.build_noun_lexicon`` / ``seed_from_glossary`` 的口径一致
     （``kind not in NOUN_KINDS`` 的词条一概不进词表）。
     """
-    _official_keys, names_by_key, _surfaces = _glossary_name_table(glossary)
     allowed = set(kinds) if kinds is not None else set(termindex.NOUN_KINDS)
+    glossary = [item for item in (glossary or [])
+                if not allowed or str(getattr(item, "kind", "")) in allowed]
+    _official_keys, names_by_key, _surfaces = _glossary_name_table(glossary)
     # 每个键的贡献者类型：只要存在一个实体类贡献者就放行该键（同形异指的非实体
     # 贡献者不允许污染实体名）。
     key_kinds: dict[str, set[str]] = {}
@@ -1478,6 +1480,78 @@ def _confidence(
 
 
 def _merge_channels(
+    channels: dict[str, dict[str, dict[str, dict]]],
+    *,
+    corpus: _Corpus,
+    source_language: str,
+    glossary_names: dict[str, dict[str, str]],
+    min_accept_confidence: float = 0.6,
+) -> dict:
+    result = {
+        "accepted": {}, "pending": [], "conflicts": [],
+        "agreement_boosted": 0, "stats_counter": {}, "slot_decisions": [],
+    }
+    slots = sorted({
+        (term, language)
+        for table in channels.values()
+        for term, languages in table.items()
+        for language in languages
+    })
+    for term, language in slots:
+        scoped = {
+            channel: {term: {language: table[term][language]}}
+            for channel, table in channels.items()
+            if language in table.get(term, {})
+        }
+        scoped_glossary = {
+            key: {language: names[language]}
+            for key, names in glossary_names.items() if language in names
+        }
+        merged = _merge_channel_slot(
+            scoped, corpus=corpus, source_language=source_language,
+            glossary_names=scoped_glossary,
+            min_accept_confidence=min_accept_confidence,
+        )
+        candidates = {
+            value: [channel for channel, table in scoped.items()
+                    if value in table[term][language]]
+            for table in scoped.values() for value in table[term][language]
+        }
+        result["pending"].extend(merged["pending"])
+        result["conflicts"].extend(merged["conflicts"])
+        record = merged["accepted"].get(term)
+        if record and record["names"]:
+            status = "accepted"
+            aggregate = result["accepted"].get(term)
+            if aggregate is None:
+                result["accepted"][term] = record
+            else:
+                aggregate["names"].update(record["names"])
+                aggregate["confidence"] = min(aggregate["confidence"], record["confidence"])
+                aggregate["channels"] = sorted(set(aggregate["channels"] + record["channels"]))
+        elif merged["conflicts"]:
+            status = "conflict"
+        elif merged["pending"]:
+            status = "pending"
+        else:
+            status = "rejected"
+        result["slot_decisions"].append({
+            "term": term, "language": language, "status": status,
+            "value": record["names"].get(language) if record else None,
+            "candidates": candidates,
+            "evidence": [
+                {"channel": channel, "value": value, "payload": payload}
+                for channel, table in scoped.items()
+                for value, payload in table[term][language].items()
+            ],
+        })
+        result["agreement_boosted"] += merged["agreement_boosted"]
+        for key, count in merged["stats_counter"].items():
+            result["stats_counter"][key] = result["stats_counter"].get(key, 0) + count
+    return result
+
+
+def _merge_channel_slot(
     channels: dict[str, dict[str, dict[str, dict]]],
     *,
     corpus: _Corpus,

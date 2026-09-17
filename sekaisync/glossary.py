@@ -37,7 +37,13 @@ def merge_glossary(entities: Iterable[Entity], seed_terms: Optional[list[dict]] 
         if not entity.names:
             continue
         existing = by_id.get(entity.id)
-        official = entity.source.startswith("master_db") or entity.source.startswith("official")
+        # Language availability is not region coverage. A global identity can
+        # keep its multilingual glossary entry even when dates need a region.
+        # Do not choose one region's source as the glossary's global source.
+        sources = ([rf.source for rf in entity.region_facts.values()]
+                   if entity.region_facts else [entity.source])
+        official = bool(sources) and all(
+            source.startswith(('master_db', 'official')) for source in sources)
         if existing is None:
             existing = GlossaryTerm(
                 id=entity.id,

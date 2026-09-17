@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
+from sekaisync.term_proposals import (
+    proposal_items, source_proposal, translation_value, located_pair,
+    validate_translation_proposal,
+)
 import json
 import math
 import re
@@ -365,6 +370,47 @@ class TermRecord:
         return self.names.get(language) or self.canonical
 
 
+@dataclass
+class ExtractionContext:
+    """Call-scoped inputs. No store is opened unless explicitly supplied.
+
+    An explicit empty glossary overrides store loading. Legacy extraction calls
+    construct an in-memory context; callers needing a store must pass one.
+    input_revision identifies evidence, not a database commit authorization.
+    """
+
+    store_root: Optional[Path] = None
+    glossary: Optional[Iterable[Any]] = None
+    source_language: str = "ja"
+    target_languages: tuple[str, ...] = ()
+    selected_story_keys: Optional[frozenset[str]] = None
+    input_revision: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        self.source_language = _term_language(self.source_language)
+        self.target_languages = tuple(dict.fromkeys(
+            _term_language(lang) for lang in self.target_languages
+        ))
+        if self.source_language not in TERM_LANGUAGES or any(
+            lang not in TERM_LANGUAGES for lang in self.target_languages
+        ):
+            raise ValueError("Unsupported extraction language")
+        if self.selected_story_keys is not None:
+            self.selected_story_keys = frozenset(self.selected_story_keys)
+        if self.glossary is None:
+            self.glossary = (dbstore.load_glossary_terms(Path(self.store_root))
+                             if self.store_root is not None else ())
+        self.glossary = tuple(self.glossary)
+
+    @property
+    def lexicon(self) -> dict[str, dict]:
+        return build_noun_lexicon(self.glossary)
+
+    @property
+    def character_names(self) -> set[str]:
+        return _character_name_set(self.glossary)
+
+
 def make_term_id(source_language: str, term: str) -> str:
     key = normalize_name(term)
     if not key:
@@ -598,9 +644,7 @@ _ROLE_SUFFIX_RE = re.compile(
 def _character_name_set(glossary: Optional[Iterable[Any]] = None) -> set[str]:
     """Collect all character display names from glossary (person entities)."""
     if glossary is None:
-        glossary = _load_glossary_fallback(Path("store"))
-        if not glossary:
-            return set()
+        glossary = ()
     names: set[str] = set()
     for gt in glossary:
         if str(getattr(gt, "kind", "")) in {"character", "character_profile"}:
@@ -621,7 +665,7 @@ def sanitize_translation_pollution(
     """Clear cross-language names that are actually character names / speaker
     labels, not translations of the term. This is the deterministic backstop
     against per-line alignment picking a co-occurring character name."""
-    char_names = char_names or _character_name_set()
+    char_names = _character_name_set() if char_names is None else char_names
     fixed = 0
     for t in terms:
         # Person terms legitimately translate TO character names
@@ -882,10 +926,10 @@ def group_pages_by_story(pages: Iterable[dict]) -> dict[str, dict[str, dict]]:
             continue
 
         def page_usable(candidate: dict) -> bool:
-            if candidate.get("asset_mismatch") or candidate.get("content_language_mismatch"):
-                return False
-            return text_matches_language(language, str(candidate.get("text", "")))
+            return _page_usable(candidate, language)
 
+        if not page_usable(page):
+            continue
         existing = grouped.setdefault(key, {}).get(language)
         if existing is None:
             grouped.setdefault(key, {})[language] = page
@@ -930,12 +974,11 @@ def extract_terms_from_text(
         f"Text:\n{text[:12000]}"
     )
     data = llm.chat_json(system, user)
-    items = data.get("terms", []) if isinstance(data, dict) else []
     records: list[TermRecord] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+    for item in proposal_items(data, "terms"):
         term = str(item.get("term", "")).strip()
+        if not source_proposal(item, text):
+            continue
         if len(term) < 2 or len(term) > 80:
             continue
         # Accept new tags field, fall back to legacy kind
@@ -951,10 +994,7 @@ def extract_terms_from_text(
             if kind not in TERM_KINDS:
                 kind = "term"
             tags = _normalize_tags(None, kind)
-        try:
-            confidence = max(0.0, min(1.0, float(item.get("confidence", 0.8))))
-        except (TypeError, ValueError):
-            confidence = 0.8
+        confidence = float(item["confidence"])
         rec = TermRecord(
             id=make_term_id(source_language, term),
             canonical=term,
@@ -1009,174 +1049,72 @@ def translate_terms_for_story(
         f"Target episode text:\n{target_text[:12000]}"
     )
     data = llm.chat_json(system, user)
-    items = data.get("translations", []) if isinstance(data, dict) else []
     result: dict[str, str] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        source_term = str(item.get("term", "")).strip()
-        translation = str(
-            item.get("translation")
-            or item.get("target_name")
-            or (item.get("languages") or {}).get(target_language, "")
-        ).strip()
-        if source_term and translation:
+    known = {r.canonical for r in source_records if any(
+        r.canonical in ev.get("sentence", "") for ev in r.evidence
+    )}
+    for item in proposal_items(data, "translations"):
+        translation = translation_value(item, target_language)
+        source_term = item.get("term")
+        if source_term in known and translation and translation in target_text[:12000]:
             result[normalize_name(source_term)] = translation
     return result
 
 
 def merge_terms(records: Iterable[TermRecord]) -> list[TermRecord]:
-    """Merge same-id records, keeping per-language evidence distinct.
+    """Merge same-subject records without transferring slot authority.
 
-    Astra P09/D09: an official input may promote only what it actually
-    supplies, and the term's source must follow the value that was kept. The
-    old rules produced exactly the WrongName/A combination Astra rejects: an
-    official record merged into one already holding a community value left the
-    community name in its slot (first-writer-wins) while the *whole term* was
-    stamped official/A — so the unverified name inherited A-grade authority.
-
-    Rules now:
-
-    - an official record **overrides** the unofficial value in the language
-      slot it actually speaks for; the displaced value survives in evidence
-      (Astra: 冲突保留两边证据), so no information is destroyed
-    - ``official``/``source``/``trust`` follow the values that remain: the term
-      is official only if the official record's slot value was kept
-    - a first-seen record is taken as-is (no behaviour change for fresh terms)
-
-    Per-language provenance is still term-level here — the v2 ``term_slots``
-    model (P08) is what makes it fully explicit; this change only stops the
-    merge from *minting* authority for values the official source never gave.
+    Two records are the same subject when their IDs match, or when they name
+    each other reciprocally (A lists B as its ja name while B lists A as its
+    zh name — the same cross-language mapping asserted from both directions
+    with shared stories). A merely shared surface is NOT identity: that case
+    stays two subjects. Merging reuses term_merge.merge_subject, which keeps
+    conflicting values as pending evidence instead of letting one record's
+    authority label swallow the other's slots.
     """
-    by_id: dict[str, TermRecord] = {}
+    from sekaisync.term_merge import merge_subject
+
+    reciprocal: dict[tuple[str, str], list[str]] = {}
+    by_id: dict[str, list[TermRecord]] = {}
     for record in records:
-        existing = by_id.get(record.id)
-        if existing is None:
-            # Ensure new singletons carry consistent tags/weight
-            if not record.tags:
-                record.tags = _normalize_tags(None, record.kind)
-            _refresh_term_weight(record)
-            by_id[record.id] = record
-            continue
+        ja = normalize_name(record.names.get("ja", ""))
+        zh = normalize_name(record.names.get("zh_hans", "") or record.names.get("zh_tw", ""))
+        signature = (ja, zh) if ja and zh else None
+        if signature is not None:
+            reciprocal.setdefault(signature, []).append(record.id)
+        by_id.setdefault(record.id, []).append(record)
+    # Union-find over explicit IDs and reciprocal pairs; ja-preferred ordering
+    # keeps the legacy display subject stable.
+    parent = {rid: rid for rid in by_id}
 
-        displaced_by_official = False
-        for language, name in record.names.items():
-            if not name:
-                continue
-            current = existing.names.get(language)
-            if current is None or current == name:
-                if current is None:
-                    existing.names[language] = name
-            elif record.official and not existing.official:
-                # Official wins the slot it speaks for; the displaced value is
-                # preserved as evidence, not destroyed.
-                displaced_by_official = True
-                existing.names[language] = name
-            # else: keep the existing value (first-writer-wins between two
-            # unofficial sources is unchanged behaviour).
+    def find(rid: str) -> str:
+        while parent[rid] != rid:
+            parent[rid] = parent[parent[rid]]
+            rid = parent[rid]
+        return rid
 
-        for evidence in record.evidence:
-            if evidence not in existing.evidence:
-                existing.evidence.append(evidence)
-        # Merge tags: union
-        for t in record.tags:
-            if t not in existing.tags:
-                existing.tags.append(t)
-        if not existing.tags:
-            existing.tags = _normalize_tags(None, existing.kind)
-        existing.tags = sorted(set(existing.tags))
-        for pos in record.positions:
-            if pos not in existing.positions:
-                existing.positions.append(pos)
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        first, second = sorted((ra, rb), key=lambda r: (by_id[r][0].source_language != "ja", r))
+        parent[second] = first
 
-        was_official = existing.official
-        existing.official = existing.official or record.official
-        if record.official and not was_official:
-            # Source follows the official identity only when official values
-            # were actually kept — not when the official record lost every slot.
-            if record.names and all(
-                existing.names.get(lang) == name
-                for lang, name in record.names.items()
-                if name
-            ) or displaced_by_official:
-                existing.source = record.source
-        if record.official and not was_official and displaced_by_official:
-            existing.trust = record.trust
-        elif trust_rank(record.trust) > trust_rank(existing.trust) and not (
-            record.official and not displaced_by_official and was_official
-        ):
-            existing.trust = record.trust
-        existing.confidence = max(existing.confidence, record.confidence)
-        if not existing.created_at and record.created_at:
-            existing.created_at = record.created_at
-        _refresh_term_weight(existing)
-    return _merge_reciprocal(list(by_id.values()))
+    for members in reciprocal.values():
+        for rid in members[1:]:
+            union(members[0], rid)
 
-
-def _reciprocal_signature(record: TermRecord) -> Optional[tuple[str, str]]:
-    names = record.names
-    ja = normalize_name(names.get("ja", ""))
-    zh = normalize_name(names.get("zh_hans", "") or names.get("zh_tw", ""))
-    if ja and zh:
-        return (ja, zh)
-    return None
-
-
-def _merge_reciprocal(records: list[TermRecord]) -> list[TermRecord]:
-    groups: dict[tuple[str, str], list[TermRecord]] = {}
-    for record in records:
-        signature = _reciprocal_signature(record)
-        if signature is None:
-            continue
-        groups.setdefault(signature, []).append(record)
-
-    merged: list[TermRecord] = []
-    consumed: set[int] = set()
+    groups: dict[str, list[TermRecord]] = {}
+    for rid in by_id:
+        groups.setdefault(find(rid), []).extend(by_id[rid])
+    merged = []
     for group in groups.values():
-        if len(group) == 1:
-            merged.append(group[0])
-            consumed.add(id(group[0]))
-            continue
-        primary = sorted(
-            group,
-            key=lambda item: (
-                not item.official,
-                item.source_language != "ja",
-                -len(item.evidence),
-                item.id,
-            ),
-        )[0]
-        for other in group:
-            if other is primary:
-                continue
-            for language, name in other.names.items():
-                if name and not primary.names.get(language):
-                    primary.names[language] = name
-            for evidence in other.evidence:
-                if evidence not in primary.evidence:
-                    primary.evidence.append(evidence)
-            for t in other.tags:
-                if t not in primary.tags:
-                    primary.tags.append(t)
-            primary.tags = sorted(set(primary.tags))
-            for pos in other.positions:
-                if pos not in primary.positions:
-                    primary.positions.append(pos)
-            primary.official = primary.official or other.official
-            if trust_rank(other.trust) > trust_rank(primary.trust):
-                primary.trust = other.trust
-            primary.confidence = max(primary.confidence, other.confidence)
-            if not primary.created_at and other.created_at:
-                primary.created_at = other.created_at
-            _refresh_term_weight(primary)
-            consumed.add(id(other))
-        _refresh_term_weight(primary)
-        merged.append(primary)
-        consumed.add(id(primary))
-
-    for record in records:
-        if id(record) not in consumed:
-            merged.append(record)
+        group.sort(key=lambda item: (not item.official, item.source_language != "ja",
+                                     -len(item.evidence), item.id))
+        record = merge_subject(group)
+        if len(group) > 1:
+            _refresh_term_weight(record)
+        merged.append(record)
     return merged
 
 
@@ -1221,67 +1159,96 @@ def seed_from_glossary(store_root: Path) -> list[TermRecord]:
     return merge_terms(records)
 
 
+def _extraction_inputs(pages, source_language, target_languages, glossary, context):
+    if context is None:
+        context = ExtractionContext(glossary=glossary, source_language=source_language or "ja",
+                                    target_languages=tuple(target_languages or ()))
+    elif ((source_language is not None and _term_language(source_language) != context.source_language)
+          or (target_languages is not None and tuple(_term_language(x) for x in target_languages)
+              != context.target_languages)):
+        raise ValueError("Extraction arguments disagree with context")
+    groups = group_pages_by_story(pages)
+    if context.selected_story_keys is not None:
+        groups = {key: by for key, by in groups.items() if key in context.selected_story_keys}
+    return context, groups
+
+
+def _apply_extraction_patch(existing, patches):
+    """Absent IDs/slots/evidence are preserve, never implicit deletion."""
+    by_id = {record.id: deepcopy(record) for record in existing or ()}
+    for record in patches:
+        old = by_id.get(record.id)
+        by_id[record.id] = merge_terms([old, record])[0] if old else record
+    return list(by_id.values())
+
+
 def extract_terms(
     pages: Iterable[dict],
-    source_language: str,
-    target_languages: Iterable[str],
-    llm: LLMClient,
+    source_language: Optional[str] = None,
+    target_languages: Optional[Iterable[str]] = None,
+    llm: Optional[LLMClient] = None,
     existing: Optional[list[TermRecord]] = None,
     max_terms_per_page: int = 20,
     include_translations: bool = True,
+    *, context: Optional[ExtractionContext] = None,
 ) -> list[TermRecord]:
-    targets = [language for language in target_languages if language]
-    groups = group_pages_by_story(pages)
-    records_by_id = {record.id: record for record in existing or []}
-
-    for story_key, pages_by_language in sorted(groups.items()):
-        source_page = _group_page(pages_by_language, source_language)
+    context, groups = _extraction_inputs(pages, source_language, target_languages, None, context)
+    source_language = context.source_language
+    if llm is None:
+        raise ValueError("LLM client must be explicitly supplied")
+    patches = []
+    proposals = defaultdict(list)
+    for story_key, by in sorted(groups.items()):
+        source_page = _group_page(by, source_language)
         if source_page is None:
             continue
-        source_text = str(source_page.get("text", ""))
-        if not source_text.strip():
-            continue
-        source_records = extract_terms_from_text(
-            source_text,
-            story_key,
-            source_language,
-            llm,
-            max_terms=max_terms_per_page,
-        )
+        source_text = source_page["text"][:12000]
+        fresh = extract_terms_from_text(source_text, story_key, source_language, llm, max_terms_per_page)
+        for record in fresh:
+            for ev in record.evidence:
+                ev.update(input_revision=context.input_revision, source=source_page.get("source", ""),
+                          page_id=source_page.get("id", ""), term=record.canonical,
+                          start=source_text.index(record.canonical))
         if include_translations:
-            translations: dict[str, dict[str, str]] = {}
-            for target_language in targets:
-                if target_language == source_language:
+            for language in context.target_languages:
+                target_page = _group_page(by, language)
+                if language == source_language or target_page is None:
                     continue
-                target_page = _group_page(pages_by_language, target_language)
-                if target_page is None:
-                    continue
-                mapping = translate_terms_for_story(
-                    source_records,
-                    target_language,
-                    str(target_page.get("text", "")),
-                    llm,
-                )
-                for normalized_source, translated_name in mapping.items():
-                    translations.setdefault(normalized_source, {})[target_language] = translated_name
-
-            for record in source_records:
-                source_key = normalize_name(record.names.get(source_language, ""))
-                for normalized_source, target_names in translations.items():
-                    if normalized_source == source_key:
-                        for language, translated_name in target_names.items():
-                            if translated_name:
-                                record.names[language] = translated_name
-
-        for record in source_records:
-            existing_record = records_by_id.get(record.id)
-            if existing_record is not None:
-                merged = merge_terms([existing_record, record])[0]
-                records_by_id[existing_record.id] = merged
-            else:
-                records_by_id[record.id] = record
-
-    return list(records_by_id.values())
+                target_text = target_page["text"][:12000]
+                mapping = translate_terms_for_story(fresh, language, target_text, llm)
+                for record in fresh:
+                    value = mapping.get(normalize_name(record.canonical))
+                    if not value:
+                        continue
+                    ev = located_pair(record.canonical, value, source_text, target_text,
+                                      story_key=story_key, language=language, source_language=source_language,
+                                      source_page=source_page, target_page=target_page)
+                    if ev:
+                        ev["input_revision"] = context.input_revision
+                        proposals[(record.id, record.canonical, language, value)].append(ev)
+        patches.extend(fresh)
+    merged = {record.id: record for record in merge_terms(patches)}
+    for (subject, source, language, value), evidence in proposals.items():
+        decision = validate_translation_proposal(
+            {"term": source, "translation": value, "confidence": 1.0},
+            evidence=evidence, language=language)
+        competitors = {v for sid, _, lang, v in proposals if sid == subject and lang == language}
+        if len(competitors) > 1:
+            decision.update(status="pending", reason="conflicting_proposals")
+        record = merged[subject]
+        if decision["status"] == "accepted":
+            record.names[language] = value
+        for ev in evidence:
+            ev.update(status=decision["status"], reason=decision["reason"])
+            if ev not in record.evidence:
+                record.evidence.append(ev)
+    # Official proprietary dictionary entries are L0 inputs (Astra P08): a
+    # same-identity official name with a clear source adopts directly, above
+    # the proposal gate. Applied after validation so curated names replace —
+    # never compete with — unverified proposals.
+    if include_translations:
+        apply_curated_translations(list(merged.values()))
+    return _apply_extraction_patch(existing, merged.values())
 
 
 def _is_proper_latin(term: str) -> bool:
@@ -1903,6 +1870,14 @@ def _term_stories(
     return out
 
 
+def _page_usable(page: dict, language: str) -> bool:
+    text = page.get("text")
+    return (not any(page.get(flag) for flag in
+                    ("asset_mismatch", "content_language_mismatch", "untranslated"))
+            and isinstance(text, str) and bool(text.strip())
+            and text_matches_language(_term_language(language), text))
+
+
 def _group_page(by_language: dict, lang: str) -> Optional[dict]:
     """Fetch a story's page for ``lang``, resolving language aliases.
 
@@ -1911,11 +1886,11 @@ def _group_page(by_language: dict, lang: str) -> Optional[dict]:
     silently returns None for the whole traditional-Chinese corpus.
     """
     page = by_language.get(lang)
-    if page is not None:
+    if page is not None and _page_usable(page, lang):
         return page
     want = _term_language(lang)
     for key, value in by_language.items():
-        if value is not None and _term_language(str(key)) == want:
+        if value is not None and _term_language(str(key)) == want and _page_usable(value, lang):
             return value
     return None
 
@@ -2041,7 +2016,7 @@ def build_alignment_vocab(
     glossary_by_lang: dict[str, set[str]] = {lang: set() for lang in TERM_LANGUAGES}
     char_names: set[str] = set()
     if glossary is None:
-        glossary = _load_glossary_fallback(Path("store"))
+        glossary = ()
     for gt in (glossary or []):
         kind = str(getattr(gt, "kind", ""))
         names = getattr(gt, "names", {}) or {}
@@ -2458,6 +2433,53 @@ def build_alignment_resources(
 
 
 def extract_terms_local(
+    pages: Iterable[dict], source_language: Optional[str] = None,
+    target_languages: Optional[Iterable[str]] = None,
+    existing: Optional[list[TermRecord]] = None, max_terms_per_page: int = 20,
+    translation_memory: Optional[dict[tuple[str, str], str]] = None,
+    glossary: Optional[Iterable[Any]] = None, cache_dir: Optional[Path] = None,
+    do_align: bool = False, *, context: Optional[ExtractionContext] = None,
+) -> list[TermRecord]:
+    context, groups = _extraction_inputs(pages, source_language, target_languages, glossary, context)
+    fresh = _extract_terms_local_candidates(
+        [page for by in groups.values() for page in by.values()], context.source_language,
+        context.target_languages, max_terms_per_page=max_terms_per_page,
+        glossary=context.glossary, cache_dir=cache_dir, do_align=do_align)
+    for record in fresh:
+        for ev in record.evidence:
+            ev["input_revision"] = context.input_revision
+        if record.official:
+            continue
+        for language, value in list(record.names.items()):
+            if language == context.source_language:
+                continue
+            evidence = []
+            for key, by in groups.items():
+                sp, tp = _group_page(by, context.source_language), _group_page(by, language)
+                if sp is None or tp is None:
+                    continue
+                ev = located_pair(record.canonical, value, sp["text"], tp["text"],
+                                  story_key=key, language=language, source_language=context.source_language,
+                                  source_page=sp, target_page=tp)
+                if ev:
+                    ev["input_revision"] = context.input_revision
+                    evidence.append(ev)
+            decision = validate_translation_proposal(
+                {"term": record.canonical, "translation": value, "confidence": 1.0},
+                evidence=evidence, language=language)
+            if decision["status"] != "accepted":
+                del record.names[language]
+            for ev in evidence:
+                ev.update(status=decision["status"], reason=decision["reason"])
+                record.evidence.append(ev)
+    # The curated official dictionary stays authoritative for the legacy
+    # projection (Astra P08 L0): an aligned proposal can be pending while the
+    # official name still answers queries.
+    apply_curated_translations(fresh)
+    return _apply_extraction_patch(existing, fresh)
+
+
+def _extract_terms_local_candidates(
     pages: Iterable[dict],
     source_language: str,
     target_languages: Iterable[str],
@@ -2475,7 +2497,7 @@ def extract_terms_local(
 
     # Build the noun lexicon once from official glossary (noun kinds only).
     if glossary is None:
-        glossary = _load_glossary_fallback(Path("store"))
+        glossary = ()
     lexicon = build_noun_lexicon(glossary)
 
     # Per-language alignment vocab (glossary ∪ discovered words) + IDF, cached.
@@ -2589,9 +2611,11 @@ def extract_terms_local(
         # "not covered" beats inventing translations (and it is what makes
         # --align an actual switch instead of a no-op).
         for record in records_by_id.values():
+            if record.official:
+                continue
             src_only = record.names.get(source_language, record.canonical)
             record.names = {source_language: src_only}
-        return _finalize_terms(list(records_by_id.values()))
+        return list(records_by_id.values())
     for record in records_by_id.values():
         if record.source == "glossary" or record.official:
             continue  # authoritative names already present
@@ -2633,7 +2657,7 @@ def extract_terms_local(
             if translated:
                 record.names[target_language] = translated
 
-    return _finalize_terms(list(records_by_id.values()))
+    return list(records_by_id.values())
 
 
 def _finalize_terms(records: list[TermRecord]) -> list[TermRecord]:
