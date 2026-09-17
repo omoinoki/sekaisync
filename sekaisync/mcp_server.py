@@ -25,10 +25,36 @@ from sekaisync.tools import (
     mcp_tools_list,
 )
 
-PROTOCOL_VERSION = "2024-11-05"
+#: MCP revisions this server can actually speak, newest first.  ``initialize``
+#: answers with the *client's* version when it appears here -- see
+#: ``McpServer._handle_request`` -- so this tuple, not the constant below, is
+#: what "supported" means.
+#:
+#: Only 2025-06-18 is listed, deliberately:
+#: * 2025-03-26 additionally requires a server to *receive* JSON-RPC batch
+#:   arrays (MUST).  This server answers an array message with -32600 by
+#:   design, so advertising that revision would be a false claim.
+#: * 2024-11-05 cannot be honestly advertised for the HTTP surface: its
+#:   transport is HTTP+SSE (``/sse`` + ``/messages``), which this server does
+#:   not host.  The ``/mcp`` endpoint it does host is the Streamable HTTP
+#:   transport introduced in 2025-03-26.
+SUPPORTED_VERSIONS: tuple[str, ...] = ("2025-06-18",)
+
+#: Newest supported revision; also the fallback for a client that sends no
+#: ``protocolVersion`` at all (a client MUST send one, so this is a
+#: compatibility fallback, not a claim that the member is optional).
+PROTOCOL_VERSION = SUPPORTED_VERSIONS[0]
 
 # P15 provisional budget: one stdio frame.  Marked provisional because a real
-# fixture with a large legitimate payload has not calibrated it yet.
+# fixture with a large legitimate payload has not calibrated it yet.  Still
+# uncalibrated after the W3 version-negotiation change, and the measurement
+# says no ceiling can be defended from the declared limits: the largest
+# legitimate stdio request is a ``verify_claims`` batch, whose *count* is
+# capped (``tools.MAX_CLAIMS`` = 100) but whose per-claim ``claim``/``expected``
+# text is not validated against any length, so the same batch is 45 KB with
+# 200-character texts and ~500 MB with multi-megabyte ones.  The other
+# candidate, ``tools.MAX_QUERY_LENGTH`` (2048), bounds only ``query``
+# arguments.  A number picked here would be a guess, not a calibration.
 MAX_STDIO_LINE_BYTES = 1024 * 1024
 
 # JSON-RPC 2.0 error codes.
@@ -37,6 +63,51 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+
+def negotiate_protocol_version(
+    params: dict, supported: Optional[tuple[str, ...]] = None
+) -> tuple[Optional[str], Optional[dict]]:
+    """Resolve the protocol revision for one ``initialize`` request.
+
+    Returns ``(version, None)`` with the version the response must announce,
+    or ``(None, failure)`` where ``failure`` carries the ``message`` and
+    ``data`` of an error response.  ``supported`` defaults to the module-level
+    :data:`SUPPORTED_VERSIONS`, resolved at call time (not bound as a default)
+    so a test can widen the list and exercise the echo rule.
+
+    The rule is the MCP lifecycle one, stated in both 2024-11-05 and
+    2025-06-18: *"If the server supports the requested protocol version, it
+    MUST respond with the same version."*  So a supported request is
+    **echoed**, never upgraded to the server's newest -- announcing a version
+    the client did not offer would be a silent mismatch, and clients are told
+    to disconnect when they meet one.  An unsupported version is an error
+    (the revision's own example initialize error: ``-32602`` with
+    ``data.supported`` / ``data.requested``), because falling back would hide
+    the disagreement exactly the way the old hardcoded constant did.
+
+    An absent (or explicit ``null``) member is not something the client can
+    support; it is the absence of an offer.  Older clients in the wild send
+    ``params: {}``, so this stays a compatibility fallback to the newest
+    supported revision rather than a hard failure.
+    """
+    supported = tuple(SUPPORTED_VERSIONS if supported is None else supported)
+    requested = params.get("protocolVersion")
+    if requested is None:
+        # The newest *supported* revision, not a parallel constant, so the
+        # fallback cannot drift from the list.
+        return supported[0], None
+    if not isinstance(requested, str) or isinstance(requested, bool):
+        return None, {
+            "message": "protocolVersion must be a string",
+            "data": {"supported": list(supported), "requested": requested},
+        }
+    if requested not in supported:
+        return None, {
+            "message": f"Unsupported protocol version: {requested}",
+            "data": {"supported": list(supported), "requested": requested},
+        }
+    return requested, None
 
 
 def _text_result(data: Any) -> dict:
@@ -223,11 +294,22 @@ class McpServer:
 
     def _handle_request(self, request_id: Any, method: str, params: dict) -> dict:
         if method == "initialize":
+            version, failure = negotiate_protocol_version(params)
+            if failure is not None:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": INVALID_PARAMS,
+                        "message": failure["message"],
+                        "data": failure["data"],
+                    },
+                }
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": version,
                     "capabilities": {
                         "tools": {"listChanged": False},
                         "resources": {"subscribe": False, "listChanged": False},

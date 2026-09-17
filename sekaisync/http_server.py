@@ -12,7 +12,12 @@ from urllib.parse import parse_qs, urlparse
 from sekaisync import __version__
 from sekaisync.config import SiteSettings, load_site_profile
 from sekaisync.core import SekaiSyncCore
-from sekaisync.mcp_server import PROTOCOL_VERSION, McpServer
+from sekaisync.mcp_server import (
+    INVALID_REQUEST,
+    PROTOCOL_VERSION,
+    SUPPORTED_VERSIONS,
+    McpServer,
+)
 from sekaisync.tools import (
     HTTP_GET_ROUTES,
     HTTP_POST_ROUTES,
@@ -270,6 +275,11 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             self._slot_reserved = False
 
     def _send_mcp_json(self, payload: Any) -> None:
+        # The advertised revision is the server's newest supported one.  A
+        # per-session negotiated version would need session state (the
+        # ``Mcp-Session-Id`` mechanism), which this stateless server does not
+        # implement; the ``initialize`` result carries the negotiated value,
+        # which is what the client binds to.
         try:
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         except (TypeError, ValueError, UnicodeEncodeError):
@@ -490,7 +500,40 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         finally:
             self._release_slot()
 
+    def _validate_mcp_protocol_version(self) -> bool:
+        """Enforce the ``MCP-Protocol-Version`` request header on ``/mcp``.
+
+        2025-06-18 Streamable HTTP: *"If the server receives a request with an
+        invalid or unsupported ``MCP-Protocol-Version``, it MUST respond with
+        ``400 Bad Request``."*  A **present** but unsupported value is refused
+        here, before the body is read, instead of being silently ignored --
+        silent acceptance is the same defect ``initialize`` used to have.
+
+        An **absent** header is not refused: the revision says a server that
+        cannot otherwise identify the version SHOULD assume ``2025-03-26``,
+        and that assumption would make every header-less local client fail
+        against a server that only speaks :data:`SUPPORTED_VERSIONS`.  Since
+        this server does not implement that fallback, it treats an absent
+        header as "nothing to check" -- ``initialize`` is still the authority
+        on the version.
+        """
+        declared = self._header("MCP-Protocol-Version").strip()
+        if not declared or declared in SUPPORTED_VERSIONS:
+            return True
+        self._send_json(400, {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {
+                "code": INVALID_REQUEST,
+                "message": f"Unsupported MCP-Protocol-Version: {declared}",
+                "data": {"supported": list(SUPPORTED_VERSIONS), "requested": declared},
+            },
+        })
+        return False
+
     def _handle_mcp_post(self, length: int) -> None:
+        if not self._validate_mcp_protocol_version():
+            return
         raw = self._read_body(length)
         if raw is None:
             return

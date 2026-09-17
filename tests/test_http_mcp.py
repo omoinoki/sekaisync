@@ -10,7 +10,7 @@ from sekaisync.config import SekaiSyncConfig
 from sekaisync.core import SekaiSyncCore
 from sekaisync.fetcher import sync
 from sekaisync.http_server import SekaiSyncHandler, handle_mcp_message
-from sekaisync.mcp_server import PROTOCOL_VERSION, McpServer
+from sekaisync.mcp_server import PROTOCOL_VERSION, SUPPORTED_VERSIONS, McpServer
 
 
 def _write_json(directory: Path, name: str, data) -> None:
@@ -156,7 +156,8 @@ class HttpMcpTest(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         )
         self.assertEqual(init["result"]["serverInfo"]["name"], "SekaiSync")
-        self.assertEqual(init["result"]["protocolVersion"], "2024-11-05")
+        self.assertEqual(init["result"]["protocolVersion"], PROTOCOL_VERSION)
+        self.assertEqual(PROTOCOL_VERSION, "2025-06-18")
 
         call = handle_mcp_message(
             self.core,
@@ -706,6 +707,109 @@ class McpHttpTransportTest(unittest.TestCase):
         self.assertEqual(second.status, 200)
         self.assertEqual(second.json()["id"], 7)
         self.assertEqual(second.json()["result"]["serverInfo"]["name"], "SekaiSync")
+
+
+class McpProtocolVersionTest(unittest.TestCase):
+    """P15/W3: the HTTP surface exposes and enforces the negotiated revision."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        store_root = Path(self.tmp.name) / "store"
+        create_demo_store(store_root)
+        sync(SekaiSyncConfig(store_root=store_root, regions=("demo",), demo=True), ["demo"])
+        self.core = SekaiSyncCore(store_root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _post(self, payload, headers=None):
+        return call_handler(
+            self.core, "/mcp", method="POST", body=json.dumps(payload), headers=headers
+        )
+
+    def test_response_header_matches_the_new_constant(self):
+        for accept in ("application/json", "text/event-stream"):
+            with self.subTest(accept=accept):
+                response = self._post(
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    headers={"Accept": accept},
+                )
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.header("MCP-Protocol-Version"), PROTOCOL_VERSION)
+                self.assertEqual(response.header("MCP-Protocol-Version"), "2025-06-18")
+
+    def test_initialized_version_is_echoed_over_http(self):
+        response = self._post({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": SUPPORTED_VERSIONS[0]},
+        })
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.json()["result"]["protocolVersion"], SUPPORTED_VERSIONS[0]
+        )
+
+    def test_unsupported_version_is_a_32602_error_not_a_result(self):
+        response = self._post({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05"},
+        })
+        self.assertEqual(response.status, 200)
+        payload = response.json()
+        self.assertNotIn("result", payload, payload)
+        self.assertEqual(payload["error"]["code"], -32602)
+        self.assertIn("2024-11-05", payload["error"]["message"])
+        self.assertEqual(payload["error"]["data"]["requested"], "2024-11-05")
+        self.assertEqual(
+            payload["error"]["data"]["supported"], list(SUPPORTED_VERSIONS)
+        )
+
+    def test_matching_request_header_is_accepted(self):
+        response = self._post(
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"MCP-Protocol-Version": PROTOCOL_VERSION},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.json()["result"], {})
+
+    def test_unsupported_request_header_is_400(self):
+        """2025-06-18: an invalid/unsupported header MUST be 400 Bad Request."""
+        response = self._post(
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"MCP-Protocol-Version": "2024-11-05"},
+        )
+        self.assertEqual(response.status, 400)
+        payload = response.json()
+        self.assertNotIn("result", payload, payload)
+        self.assertIn("2024-11-05", payload["error"]["message"])
+        self.assertEqual(payload["error"]["data"]["supported"], list(SUPPORTED_VERSIONS))
+
+    def test_absent_request_header_is_not_an_error(self):
+        """Documented choice: no header means nothing to check, not a 400.
+
+        The revision's SHOULD-assume-2025-03-26 rule is not implemented, so
+        failing header-less local clients would break them for no gain;
+        ``initialize`` remains the authority on the version.
+        """
+        response = self._post({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.json()["result"], {})
+
+    def test_header_rejection_happens_before_the_body_is_read(self):
+        response = call_handler(
+            self.core, "/mcp", method="POST", body="not json at all",
+            headers={"MCP-Protocol-Version": "1999-01-01"},
+        )
+        self.assertEqual(response.status, 400)
+        self.assertIn("1999-01-01", response.json()["error"]["message"])
+
+    def test_other_endpoints_ignore_the_mcp_header(self):
+        """The header governs /mcp only; REST routes do not require it."""
+        response = call_handler(
+            self.core, "/health",
+            headers={"MCP-Protocol-Version": "1999-01-01"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.json()["status"], "ok")
 
 
 class LoopbackBindingTest(unittest.TestCase):

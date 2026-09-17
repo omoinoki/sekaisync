@@ -10,7 +10,13 @@ from sekaisync.config import SekaiSyncConfig
 from sekaisync.core import SekaiSyncCore
 from sekaisync.fetcher import sync
 from sekaisync.layout import terms_path
-from sekaisync.mcp_server import MAX_STDIO_LINE_BYTES, McpServer
+from sekaisync.mcp_server import (
+    MAX_STDIO_LINE_BYTES,
+    PROTOCOL_VERSION,
+    SUPPORTED_VERSIONS,
+    McpServer,
+    negotiate_protocol_version,
+)
 from sekaisync.models import WebPage
 from sekaisync.termindex import save_terms, seed_from_glossary
 from sekaisync.webindex import save_web_pages
@@ -395,6 +401,123 @@ class McpEnvelopeTest(unittest.TestCase):
         })
         payload = json.loads(response["result"]["contents"][0]["text"])
         self.assertEqual(payload["query"], "星乃一歌")
+
+class McpVersionNegotiationTest(unittest.TestCase):
+    """P15/W3: ``initialize`` negotiates the revision instead of asserting one.
+
+    Before this change the handler ignored ``params`` entirely and answered
+    with its own constant, so an old client and a new client got the same
+    silent pass.  The rules under test are the MCP lifecycle ones: echo a
+    supported request, error on an unsupported one.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        store_root = Path(self.tmp.name) / "store"
+        create_demo_store(store_root)
+        self.server = McpServer(SekaiSyncCore(store_root))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _initialize(self, params):
+        return self.server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
+        )
+
+    def test_target_version_is_the_documented_one(self):
+        """The literal delivered target; everything else uses the constant."""
+        self.assertEqual(PROTOCOL_VERSION, "2025-06-18")
+        self.assertIn(PROTOCOL_VERSION, SUPPORTED_VERSIONS)
+
+    def test_every_supported_version_is_echoed_back(self):
+        for version in SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                response = self._initialize({"protocolVersion": version})
+                self.assertEqual(response["result"]["protocolVersion"], version)
+                self.assertEqual(response["id"], 1)
+
+    def test_echo_rule_returns_the_clients_version_not_the_newest(self):
+        """With two versions supported, an older request must NOT be upgraded.
+
+        Answering with the server's newest version would announce a revision
+        the client did not offer; the spec tells such a client to disconnect.
+        """
+        version, failure = negotiate_protocol_version(
+            {"protocolVersion": "2024-11-05"},
+            supported=("2025-06-18", "2024-11-05"),
+        )
+        self.assertIsNone(failure)
+        self.assertEqual(version, "2024-11-05")
+
+    def test_unsupported_version_is_rejected_not_silently_passed(self):
+        response = self._initialize({"protocolVersion": "2024-11-05"})
+        self.assertNotIn("result", response, response)
+        error = response["error"]
+        # The spec's own example initialize error: -32602, with the
+        # supported/requested pair in `data`.
+        self.assertEqual(error["code"], -32602)
+        self.assertIn("2024-11-05", error["message"])
+        self.assertEqual(error["data"]["requested"], "2024-11-05")
+        self.assertEqual(error["data"]["supported"], list(SUPPORTED_VERSIONS))
+        # A rejection is a hard failure: no capabilities leak out with it.
+        self.assertNotIn("capabilities", response)
+        self.assertEqual(response["id"], 1)
+
+    def test_unparseable_version_is_rejected(self):
+        for bad in ("", "latest", "2025-13-99", "2025-6-18", 5, True, ["2025-06-18"]):
+            with self.subTest(bad=bad):
+                response = self._initialize({"protocolVersion": bad})
+                self.assertNotIn("result", response, bad)
+                self.assertEqual(response["error"]["code"], -32602, bad)
+
+    def test_absent_version_falls_back_to_the_newest_supported(self):
+        """Documented choice: not an error, fall back to the newest supported.
+
+        A ``protocolVersion`` member is mandatory for a real client, so this
+        is a compatibility path for older local clients that send
+        ``params: {}`` -- not a claim that the member is optional.
+        """
+        for params in ({}, {"protocolVersion": None}):
+            with self.subTest(params=params):
+                response = self._initialize(params)
+                self.assertEqual(
+                    response["result"]["protocolVersion"], SUPPORTED_VERSIONS[0]
+                )
+
+    def test_absent_params_at_all_still_initializes(self):
+        response = self.server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+        )
+        self.assertEqual(response["result"]["protocolVersion"], SUPPORTED_VERSIONS[0])
+
+    def test_rejected_initialize_leaves_the_session_usable(self):
+        """A version error must not poison the loop for the next frame."""
+        rejected = self._initialize({"protocolVersion": "1999-01-01"})
+        self.assertNotIn("result", rejected)
+        followed = self.server.handle(
+            {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": PROTOCOL_VERSION}}
+        )
+        self.assertEqual(followed["result"]["protocolVersion"], PROTOCOL_VERSION)
+
+    def test_rejected_version_over_stdio_answers_then_keeps_reading(self):
+        frames = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2024-11-05"}},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        ]
+        stdout = io.StringIO()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.server.run(
+                stdin=io.StringIO("".join(json.dumps(f) + "\n" for f in frames)),
+                stdout=stdout,
+            )
+        responses = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0]["error"]["code"], -32602)
+        self.assertNotIn("result", responses[0])
+        self.assertEqual(responses[1]["result"], {})
+
 
 class McpStdioTest(unittest.TestCase):
     """P15/D15: the stdio loop is bounded and recovers from bad frames."""
