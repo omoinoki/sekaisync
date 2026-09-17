@@ -22,6 +22,10 @@ Defects covered (findings from reading the source during B0/B1):
 
 import json
 import tempfile
+import os
+import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -180,6 +184,67 @@ class MigrationHonestyTest(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["errors"], [])
+
+
+class CrossProcessLeaseTest(unittest.TestCase):
+    """B8 — the lease must hold against a *separate OS process*, not just a thread.
+
+    An in-process lock proves the lock object works; it cannot prove the
+    mechanism a second `sekaisync` invocation would actually hit. This runs a
+    real child that acquires the lease and holds it, then asserts a second
+    child is refused and that it succeeds once the holder exits.
+    """
+
+    CHILD = r'''
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sekaisync.fetcher import store_writer_lock
+
+with store_writer_lock(Path(sys.argv[2])):
+    print("ACQUIRED", flush=True)
+    import time
+    time.sleep(float(sys.argv[3]))
+print("RELEASED", flush=True)
+'''
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="test_p13_xproc_")
+        self.store = Path(self._tmp.name) / "store"
+        dbstore.initialize(self.store)
+        self.child = Path(self._tmp.name) / "holder.py"
+        self.child.write_text(self.CHILD, encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, hold_seconds):
+        return subprocess.Popen(
+            [sys.executable, str(self.child), str(Path(__file__).resolve().parent.parent),
+             str(self.store), str(hold_seconds)],
+            stdout=subprocess.PIPE, text=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+            encoding="utf-8", errors="replace",
+        )
+
+    def test_a_second_process_is_refused_while_the_first_holds_the_lease(self):
+        holder = self._run(2.0)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ACQUIRED")
+            contender = self._run(0.1)
+            out, _ = contender.communicate(timeout=60)
+            self.assertNotIn("ACQUIRED", out,
+                             "a second process acquired the writer lease concurrently")
+        finally:
+            holder.wait(timeout=60)
+
+    def test_the_lease_is_available_again_once_the_holder_exits(self):
+        holder = self._run(0.1)
+        self.assertEqual(holder.stdout.readline().strip(), "ACQUIRED")
+        self.assertEqual(holder.stdout.readline().strip(), "RELEASED")
+        holder.wait(timeout=60)
+        late = self._run(0.1)
+        out, _ = late.communicate(timeout=60)
+        self.assertIn("ACQUIRED", out, "the lease stayed locked after the holder exited")
 
 
 if __name__ == "__main__":
