@@ -1489,6 +1489,279 @@ def _confidence(
     return round(min(0.99, base), 4)
 
 
+# ── 证据行：把通道 payload 转成可入库的逐故事证据 ────────────────────
+
+# 证据行的 ``source``：语料本体（爬取的故事译文），不是通道名。
+#
+# ``term_slots._certificate`` 要求 ``ev['source'] == slot['source']``
+# （``term_slots.py:140``），而四条通道取证的对象是同一批语料页——一条证据的
+# 出处是**那页语料**，不是"哪条通道发现了它"。通道身份另有去处：证据行的
+# ``channel`` 字段，以及 ``slot_decisions[*]["evidence"]`` 的审计 payload。
+# 这与仓库既有的证据行口径一致（``term_proposals.located_pair`` 写目标页的
+# ``source``；``termindex`` 写 ``source_page.get("source")``）。反过来，若把
+# 通道名当 source，槽决策就得跟着写 ``source="trunk"``——把"发现方式"谎报成
+# "出处"，且同一槽的多路证据各写各的通道名，证书门（要求全部相等）必挂。
+#
+# 取值 ``"corpus"`` 而非页面自带的 source：同一决策的多条证据来自同一批爬取
+# 页，逐页 source 在不同抓取后端间并不统一，写成常数才能让"同一决策的证据
+# 来源一致"这条成立；信任级别由 ``trust_for_source("corpus")`` 得 C
+# （派生/社区翻译），与语料证据的真实强度相符。
+CORPUS_SOURCE = "corpus"
+
+# 每个 (术语, 语言槽, 值) 最多物化多少条证据行。证据行的用途是"给出命名该值的
+# 故事身份"（证书门只要 ≥2 个不同 story_key），不是把全语料搬进库：常见术语的
+# 命中故事可达数千（セカイ 遍布全库），逐故事落库会把 term_evidence 撑爆。
+# 上限内按故事键升序取，结果确定。
+MAX_EVIDENCE_ROWS = 8
+
+# 最多检查多少个候选故事去凑满 ``MAX_EVIDENCE_ROWS``。上界存在的理由：值可能
+# 在该故事的目标语言行里根本不出现（官方名与语料用词不一致时很常见），此时
+# 逐故事找句子会一路扫到故事集合尽头——那是数千次分页，而结果仍是零条证据。
+# 扫满即停，剩下的交给上层（证据不足 ⇒ 不采纳），不在这里做无界扫描。
+MAX_EVIDENCE_SCAN = 64
+
+
+def _sentence_containing(
+    corpus: _Corpus, story_key: str, language: str, needle: str,
+) -> str:
+    """该故事该语言里第一条含 ``needle`` 的原文行；找不到返回空串。
+
+    取正文行是为满足证书门的"句子含该值"一条（``term_slots.py:142``）：
+    ``_certificate`` 逐条要求 ``term``/``value``/``sentence`` 之一命中值，
+    而译名证据里 ``term`` 是源词（``セカイ``）、``value`` 是译名（``SEKAI``），
+    两者不等——原句是每个通道都能给出的独立凭据。找不到就不编造。
+    """
+    if not needle:
+        return ""
+    for line in corpus.lines(story_key, language):
+        if needle in line:
+            return line
+    return ""
+
+
+def _evidence_story_keys(
+    term: str,
+    payload_evidence: dict,
+    corpus: _Corpus,
+    source_language: str,
+    *,
+    max_scan: int,
+) -> list[str]:
+    """该 payload 支持的故事身份（升序、去重、上限 ``max_scan`` 条）。
+
+    ``story_keys`` 是四条通道自报的故事集合（六处产出点在 ``24a26fb`` 之后
+    都写这个字段）。**L0 官方名没有这个故事集合**——它的权威来自 glossary
+    名册而非语料，所以这里退回"术语确实出现过的故事"：官方名要落成一条
+    *语料*证据行，那个故事就必须真的在语料里有该术语，否则这条证据是空头
+    支票。
+
+    退回分两级：
+
+    1. ``_Corpus.stories_with``（行位索引顺手维护的 term → 故事，免费但要
+       别的通道先建过索引）；
+    2. 语料正文扫描——第 1 级是**别人恰好建过索引**的副产品，不能当契约：
+       官方术语若只在没有英语页的故事里出现，hub/translit 都不会为它建索引，
+       于是 L0 的证据行会凭空消失。这里按抓取范围 ``corpus.stories`` 逐故事
+       在源语言正文里找该术语。
+
+    两级都按**检查过的故事数**封顶（``max_scan``），不是按命中的故事数：术语
+    若在语料里根本不出现（官方名与语料的用词不一致时很常见），"找到才算数"
+    的循环会一路扫遍全库，而结果仍然是零条证据。封顶后要么给出证据，要么
+    明说证据不足。
+
+    两边都没有时返回空列表，:func:`channel_evidence_rows` 据此不产出证据行
+    ——诚实留空，不拿计数（``stories: 3``）或序号（``"0"``/``"1"``）编造
+    故事身份。
+    """
+    budget = max(0, max_scan)
+    raw = payload_evidence.get("story_keys")
+    if raw:
+        return sorted({str(key) for key in raw if key})[:budget]
+    known = corpus.stories_with(term)
+    if known:
+        return sorted(known)[:budget]
+    out: list[str] = []
+    for story_key in corpus.stories:
+        if budget <= 0:
+            break
+        budget -= 1
+        if _sentence_containing(corpus, story_key, source_language, term):
+            out.append(story_key)
+    return out
+
+
+def _row_identity(row: dict) -> tuple:
+    """证据行的去重身份：哪个故事、哪条通道、为哪个值作证。
+
+    ``channel`` 进身份是有意的——同一故事同一值被 trunk 与 hub 各作一次证
+    是两条独立证据（交叉验证信息），压成一条会把它丢掉。``sentence``/``term``
+    不进身份：它们由前三者唯一决定。
+    """
+    return (
+        row.get("language"), row.get("story_key"),
+        row.get("channel"), row.get("channel_value"),
+    )
+
+
+def _row_identity_set(rows: Iterable[dict]) -> set[tuple]:
+    return {_row_identity(row) for row in rows if isinstance(row, dict)}
+
+
+def channel_evidence_rows(
+    term_id: str,
+    language: str,
+    value: str,
+    payload: dict,
+    corpus: _Corpus,
+    *,
+    source: str | None = None,
+    source_language: str = "ja",
+    max_rows: int = MAX_EVIDENCE_ROWS,
+    max_scan: int = MAX_EVIDENCE_SCAN,
+) -> list[dict]:
+    """把一条通道 payload 统一转成**逐故事**的可入库证据行（六处产出点共用）。
+
+    六处产出点——trunk 分布对齐（``_channel_trunk``）、trunk 姓氏背书
+    （``_channel_glossary_backing``）、hub 直取与 hub 回填（``_channel_hub``）、
+    translit（``_channel_translit``）、L0 官方（``scrub_trinity`` 内部）——
+    payload 形态各异，但共同点只有两个，本函数**只依赖这两个**，因此不必
+    六处各写一遍转换：
+
+    * 支持该值的**故事身份**：``evidence["story_keys"]``（见
+      :func:`_evidence_story_keys` 对 L0 的退回规则）。复数 ``story_keys``
+      只说明"有几个故事支持"；证书门要的是**逐条**证据的单数 ``story_key``
+      （``term_slots.py:151`` 数的是不同的 ``story_key``）。
+    * 该故事里能佐证该值的**原文行**：由 :func:`_sentence_containing` 从
+      ``corpus.lines(story_key, language)`` 取（``_Corpus`` 自带行缓存，
+      ``trinity.py:329``/``:574``）。
+
+    返回 ``[{story_key, language, source, term, sentence, channel,
+    channel_method, channel_value}]``，**一条对应一个故事**。字段口径：
+
+    * ``language`` = 该槽的语言，也是取证语言（该语言的译文行里含该值）；
+    * ``source`` = :data:`CORPUS_SOURCE`（调用的 ``source`` 入参可覆盖）；
+    * ``term`` = **源词**（``term_id``，与 ``termindex`` 的证据口径一致）；
+    * ``sentence`` = 该故事该语言里含该值的第一行；
+    * ``channel``/``channel_value`` = 供审计：哪条通道（``trunk``/``hub``/
+      ``translit``/``L0``，细分产出点见 ``channel_method``）、为哪个候选值
+      作证。证书门只读 ``language``/``source``/``term``/``sentence``/
+      ``story_key``，这几个是额外的审计字段（会进 term_evidence 的 extra）。
+    * ``channel_method`` = 该 payload 的细分产出点（``glossary_surname`` /
+      ``backfill`` 等），六处证据点因此可以逐点断言，不靠猜。
+    """
+    if not term_id or not value:
+        return []
+    evidence = payload.get("evidence") if isinstance(payload, dict) else None
+    if not isinstance(evidence, dict):
+        evidence = {}
+    channel = str(evidence.get("channel") or (payload or {}).get("channel") or "")
+    method = str(evidence.get("method") or ("backfill" if evidence.get("backfill") else ""))
+    source_key = str(source) if source is not None else CORPUS_SOURCE
+    term = str(term_id)
+    value = str(value)
+    rows: list[dict] = []
+    scanned = 0
+    for story_key in _evidence_story_keys(
+        term, evidence, corpus, source_language, max_scan=max_scan,
+    ):
+        if len(rows) >= max(0, max_rows) or scanned >= max(0, max_scan):
+            break
+        scanned += 1
+        sentence = _sentence_containing(corpus, story_key, language, value)
+        if not sentence and term != value:
+            # 该故事里既没有含此值的原句，源词也不等于该值 → 这条故事无法
+            # 佐证这个值（证书门两项都过不了），丢弃。
+            continue
+        rows.append({
+            "story_key": story_key,
+            "language": language,
+            "source": source_key,
+            "term": term,
+            "sentence": sentence,
+            "channel": channel,
+            "channel_method": method,
+            "channel_value": value,
+        })
+    return rows
+
+
+def decision_evidence_rows(
+    decision: dict,
+    corpus: _Corpus,
+    *,
+    source: str | None = None,
+    source_language: str = "ja",
+) -> list[dict]:
+    """一条 ``slot_decisions`` 行里所有通道的证据行（拼接 + 去重）。
+
+    去重键 ``(language, story_key, channel, channel_value)``：完全相同的
+    "哪条通道用哪个值在哪个故事作证"只留一条。**通道进键**是有意的——
+    trunk 与 hub 对同一故事同一值各作一次证是两条独立证据（证书门的
+    "≥2 个不同 story_key"之外，落库后的审计也读得到是谁在作证）；把它们
+    压成一条会丢掉这份交叉验证信息。不同值/不同语言的行同样都保留：
+    待决与冲突队列需要看到各方证据。
+
+    调用方（落库路径）按 ``channel_value == slot['value']`` 选行即可得到
+    该槽的支撑证据；未匹配上的行是该槽被压下的候选，不是噪声。
+    """
+    term = str(decision.get("term") or "")
+    language = str(decision.get("language") or "")
+    rows: list[dict] = []
+    seen: set[tuple] = set()
+    for item in (decision.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        for row in channel_evidence_rows(
+            term, language, item.get("value"), item.get("payload") or {},
+            corpus, source=source, source_language=source_language,
+        ):
+            key = _row_identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+
+def evidence_rows_by_term(
+    result: dict,
+    corpus: _Corpus,
+    *,
+    source: str | None = None,
+    source_language: str = "ja",
+) -> dict[str, list[dict]]:
+    """``{term_id: [证据行]}``：从一次 ``scrub_trinity`` 结果批量生成。
+
+    ``scrub_trinity`` 已在每条 ``slot_decisions`` 上挂了 ``evidence_rows``
+    （见 :func:`_merge_channels`）。本函数供**未带该字段**的结果重新物化
+    （例如落盘后回读，或上游按旧契约裁剪过 decision）：输入只要
+    ``term``/``language``/``evidence`` 三样，行契约与
+    :func:`channel_evidence_rows` 完全一致。已带 ``evidence_rows`` 的行直接
+    沿用，不重算，避免与已落库的证据内容分叉。
+    """
+    out: dict[str, list[dict]] = {}
+    for decision in (result.get("slot_decisions") or []):
+        if not isinstance(decision, dict):
+            continue
+        term = str(decision.get("term") or "")
+        if not term:
+            continue
+        rows = decision.get("evidence_rows")
+        if not isinstance(rows, list):
+            rows = decision_evidence_rows(
+                decision, corpus, source=source, source_language=source_language,
+            )
+        bucket = out.setdefault(term, [])
+        seen = _row_identity_set(bucket)
+        for row in rows:
+            key = _row_identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            bucket.append(row)
+    return out
+
+
 def _merge_channels(
     channels: dict[str, dict[str, dict[str, dict]]],
     *,
@@ -1545,7 +1818,7 @@ def _merge_channels(
             status = "pending"
         else:
             status = "rejected"
-        result["slot_decisions"].append({
+        decision = {
             "term": term, "language": language, "status": status,
             "value": record["names"].get(language) if record else None,
             "candidates": candidates,
@@ -1554,7 +1827,18 @@ def _merge_channels(
                 for channel, table in scoped.items()
                 for value, payload in table[term][language].items()
             ],
-        })
+        }
+        # 可入库的逐故事证据行：槽证书门（`term_slots._certificate`）要求每条
+        # 支撑证据自带**单数** `story_key` + `language` + `source`，且
+        # `term`/`value`/`sentence` 之一命中值——上面的 `evidence` 是聚合
+        # payload（复数 `story_keys` + 计数），证书门吃不下，这一步才是把
+        # "通道产出"接到"槽落库"的那道转换。语料在 `_merge_channels` 手上，
+        # 所以转换在这里做，`slot_decisions` 的既有键一个不动。
+        decision["evidence_rows"] = decision_evidence_rows(
+            decision, corpus, source=CORPUS_SOURCE,
+            source_language=source_language,
+        )
+        result["slot_decisions"].append(decision)
         result["agreement_boosted"] += merged["agreement_boosted"]
         for key, count in merged["stats_counter"].items():
             result["stats_counter"][key] = result["stats_counter"].get(key, 0) + count
