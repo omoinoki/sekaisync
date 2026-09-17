@@ -56,7 +56,7 @@
 | B4 | 运行时/代际/完整性 P14/P16/P17/P03/P08/P05 接线 | 🟡 大部分完成 | `dea142c` `8e7ea48` `c95787b` `81570a1` | 852 | P16 四态、P03 v3 区域事实、P08 槽权威接线、P14 线程参数化+Core/serve 接入、P05 逐区服公开时间过滤均已提交；剩三通道逐槽采纳（P08 算法侧）与 worker 直接接收 CrawlContext |
 | CKPT | 22:55 交接检查点 | ✅ 产出（本文档） | — | — | 硬性 |
 
-**测试账本**：基线 **361** → 当前 **852**。**全绿**（`81570a1`，冻结树
+**测试账本**：基线 **361** → 当前 **854**。**全绿**（`c86adb1`，冻结树
 `python -X utf8 -m unittest discover -s tests` → `Ran 844 tests OK`；
 `work/b0_contract_snapshot.py --check` → `drifted: []`；
 `work/astra_verify_2026_09_16.py` → 与记录的基线一致，`real_store_accessed=False`）。
@@ -117,6 +117,7 @@ P16 事件检查仍写 legacy 布局、P14 运行时上下文未接入真实 wor
 | `8e7ea48` | **P03 v3 区域事实 + P08 槽权威接线 + P14 线程/缓存参数化**（844 测试绿） |
 | `c95787b` | **P05 逐区服公开时间过滤 + 正文语言如实**（849 测试绿） |
 | `81570a1` | **P14 Core 联网方法走自身 runtime + serve 入口建 runtime**（852 测试绿） |
+| `c86adb1` | **P06 无过滤时跳过唯一值枚举**（`web_browse` 19.0s → 11.2s；854 测试绿） |
 
 **`8e7ea48` 的红测双向验证**：新增 `test_snapshot_removal_leaves_no_reusable_ghost_queue`
 与 `test_snapshot_reingest_keeps_decisions_and_adds_nothing` 两项，移除对应修复后
@@ -135,7 +136,7 @@ P13 迁移伪成功复现 · P06 参数顺序/长度/堆方向共 3 类复现。
 | `load_web_index_rows` | 37.6s | 26.0s |
 | `trust_summary` | 40.4s | **11.6s** |
 | `status()` | 63.1s | **26.0s** |
-| `web_browse(limit=20)` | 50.2s | **~21s** |
+| `web_browse(limit=20)` | 50.2s | **11.2s**（`c86adb1` 去掉无过滤时的唯一值枚举） |
 | browse 峰值 Python 内存 | 全量对象化（数百 MiB） | **0.88 MiB**（limit=20）/ 1.46 MiB（limit=500） |
 
 **等价性已验证**（这是必做项，不是可选项）：
@@ -143,8 +144,9 @@ P13 迁移伪成功复现 · P06 参数顺序/长度/堆方向共 3 类复现。
 - `web_browse`：真实库上 **17 种过滤组合**与旧全量扫描算法逐行对比 —— id、顺序、snippet、text_length **全部相等**
 - `trust_summary`：真实库上旧逐行算法作 oracle，两个 dict `old == new` → **True**
 
-**诚实说明**：**未达成**方案里期望的 "124s → <1s"。`web_browse` 由 50.2s 降至约 21s，
-剩余成本是 752k 行的线性扫描本身；`web_search` 仍是 O(N) 候选。
+**诚实说明**：**未达成**方案里期望的 "124s → <1s"。`web_browse` 由 50.2s 降至 11.2s
+（`c86adb1` 又去掉了无过滤时对 752k 行做唯一值枚举的那一步，实测 19.0s → 11.2s 中位数），
+剩余成本是 752k 行的有序扫描本身；`web_search` 仍约 173s，评分循环必须留在 Python。
 Astra 原文亦明确要求**不得宣称已获得 0.281s**。
 进一步降低需要索引/引擎级改动 + 经过测量的召回等价设计，属明确的后阶段工作，**此处不作宣称**。
 
@@ -816,7 +818,7 @@ e0996ba/d44c720/0872418）：
   接入（`81570a1`）均已完成，但 worker 仍经 ContextVar 读取而非直接接收 CrawlContext；
   P16 TableRead 四态**已于 `dea142c` 完成**（本行 2026-09-17 前记录已过期），
   但事件关系表的自然键以外完整性仍以 `check_events` 的 incomplete_local 为准
-- ❌ 不说"性能已达标" —— `web_browse` 约 21s（原 50.2s），`web_search` 仍约 195s；均未达方案预期的 <1s
+- ❌ 不说"性能已达标" —— `web_browse` 约 11.2s（原 50.2s；`c86adb1` 去掉无过滤时的 752k 行唯一值枚举后再降一档），`web_search` 仍约 173s（评分循环必须留在 Python，Astra D06 禁止用 LIKE 替换模糊匹配）；均未达方案预期的 <1s
 - ❌ 不说"逐区服事实防剧透已完整" —— `build_fact_pack_at` 已于 `c95787b` 要求 region 并按
   逐区服事实判定公开时间（`region_scope` 明示是否降级），正文按请求语言选取并报告
   `effective_language`；但这是**公开时间过滤**，不是任意剧集进度防剧透——后者需要逐章节
