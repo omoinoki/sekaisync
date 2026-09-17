@@ -882,6 +882,41 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             item for item in _review_items_from_trinity(result)
             if item.term not in settled]
         queued = agent_review.enqueue(config.store_root, review_items)
+        # ── 落库：把管线**已经做出的裁决**写进槽库（Astra P08/P11）────────
+        # 这一段以前不存在：分支只写了 methodology.json / review_queue.json 两个
+        # 旁路文件就 return 0，`term_slots` 一行没动，`slot_decisions` 也整个
+        # 丢弃——打印的 accepted 计数因此不是任何一次提交的结果。事务在应用层
+        # （``trinity.apply_scrub_result``：单事务，槽 + 证据 + 待审队列 +
+        # revision），CLI 只选择输入、调用、打印。
+        #
+        # 既有键一个不动：上面的 ``accepted`` 仍是**管线自身**的口径。真实提交
+        # 状态另开 ``slot_commit`` 键，两套数字分开写，谁也不会被误读成对方。
+        from sekaisync.trinity import _Corpus, apply_scrub_result
+
+        schema_version = dbstore.inspect_schema(config.store_root).version
+        if schema_version in {"2", "3"}:
+            with dbstore.connect(config.store_root) as conn:
+                scrub_revision = dbstore.current_revision(conn)
+            # `_Corpus` 按内容缓存、用到这里只剩惰性读取（证据行已挂在
+            # `slot_decisions` 上），重建一份是廉价的。
+            slot_commit = dict(
+                applied=True, reason="",
+                **apply_scrub_result(
+                    config.store_root, result, _Corpus(groups, sorted(keys)),
+                    expected_revision=scrub_revision,
+                ),
+            )
+        else:
+            # v1 库没有槽表。**明说**没有提交，而不是让打印的计数冒充提交结果；
+            # 也不在这里顺手迁移（v1→v2 是显式的、要备份的管理操作）。
+            slot_commit = {
+                "applied": False,
+                "reason": (
+                    f"schema {schema_version} 无 term_slots 表：先显式迁移 "
+                    "（dbstore.migrate_store(root, target_version=2, "
+                    "dry_run=False, backup_path=...)）才能让 --layered 落库"
+                ),
+            }
         print(
             json.dumps(
                 {
@@ -896,6 +931,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                     "methodology_applied": len(applied.get("settled") or {}),
                     "queued_for_agent": queued,
                     "channel_stats": result.get("stats", {}),
+                    "slot_commit": slot_commit,
                     "review_next": "sekaisync terms review export --out queue.txt",
                 },
                 ensure_ascii=False,
