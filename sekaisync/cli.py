@@ -943,10 +943,23 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             revision = dbstore.current_revision(conn)
         term_slots.commit_slot_decisions(
             config.store_root,
-            [decision for rec in records for decision in term_slots.decisions_from_record(rec)],
+            # ``records`` are TermRecord objects here, and `decisions_from_record`
+            # reads a mapping — passing them raw raised
+            # AttributeError: 'TermRecord' object has no attribute 'get' before
+            # any slot was written, so this whole branch never committed.
+            [decision for rec in records
+             for decision in term_slots.decisions_from_record(term_to_dict(rec))],
             records=[term_to_dict(rec) for rec in records],
             evidence_by_id={rec.id: list(rec.evidence or []) for rec in records},
             expected_revision=revision,
+            # Without a verifier `_certificate` returns None before it reads
+            # anything (`term_slots.py:104`), so every decision this pass makes
+            # landed pending/insufficient_evidence without an error — the pass
+            # reported success while accepting nothing. This pass reads story
+            # text, so its rows can be certified from the corpus: the rows
+            # already carry the per-story identity, language, source and
+            # value-bearing sentence the gate needs.
+            verifier=term_slots.corpus_verifier(),
         )
     else:
         dbstore.upsert_terms(

@@ -860,6 +860,17 @@ def load_persisted_terms(store_root: Path, include_sentences: bool = False) -> l
 def persist_term_updates(store_root: Path, records: Iterable[TermRecord], *,
                          slot_updates: Optional[dict] = None,
                          expected_revision: int, verifier=None) -> dict:
+    """Explicitly-requested term writes; ``verifier`` is passed through as-is.
+
+    ``verifier=None`` stays the default and keeps the old behaviour exactly:
+    ``term_slots._certificate`` returns None for a missing verifier, so an
+    accepted-looking ``slot_updates`` entry is stored pending/unverified rather
+    than silently trusted.  A caller that *has* checked the evidence — e.g. a
+    pipeline that just read the story text itself — passes its own callback
+    (``term_slots.corpus_verifier()`` for corpus rows), and only then can the
+    slot be certified.  Nothing here chooses a verifier for the caller: the
+    trust decision stays with the code that holds the evidence.
+    """
     records = list(records)
     if dbstore.inspect_schema(store_root).version == "1":
         if slot_updates:

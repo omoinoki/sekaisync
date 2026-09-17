@@ -20,6 +20,7 @@ import sqlite3
 from typing import Any, Callable
 
 from sekaisync import dbstore
+from sekaisync.trust import trust_for_source
 
 V2_SCHEMA = (
     """CREATE TABLE term_slots (
@@ -206,6 +207,121 @@ def index_verifier(conn: sqlite3.Connection) -> Verifier:
             'trust': trust, 'verifier': f'official-index:{entity_id}',
             'verified_entity': entity_id, 'evidence_refs': [],
         }
+
+    return verify
+
+
+#: Auditable ``verifier`` string a corpus certificate carries.  The part before
+#: the colon names the kind of authority, matching ``official-index:<entity>``.
+CORPUS_VERIFIER_NAME = 'corpus:stories'
+
+#: Trust a corpus certificate carries: ``C`` = "Derived / AIGC / community
+#: translation" (``trust.py``).  A name reconstructed by alignment or
+#: romanisation and corroborated by the story text is derived, so this is the
+#: level that describes it; A belongs to the official index and D to fanon.
+CORPUS_TRUST = 'C'
+
+#: Distinct stories a non-official corpus proof must name.  One story is not
+#: corroboration — the same mistranslation recurs inside a single story — so
+#: this floor is deliberately not a parameter of :func:`corpus_verifier` (no
+#: caller can lower it) and ``_certificate`` enforces the same number for every
+#: non-official proof.  This constant restates the rule where the verifier can
+#: be held to it; it does not replace the store's own check.
+MIN_CORPUS_STORIES = 2
+
+#: Bound on what one certificate cites.  A corpus-wide term (セカイ is in
+#: thousands of stories) would otherwise copy every matching row into the slot's
+#: ``evidence_refs`` *and* into its ``verification`` payload on every write.  The
+#: certificate keeps the first stories seen, so it still exceeds the
+#: corroboration floor while the audit trail stays bounded and deterministic
+#: (evidence rows are read in ``idx`` order).
+MAX_CORPUS_STORIES = 8
+MAX_CORPUS_REFS = 32
+
+
+def corpus_verifier() -> Verifier:
+    """Certify a slot from the corpus evidence rows the channels collected.
+
+    ``index_verifier`` is authority for one narrow case: a surface this store's
+    own official index already carries for exactly one entity in that language.
+    Every other accepted name — trunk distribution alignment, hub
+    cross-language pickup, translit — can only be certified from the *corpus*:
+    the story text the crawler stored, where each supporting row names one
+    ``story_key``, the language it was read in, its provenance and a sentence
+    (or term) carrying the value.  Corroboration means more than one story — a
+    mistranslation can recur throughout a single one — so fewer than
+    :data:`MIN_CORPUS_STORIES` distinct stories is refused outright rather than
+    accepted at a lower trust level.
+
+    The proof never claims official authority.  ``trust`` is **C**: the value is
+    a *derived* name — distribution alignment, cross-language pickup or
+    romanisation — corroborated by story text, and "Derived / AIGC / community
+    translation" is exactly what that is.  Two provenance levels are refused
+    instead of being restated or capped:
+
+    - *A* (official) — that level belongs to ``index_verifier``, which names
+      the official entity carrying the name.  A corpus proof must not borrow it.
+    - *D* ("External / unverified / fanon") — positional agreement inside
+      fan-derived text does not verify a name, so the honest outcome is a
+      review-queue entry, not an accepted slot wearing the lowest level.
+
+    ``trust`` is deliberately not read off the slot's own ``source`` string:
+    that string is part of the candidate's claim, and a store policy that maps
+    e.g. ``altsource_ms`` to B describes the *page*, not the derivation — the
+    same evidence read through the trinity channels is stamped ``corpus`` and
+    would certify at C.  One kind of evidence gets one level, and the candidate
+    cannot raise it by choosing a source label.
+
+    Reading the rows is not the same as believing them.  Only rows whose
+    language and source match the slot, whose value they can attest **and**
+    which name the story they were read from are cited: a row that cannot name
+    its story is not corpus evidence, because the story is the unit of
+    corroboration.  ``_certificate`` then re-checks every cited ref for
+    identity, provenance and value, so a proof whose refs do not resolve, or
+    whose rows disagree with the slot, is discarded before it can become an
+    accepted slot.
+    """
+    def verify(slot: dict, evidence: list[dict]) -> Mapping[str, Any] | None:
+        if not isinstance(slot, Mapping):
+            return None
+        term_id, language = slot.get('term_id'), slot.get('language')
+        value, source = slot.get('value'), slot.get('source')
+        if not (isinstance(term_id, str) and term_id
+                and isinstance(language, str) and language
+                and isinstance(value, str) and value
+                and isinstance(source, str) and source):
+            return None
+        if trust_for_source(source) in {'A', 'D'}:
+            return None
+        by_story: dict[str, list[str]] = {}
+        for ev in evidence or ():
+            if not isinstance(ev, Mapping):
+                continue
+            if ev.get('language') != language or ev.get('source') != source:
+                continue
+            # Same rule _certificate applies to each cited row; stated here so
+            # a row that cannot attest the value is never cited in the first
+            # place (mirroring it is what keeps this from widening the gate).
+            if not (ev.get('term') == value or ev.get('value') == value
+                    or value in str(ev.get('sentence') or '')):
+                continue
+            story_key, ref = ev.get('story_key'), ev.get('evidence_id')
+            if not isinstance(story_key, str) or not story_key:
+                continue
+            if not isinstance(ref, str) or not ref:
+                continue
+            by_story.setdefault(story_key, []).append(ref)
+        if len(by_story) < MIN_CORPUS_STORIES:
+            return None
+        refs: list[str] = []
+        for story_key in list(by_story)[:MAX_CORPUS_STORIES]:
+            refs.extend(by_story[story_key])
+            if len(refs) >= MAX_CORPUS_REFS:
+                break
+        return {'subject_id': term_id, 'language': language, 'value': value,
+                'source': source, 'official': False, 'trust': CORPUS_TRUST,
+                'verifier': CORPUS_VERIFIER_NAME,
+                'evidence_refs': refs[:MAX_CORPUS_REFS]}
 
     return verify
 
