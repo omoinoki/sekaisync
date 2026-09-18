@@ -158,6 +158,41 @@ class OverlayCrawlTest(unittest.TestCase):
             self.assertEqual(len(saved), 5)
             self.assertTrue(all(page["auxiliary"] for page in saved))
 
+    def test_i18n_resume_refetches_changed_content(self):
+        """Resume must compare content, not just page existence.
+
+        The old resume skipped any page whose id was already stored, so a
+        namespace whose remote JSON changed was never re-fetched: the crawl
+        reported "0 new pages" forever while the stored text went stale.
+        Measured on the real source: 30 of 107 stored pages had drifted.
+        """
+        import json as _json
+
+        first_payload = _json.dumps({"1-1": "初版标题"}, ensure_ascii=False)
+        second_payload = _json.dumps({"1-1": "更新后的标题"}, ensure_ascii=False)
+
+        def fetch_round(url: str, payload: str) -> str:
+            if "event_story_episode_title.json" in url:
+                return payload
+            return "404 page not found"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            _crawl_altsource_sv_i18n(
+                store_root, lambda url: fetch_round(url, first_payload), 0, resume=False)
+            saved_first = load_web_pages(store_root)[SOURCE_SV_I18N]
+            self.assertTrue(any("初版标题" in p["text"] for p in saved_first))
+
+            # Second crawl with resume=True and changed remote content: the
+            # page must be re-fetched and updated, not skipped.
+            _crawl_altsource_sv_i18n(
+                store_root, lambda url: fetch_round(url, second_payload), 0, resume=True)
+            saved_second = load_web_pages(store_root)[SOURCE_SV_I18N]
+            self.assertTrue(
+                any("更新后的标题" in p["text"] for p in saved_second),
+                "changed remote content was not re-fetched on resume",
+            )
+
     def test_auxiliary_pages_hidden_from_default_search_and_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             store_root = Path(tmp) / "store"

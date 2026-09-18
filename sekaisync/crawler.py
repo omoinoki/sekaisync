@@ -1441,20 +1441,42 @@ def _crawl_altsource_sv_i18n(
     resume: bool = True,
 ) -> dict[str, Any]:
     pages: list[WebPage] = []
-    known_ids = load_existing_page_ids(store_root, _sv_aux()) if resume else set()
+    # Resume compares *content*, not existence: a namespace whose remote JSON
+    # changed must be re-fetched, or incremental crawls silently skip updates
+    # forever (measured: 30 of 107 stored i18n pages had drifted while the old
+    # id-based skip reported 0 new). known maps page id -> stored source_hash.
+    known_hashes: dict[str, str] = {}
+    if resume:
+        from sekaisync.dbstore import existing_page_map
+
+        known_hashes = {
+            page_id: str(item.get("source_hash") or "")
+            for page_id, item in existing_page_map(store_root, _sv_aux()).items()
+        }
     for language_code in ALTSOURCE_SV_I18N_LANGUAGES:
         target_language = _normalize_overlay_language(language_code)
         for namespace in ALTSOURCE_SV_I18N_NAMESPACES:
             page_id = f"web:{_sv_aux()}:{target_language}:{namespace}"
-            if known_ids and page_id in known_ids:
-                continue
             url = f"{_EP().ALTSOURCE_SV_I18N_BASE}/{language_code}/{namespace}.json"
-            try:
-                raw = fetcher(_cache_bust_url(url))
-            except _NETWORK_ERRORS:
-                if delay:
-                    time.sleep(delay)
-                continue
+            known_hash = known_hashes.get(page_id)
+            if resume and page_id in known_hashes:
+                # The remote hash cannot be known without fetching, so probe
+                # with the cached fetcher and skip only on an exact match.
+                try:
+                    raw = fetcher(_cache_bust_url(url))
+                except _NETWORK_ERRORS:
+                    if delay:
+                        time.sleep(delay)
+                    continue
+                if sha256_hex(raw) == known_hash:
+                    continue
+            else:
+                try:
+                    raw = fetcher(_cache_bust_url(url))
+                except _NETWORK_ERRORS:
+                    if delay:
+                        time.sleep(delay)
+                    continue
             if not raw.strip() or raw.strip().startswith("404 page not found"):
                 if delay:
                     time.sleep(delay)
