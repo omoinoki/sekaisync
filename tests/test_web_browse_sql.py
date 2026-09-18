@@ -444,6 +444,48 @@ class BrowseIndexedOrderTest(unittest.TestCase):
             }
         self.assertIn(dbstore.BROWSE_INDEX, names)
 
+    def test_ensure_browse_index_backfills_and_is_idempotent(self):
+        """The maintenance backfill creates the index on an old store.
+
+        `_SCHEMA` runs only at store creation, so a store predating the index
+        stays correct but slow; `web-rebuild` is the remedy.
+        """
+        from sekaisync import dbstore
+
+        fresh = Path(self._tmp.name) / "backfill_store"
+        dbstore.initialize(fresh)
+        with dbstore.connect(fresh) as conn:
+            conn.execute("DROP INDEX IF EXISTS " + dbstore.BROWSE_INDEX)
+            conn.commit()
+        self.assertFalse(dbstore.browse_index_present(fresh))
+
+        result = dbstore.ensure_browse_index(fresh)
+        self.assertTrue(result["created"], result)
+        self.assertTrue(dbstore.browse_index_present(fresh))
+        again = dbstore.ensure_browse_index(fresh)
+        self.assertFalse(again["created"], again)
+
+    def test_ensure_browse_index_runs_under_a_held_lease(self):
+        """The backfill must not self-deadlock when the caller holds the lease.
+
+        `source_migrate` invokes `rebuild_web_index` from inside its own writer
+        lease, and the lease's per-store thread lock is not reentrant — the
+        first version of the backfill raised StoreBusyError there, failing a
+        source rename mid-rebuild.
+        """
+        from sekaisync import dbstore
+        from sekaisync.fetcher import store_writer_lock
+
+        fresh = Path(self._tmp.name) / "leased_store"
+        dbstore.initialize(fresh)
+        with dbstore.connect(fresh) as conn:
+            conn.execute("DROP INDEX IF EXISTS " + dbstore.BROWSE_INDEX)
+            conn.commit()
+        with store_writer_lock(fresh):
+            result = dbstore.ensure_browse_index(fresh)
+        self.assertTrue(result["created"], result)
+        self.assertTrue(dbstore.browse_index_present(fresh))
+
     def test_fast_path_and_fallback_return_identical_rows(self):
         """Both orderings must produce the same ids in the same order.
 

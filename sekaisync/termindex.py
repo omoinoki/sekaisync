@@ -2537,6 +2537,11 @@ def extract_terms_local(
                                   source_page=sp, target_page=tp)
                 if ev:
                     ev["input_revision"] = context.input_revision
+                    # Same provenance the LLM path stamps (termindex.py:1283):
+                    # without it the slot certificate's source-equality check
+                    # can never pass on this path, so non-source-language slots
+                    # stayed pending forever.
+                    ev["source"] = sp.get("source", "")
                     evidence.append(ev)
             decision = validate_translation_proposal(
                 {"term": record.canonical, "translation": value, "confidence": 1.0},

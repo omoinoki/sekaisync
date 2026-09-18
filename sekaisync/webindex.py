@@ -658,6 +658,11 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
     """Recompute canonical/trust/flag columns for every source from stored text."""
     from sekaisync.models import WebPage
 
+    # Maintenance is also the right moment to backfill the walkable browse
+    # index: stores created before it existed keep working but sort in SQL
+    # (measured ~8s per browse on the real store). Reads must not write, so
+    # this explicit entry point is where the index gets built.
+    browse_index = dbstore.ensure_browse_index(store_root)
     sources: dict[str, int] = {}
     rebuilt: dict[str, int] = {}
     for source, items in dbstore.load_web_pages(store_root).items():
@@ -676,6 +681,7 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
         "pages": sum(sources.values()),
         "index": str(dbstore.db_file(store_root)),
         "rebuilt": rebuilt,
+        "browse_index": browse_index,
     }
 
 

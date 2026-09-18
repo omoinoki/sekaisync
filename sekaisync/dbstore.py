@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -927,6 +928,70 @@ def web_trust_buckets(
 #: ``browse_web_rows``, which falls back to the sorting statement when a store
 #: predating it is opened.
 BROWSE_INDEX = "idx_pages_browse"
+
+
+def browse_index_present(store_root: Path, conn: Optional[sqlite3.Connection] = None) -> bool:
+    """Whether the walkable browse index exists in this store."""
+    def _check(active: sqlite3.Connection) -> bool:
+        return active.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+            (BROWSE_INDEX,),
+        ).fetchone() is not None
+    if conn is not None:
+        return _check(conn)
+    with connect(store_root) as owned:
+        return _check(owned)
+
+
+def ensure_browse_index(store_root: Path) -> dict[str, Any]:
+    """Create :data:`BROWSE_INDEX` when the store lacks it (maintenance path).
+
+    ``_SCHEMA`` only runs at store creation, so a store made before the index
+    existed stays correct but slow — ``browse_web_rows`` silently falls back to
+    a full sort of every matching row. This is the explicit remedy, for
+    maintenance entry points like ``web-rebuild``; it is deliberately **not**
+    called from read paths (P02/P07: reads must not write, and building here
+    costs seconds plus ~95 MB on the real store).
+
+    Lease handling: acquires the writer lease only when free, and runs the
+    idempotent DDL **without re-acquiring** when the caller already holds it —
+    ``source_migrate`` calls :func:`sekaisync.webindex.rebuild_web_index` from
+    inside its own lease, and the lease's per-store thread lock is not
+    reentrant, so a second acquisition there is a self-deadlock (observed as
+    ``StoreBusyError`` during a source rename). A non-blocking acquire that
+    fails therefore means *this call chain* holds the lease, not a competitor:
+    real competitors appear in other processes, where the file lock — not the
+    thread lock — decides.
+    """
+    _ensure_initialized(store_root)
+    from sekaisync.fetcher import StoreBusyError, WriterLease
+
+    if browse_index_present(store_root):
+        return {"created": False, "reason": "already present"}
+
+    def _build() -> dict[str, Any]:
+        t0 = time.time()
+        with connect(store_root) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {BROWSE_INDEX} "
+                    "ON web_pages(source, crawled_at DESC, seq, aux_flag, derived_flag, kind, language)"
+                )
+                bump_revision(conn)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        return {"created": True, "seconds": round(time.time() - t0, 1)}
+
+    lease = WriterLease(store_root)  # timeout=0: never blocks
+    try:
+        with lease:
+            return _build()
+    except StoreBusyError:
+        # Our own call chain already holds the lease; the DDL is idempotent.
+        return _build()
 
 
 def browse_web_rows(
