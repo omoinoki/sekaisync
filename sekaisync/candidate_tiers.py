@@ -30,8 +30,24 @@ from __future__ import annotations
 import re
 import unicodedata
 from enum import Enum
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CandidateEvidence:
+    """Discovery signals, not approval or subject-identity evidence.
+
+    Positions are (story_key, line_index, character_offset), zero based.
+    Existing string-only callers remain valid, but cannot supply these signals.
+    """
+    surface: str
+    quoted: bool = False
+    positions: tuple[tuple[str, int, int], ...] = ()
+    rescued_by: tuple[str, ...] = ()
 
 __all__ = [
+    "CandidateEvidence",
+    "normalize_candidate_key",
     "Tier",
     "classify",
     "classify_batch",
@@ -250,6 +266,11 @@ def _normalize_key(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = text.casefold()
     return _IGNORED_CHARS.sub("", text)
+
+
+def normalize_candidate_key(value: str) -> str:
+    """Public comparison key; never substitute it for a display surface."""
+    return _normalize_key(value)
 
 
 def _key_set(values: object) -> set[str]:
@@ -520,10 +541,11 @@ def filter_alignable(
     out: list[str] = []
     seen: set[str] = set()
     for term in (terms or []):
-        if term in seen:
+        key = normalize_candidate_key(term)
+        if key in seen:
             continue
-        seen.add(term)
         if classify(term, **kwargs) is not Tier.REJECT:
+            seen.add(key)
             out.append(term)
     return out
 

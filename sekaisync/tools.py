@@ -8,18 +8,52 @@ capability here makes it visible on both ends — the previous
 "three hand-written dispatch lists" drift (MCP missing status/sites/
 web_browse) is structurally impossible now.
 
-Argument coercion is endpoint-aware: HTTP query strings coerce loosely
-(bad int -> default, matching the historical handler), MCP arguments
-coerce strictly (bad int raises -> JSON-RPC error), mirroring the old
-per-endpoint behaviour exactly.
+The OpenAPI document is generated from this same registry
+(:func:`build_openapi`), so a method/path/parameter cannot be advertised on
+one surface and be missing on the other.
+
+Argument validation is endpoint-aware but strict on both ends (P15/D15):
+HTTP query strings are parsed per the declared type first and a value that
+cannot be parsed is a 400, MCP arguments must already have the declared
+JSON type or the call is a -32602.  Both endpoints share one
+``validate_args`` implementation, so a rule cannot exist on one surface
+and be missing on the other.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
+
+from sekaisync import __version__
 
 CSV_LANG_DEFAULT = "ja,zh_hans,en,zh_tw,ko"
+
+# ---------------------------------------------------------------------------
+# P15 provisional budgets (Astra B1).  These numbers are deliberately small
+# and centralised so they can be calibrated against real fixtures later; they
+# are not a final contract.
+# ---------------------------------------------------------------------------
+MAX_LIMIT = 100  # per-tool `limit` ceiling (event_archive keeps 0 == all)
+MAX_CLAIMS = 100  # verify_claims batch size
+MAX_QUERY_LENGTH = 2048  # characters for any `query` argument
+MAX_MAX_TEXT_CHARS = 200_000  # web_lookup text budget
+MAX_TIMEOUT_SECONDS = 600  # event_check upstream timeout
+
+_TRUE_TEXT = frozenset({"1", "true", "yes", "on"})
+_FALSE_TEXT = frozenset({"0", "false", "no", "off"})
+_INT_RE = re.compile(r"^[+-]?\d+$")
+
+
+class ParamError(ValueError):
+    """A request argument is missing, malformed or out of range.
+
+    HTTP maps this to 400; MCP maps it to JSON-RPC -32602.  It is raised
+    before any Core method is reached, so a rejected argument can never
+    perform a write.
+    """
 
 
 @dataclass(frozen=True)
@@ -34,6 +68,16 @@ class Param:
     empty_to_none: bool = False  # "" coerces to None (historical `or None` handlers)
     core_name: Optional[str] = None  # kwarg name on the core method (defaults to name)
     description: str = ""
+    # P15 constraints.  `minimum`/`maximum` are inclusive; `max_length`
+    # counts characters for text kinds, entries for list kinds and batch
+    # size for JSON kinds.
+    minimum: Optional[int] = None
+    maximum: Optional[int] = None
+    max_length: Optional[int] = None
+    enum: Optional[tuple[str, ...]] = None
+    # event_archive's historical contract: limit=0 means "no limit", not
+    # "zero rows".  Keep it explicit instead of a tool-name special case.
+    zero_means_none: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,31 +100,189 @@ def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _declared_mcp_type(param: Param) -> Optional[str]:
+    """The JSON type this parameter advertises over MCP, if any.
+
+    ``regions`` is a string on ``progress`` and an array on the event tools;
+    the advertised schema is the binding contract, so validation reads it
+    from the same place the client does.
+    """
+    if param.mcp_schema is None:
+        return None
+    declared = param.mcp_schema.get("type")
+    return declared if isinstance(declared, str) else None
+
+
+def _coerce_bool_text(raw: str, param: Param) -> bool:
+    """Only an explicit true/false token is a boolean (P15).
+
+    Anything else (``"maybe"``, ``"2"``, ``""``) raises instead of silently
+    becoming False, so a typo cannot masquerade as a deliberate filter.
+    """
+    token = raw.strip().lower()
+    if token in _TRUE_TEXT:
+        return True
+    if token in _FALSE_TEXT:
+        return False
+    raise ParamError(
+        f"'{param.name}' expects one of true/false/1/0/yes/no/on/off, got {raw!r}"
+    )
+
+
+def parse_value(param: Param, raw: Any, endpoint: str) -> Any:
+    """Parse one raw endpoint value into the declared Python type.
+
+    Raises :class:`ParamError` when the value does not match the declared
+    type.  HTTP passes query text (always ``str``); MCP passes decoded JSON
+    values.  Type confusion — a JSON ``bool`` where an ``int`` is declared,
+    an ``array`` where a ``string`` is declared — is rejected, never
+    coerced.
+    """
+    kind = param.kind
+    if kind == "int":
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+            raise ParamError(f"'{param.name}' expects an integer, got {type(raw).__name__}")
+        if isinstance(raw, str):
+            token = raw.strip()
+            if not _INT_RE.match(token):
+                raise ParamError(f"'{param.name}' expects an integer, got {raw!r}")
+            return int(token)
+        return int(raw)
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return _coerce_bool_text(raw, param)
+        raise ParamError(f"'{param.name}' expects a boolean, got {type(raw).__name__}")
+    if kind == "str":
+        if isinstance(raw, str):
+            return raw
+        # HTTP query values are always text; a non-string only reaches here
+        # from a JSON body, where it is a type error, not something to
+        # stringify into existence.
+        raise ParamError(f"'{param.name}' expects a string, got {type(raw).__name__}")
+    if kind == "csv":
+        if isinstance(raw, list):
+            return _csv(",".join(str(item) for item in raw))
+        if not isinstance(raw, str):
+            raise ParamError(f"'{param.name}' expects a string, got {type(raw).__name__}")
+        return _csv(raw)
+    if kind == "csv_or_list":
+        declared = _declared_mcp_type(param)
+        if endpoint == "mcp" and declared is not None:
+            # Over MCP the advertised JSON type is binding (P15): a tool that
+            # declares an array must not silently accept a bare string, and
+            # one that declares a string (historical progress `regions`)
+            # keeps accepting it.
+            if declared == "array" and not isinstance(raw, list):
+                raise ParamError(
+                    f"'{param.name}' expects an array of strings, got {type(raw).__name__}"
+                )
+            if declared == "string" and not isinstance(raw, str):
+                raise ParamError(
+                    f"'{param.name}' expects a string, got {type(raw).__name__}"
+                )
+        if isinstance(raw, str):
+            return _csv(raw) or None
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, str):
+                    raise ParamError(
+                        f"'{param.name}' expects an array of strings, got {type(item).__name__}"
+                    )
+            return raw
+        raise ParamError(
+            f"'{param.name}' expects a string or an array of strings, got {type(raw).__name__}"
+        )
+    if kind == "json":
+        if endpoint == "mcp":
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ParamError(f"'{param.name}' is not valid JSON: {exc.msg}") from exc
+        return raw
+    raise ParamError(f"'{param.name}' has an unsupported kind {kind!r}")
+
+
+def validate_value(param: Param, value: Any) -> Any:
+    """Apply the declared range/length/enum constraints to a parsed value."""
+    if value is None:
+        return value
+    if param.kind == "int":
+        if param.minimum is not None and value < param.minimum:
+            raise ParamError(f"'{param.name}' must be >= {param.minimum}")
+        if param.maximum is not None and value > param.maximum:
+            raise ParamError(f"'{param.name}' must be <= {param.maximum}")
+        return value
+    if param.kind in {"str", "csv"}:
+        if param.max_length is not None and len(value) > param.max_length:
+            raise ParamError(
+                f"'{param.name}' is longer than {param.max_length} characters"
+            )
+    if param.kind == "csv_or_list":
+        if param.max_length is not None and len(value) > param.max_length:
+            raise ParamError(f"'{param.name}' has more than {param.max_length} entries")
+    if param.kind == "json":
+        # `max_length` on a JSON parameter bounds the batch size (e.g. the
+        # verify_claims array), not a character count.
+        if param.max_length is not None:
+            if not isinstance(value, list):
+                raise ParamError(f"'{param.name}' must be an array")
+            if len(value) > param.max_length:
+                raise ParamError(
+                    f"'{param.name}' has more than {param.max_length} entries"
+                )
+    if param.enum is not None:
+        candidates = value if isinstance(value, list) else [value]
+        for item in candidates:
+            if item not in param.enum:
+                raise ParamError(
+                    f"'{param.name}' must be one of {', '.join(param.enum)}"
+                )
+    return value
+
+
 def coerce_value(param: Param, raw: Any, endpoint: str, strict: bool) -> Any:
+    """Backwards-compatible wrapper around :func:`parse_value`.
+
+    Kept because it is part of the module's public surface; ``strict`` no
+    longer relaxes types, it only chooses whether a failure raises
+    (:class:`ParamError`) or falls back to the declared default.
+    """
     if raw is None:
         if endpoint == "mcp":
             return param.mcp_default if param.mcp_default is not None else param.default
         return param.http_default if param.http_default is not None else param.default
     try:
-        if param.kind == "int":
-            return int(raw)
-        if param.kind == "bool":
-            if isinstance(raw, bool):
-                return raw
-            return str(raw).lower() in {"1", "true", "yes"}
-        if param.kind == "csv":
-            return _csv(str(raw))
-        if param.kind == "csv_or_list":
-            if isinstance(raw, str):
-                return _csv(raw) or None
-            if isinstance(raw, list):
-                return raw
-            return None
-        return raw
-    except (TypeError, ValueError):
+        return parse_value(param, raw, endpoint)
+    except ParamError:
         if strict:
             raise
         return param.default
+
+
+def validate_param(param: Param, raw: Any, *, endpoint: str, spec: ToolSpec) -> Any:
+    """Validate one parameter for one tool (:func:`coerce_args` helper)."""
+    if raw is None:
+        # Absent and required is rejected on both endpoints (P15: no silent
+        # "" lookup that returns everything).
+        if param.required:
+            raise ParamError(f"missing required parameter '{param.name}'")
+        if endpoint == "mcp":
+            return param.mcp_default if param.mcp_default is not None else param.default
+        return param.http_default if param.http_default is not None else param.default
+    value = parse_value(param, raw, endpoint)
+    if param.kind == "str" and param.required and isinstance(value, str):
+        if not value.strip():
+            raise ParamError(f"'{param.name}' must not be blank")
+    if param.kind == "str" and param.empty_to_none and value == "":
+        value = None
+    value = validate_value(param, value)
+    if param.kind == "int" and value == 0 and param.zero_means_none:
+        value = None
+    return value
 
 
 def coerce_args(
@@ -89,27 +291,29 @@ def coerce_args(
     endpoint: str,
     get_raw: Callable[[str], Any],
 ) -> dict:
-    """Map raw endpoint arguments (MCP arguments dict / HTTP query) to core kwargs."""
-    strict = endpoint == "mcp"
+    """Validate raw endpoint arguments and map them to core kwargs.
+
+    Raises :class:`ParamError` for anything the ToolSpec declares as
+    invalid; the caller decides the transport-level error (HTTP 400 /
+    JSON-RPC -32602).  No core method is called for a rejected request.
+    """
     kwargs: dict[str, Any] = {}
     for param in spec.args:
-        raw = get_raw(param.name)
-        if raw is None and not param.required:
-            value = coerce_value(param, None, endpoint, strict)
-        else:
-            if raw is None:
-                if endpoint == "http":
-                    raw = ""  # historical handlers read missing query as ""
-                value = coerce_value(param, raw, endpoint, strict)
-            else:
-                value = coerce_value(param, raw, endpoint, strict)
-        # int(0) or None -> None, matching both historical handlers for event_archive
-        if param.kind == "int" and value == 0 and param.name == "limit" and spec.name == "event_archive":
-            value = None
-        if param.kind == "str" and param.empty_to_none and value == "":
-            value = None
-        kwargs[param.core_name or param.name] = value
+        kwargs[param.core_name or param.name] = validate_param(
+            param, get_raw(param.name), endpoint=endpoint, spec=spec
+        )
     return kwargs
+
+
+def validate_args(spec: ToolSpec, raw: dict, *, endpoint: str) -> dict:
+    """Public entry point (P15): validate ``raw`` into core kwargs.
+
+    ``raw`` is an MCP ``arguments`` object or an HTTP body/query mapping.
+    Unknown keys are ignored (the MCP schema is advisory and clients may
+    add provenance fields); declared parameters are type-checked, range
+    checked and requiredness checked.
+    """
+    return coerce_args(spec, raw, endpoint=endpoint, get_raw=raw.get)
 
 
 def _schema(params: tuple[Param, ...]) -> dict:
@@ -117,9 +321,11 @@ def _schema(params: tuple[Param, ...]) -> dict:
     required: list[str] = []
     for param in params:
         if param.mcp_schema is not None:
-            properties[param.name] = dict(param.mcp_schema)
+            schema = dict(param.mcp_schema)
+            for key, value in _constraint_keys(param).items():
+                schema.setdefault(key, value)
         else:
-            schema: dict[str, Any] = {
+            schema = {
                 "str": {"type": "string"},
                 "int": {"type": "integer"},
                 "bool": {"type": "boolean", "default": False},
@@ -127,14 +333,37 @@ def _schema(params: tuple[Param, ...]) -> dict:
                 "csv_or_list": {"type": "array", "items": {"type": "string"}},
                 "json": {"type": "object"},
             }[param.kind]
-            if param.kind == "csv":
-                schema = {"type": "string"}
             if param.default is not None and param.kind not in {"csv", "csv_or_list"}:
                 schema = {**schema, "default": param.default}
-            properties[param.name] = schema
+            # A nullable bool with no default is three-state (news.body):
+            # advertising `default: false` would tell clients that omitting
+            # the field means "body absent only", which is wrong.
+            if param.kind == "bool" and param.default is None:
+                schema.pop("default", None)
+            schema.update(_constraint_keys(param))
+        properties[param.name] = schema
         if param.required:
             required.append(param.name)
     return {"type": "object", "properties": properties, "required": required}
+
+
+def _constraint_keys(param: Param) -> dict[str, Any]:
+    """JSON-Schema keywords derived from the Param's declared constraints."""
+    out: dict[str, Any] = {}
+    if param.kind == "int":
+        if param.minimum is not None:
+            out["minimum"] = param.minimum
+        if param.maximum is not None:
+            out["maximum"] = param.maximum
+    elif param.kind in {"str", "csv"}:
+        if param.max_length is not None:
+            out["maxLength"] = param.max_length
+    elif param.kind in {"csv_or_list", "json"}:
+        if param.max_length is not None:
+            out["maxItems"] = param.max_length
+    if param.enum is not None:
+        out["enum"] = list(param.enum)
+    return out
 
 
 def mcp_tools_list(specs: tuple[ToolSpec, ...]) -> list[dict]:
@@ -165,6 +394,7 @@ REGION_ARRAY_PARAM = Param(
     "regions",
     "csv_or_list",
     mcp_schema={"type": "array", "items": {"type": "string"}},
+    max_length=32,
 )
 
 LANGUAGES_MCP = Param(
@@ -173,7 +403,17 @@ LANGUAGES_MCP = Param(
     mcp_schema={"type": "array", "items": {"type": "string"}},
     mcp_default=[],
     http_default=_csv(CSV_LANG_DEFAULT),
+    max_length=32,
 )
+
+# P15: the same constraints are declared here for every tool; the MCP
+# inputSchema and the /openapi.json document are both generated from them.
+QUERY_PARAM = Param("query", "str", required=True, max_length=MAX_QUERY_LENGTH)
+
+
+def _limit(default: int, minimum: Optional[int] = 1) -> Param:
+    """A provisional ``limit`` parameter (Astra B1: max 100, calibrate later)."""
+    return Param("limit", "int", default, minimum=minimum, maximum=MAX_LIMIT)
 
 
 def build_tools_registry() -> tuple[ToolSpec, ...]:
@@ -184,11 +424,11 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Look up Project Sekai entities in the local registry.",
             "lookup",
             (
-                Param("query", "str", required=True),
-                Param("type", "str"),
-                Param("region", "str"),
-                Param("language", "str"),
-                Param("limit", "int", 8),
+                QUERY_PARAM,
+                Param("type", "str", max_length=64),
+                Param("region", "str", max_length=32),
+                Param("language", "str", max_length=32),
+                _limit(8),
             ),
             http_path="/api/v1/lookup",
             wrap="query_results",
@@ -199,10 +439,10 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Resolve a proper noun to an official localized name.",
             "resolve_name",
             (
-                Param("query", "str", required=True),
-                Param("target_language", "str", "zh_tw"),
-                Param("source_language", "str"),
-                Param("kind", "str"),
+                QUERY_PARAM,
+                Param("target_language", "str", "zh_tw", max_length=32),
+                Param("source_language", "str", max_length=32),
+                Param("kind", "str", max_length=64),
             ),
             http_path="/api/v1/resolve",
             wrap="query_results",
@@ -215,12 +455,12 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Sort by score or weight.",
             "term_lookup",
             (
-                Param("query", "str", required=True),
-                Param("language", "str", core_name="source_language"),
+                QUERY_PARAM,
+                Param("language", "str", core_name="source_language", max_length=32),
                 LANGUAGES_MCP,
-                Param("limit", "int", 8),
-                Param("tag", "str"),
-                Param("sort", "str", "score"),
+                _limit(8),
+                Param("tag", "str", max_length=64),
+                Param("sort", "str", "score", enum=("score", "weight")),
             ),
             http_path="/api/v1/term_lookup",
             wrap="query_results",
@@ -233,13 +473,14 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "same narrative line.",
             "term_penetrate",
             (
-                Param("query", "str", required=True),
-                Param("story_key", "str", empty_to_none=True),
+                QUERY_PARAM,
+                Param("story_key", "str", empty_to_none=True, max_length=128),
                 Param(
                     "languages",
                     "csv_or_list",
                     mcp_schema={"type": "array", "items": {"type": "string"}},
                     http_default=_csv(CSV_LANG_DEFAULT),
+                    max_length=32,
                 ),
             ),
             http_path="/api/v1/term_penetrate",
@@ -251,8 +492,8 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Return a compact fact pack for one entity ID.",
             "fact_pack",
             (
-                Param("entity_id", "str", required=True),
-                Param("language", "str", "en"),
+                Param("entity_id", "str", required=True, max_length=256),
+                Param("language", "str", "en", max_length=32),
             ),
             http_path="/api/v1/fact_pack",
             http_not_found="Entity not found: {entity_id}",
@@ -309,7 +550,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Return knowledge base integrity issues: duplicates, canonical "
             "conflicts, hash mismatches and source fidelity metadata.",
             "integrity",
-            (Param("limit", "int", 20),),
+            (_limit(20),),
             http_path="/api/v1/integrity",
         ),
         ToolSpec(
@@ -319,9 +560,11 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "update/information/bug) and body availability.",
             "news",
             (
-                Param("limit", "int", 50),
-                Param("language", "str"),
-                Param("tag", "str"),
+                _limit(50),
+                Param("language", "str", max_length=32),
+                Param("tag", "str", max_length=64),
+                # Three-state on purpose (P15): absent must stay None (no body
+                # filter), not collapse to False ("body absent only").
                 Param("body", "bool"),
             ),
             http_path="/api/v1/news",
@@ -335,6 +578,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
                     "claims",
                     "json",
                     required=True,
+                    max_length=MAX_CLAIMS,
                     mcp_schema={
                         "type": "array",
                         "items": {
@@ -345,6 +589,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
                             },
                             "required": ["claim"],
                         },
+                        "maxItems": MAX_CLAIMS,
                     },
                 ),
             ),
@@ -357,14 +602,20 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Search the locally crawled text index from Sekai Viewer / altsource.",
             "web_lookup",
             (
-                Param("query", "str", required=True),
-                Param("source", "str"),
-                Param("language", "str"),
-                Param("kind", "str"),
-                Param("limit", "int", 8),
+                QUERY_PARAM,
+                Param("source", "str", max_length=64),
+                Param("language", "str", max_length=32),
+                Param("kind", "str", max_length=64),
+                _limit(8),
                 Param("include_text", "bool", False),
                 Param("include_overlay", "bool", False),
-                Param("max_text_chars", "int", 0),
+                Param(
+                    "max_text_chars",
+                    "int",
+                    0,
+                    minimum=0,
+                    maximum=MAX_MAX_TEXT_CHARS,
+                ),
             ),
             http_path="/api/v1/web_lookup",
             wrap="query_results",
@@ -377,9 +628,18 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "event_check",
             (
                 REGION_ARRAY_PARAM,
-                Param("timeout", "int", 30),
+                Param(
+                    "timeout",
+                    "int",
+                    30,
+                    minimum=1,
+                    maximum=MAX_TIMEOUT_SECONDS,
+                ),
             ),
             http_path="/api/v1/events/check",
+            # P15: this endpoint writes (archives events, grows the crawl
+            # denominator), so it must not sit on GET.
+            http_method="POST",
         ),
         ToolSpec(
             "event_archive", "sekaisync_event_archive",
@@ -387,7 +647,10 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "event_archive",
             (
                 REGION_ARRAY_PARAM,
-                Param("limit", "int", None),
+                # Historical contract: limit=0 means "all", not "zero rows";
+                # `zero_means_none` preserves it instead of a generic
+                # `minimum=1` rejection breaking the endpoint.
+                Param("limit", "int", None, minimum=0, maximum=MAX_LIMIT, zero_means_none=True),
             ),
             http_path="/api/v1/events/archive",
         ),
@@ -397,7 +660,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "character box event with cross-region official names.",
             "event_alias",
             (
-                Param("query", "str", required=True),
+                QUERY_PARAM,
                 REGION_ARRAY_PARAM,
             ),
             http_path="/api/v1/event_alias",
@@ -410,7 +673,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "cross-region official names.",
             "worldlink",
             (
-                Param("query", "str", required=True),
+                QUERY_PARAM,
                 REGION_ARRAY_PARAM,
             ),
             http_path="/api/v1/worldlink",
@@ -424,7 +687,7 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "events).",
             "activity",
             (
-                Param("query", "str", required=True),
+                QUERY_PARAM,
                 REGION_ARRAY_PARAM,
             ),
             http_path="/api/v1/activity",
@@ -434,11 +697,11 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "Unified local query across master metadata and crawled story text.",
             "query",
             (
-                Param("query", "str", required=True),
-                Param("type", "str"),
-                Param("region", "str"),
-                Param("language", "str"),
-                Param("limit", "int", 8),
+                QUERY_PARAM,
+                Param("type", "str", max_length=64),
+                Param("region", "str", max_length=32),
+                Param("language", "str", max_length=32),
+                _limit(8),
                 Param("include_overlay", "bool", False),
             ),
             http_path="/api/v1/query",
@@ -449,10 +712,10 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
             "and category, newest first.",
             "web_browse",
             (
-                Param("source", "str"),
-                Param("language", "str"),
-                Param("kind", "str"),
-                Param("limit", "int", 50),
+                Param("source", "str", max_length=64),
+                Param("language", "str", max_length=32),
+                Param("kind", "str", max_length=64),
+                _limit(50),
                 Param("include_text", "bool", False),
             ),
             http_path="/api/v1/web_browse",
@@ -482,3 +745,162 @@ HTTP_GET_ROUTES: dict[str, ToolSpec] = {
 HTTP_POST_ROUTES: dict[str, ToolSpec] = {
     s.http_path: s for s in TOOLS if s.http_path and s.http_method == "POST"
 }
+
+# HTTP operation ids / summaries / 404 notes the OpenAPI document needs and
+# the registry does not carry.  Methods, paths, parameters, defaults and
+# ranges all come from the ToolSpec/Param registry above; this table only
+# holds prose that has no home in a tool description.
+HTTP_OPERATION_IDS: dict[str, str] = {
+    "lookup": "lookup",
+    "resolve_name": "resolve",
+    "term_lookup": "termLookup",
+    "term_penetrate": "termPenetrate",
+    "fact_pack": "factPack",
+    "freshness": "freshness",
+    "refresh": "refresh",
+    "tag_clouds": "tagClouds",
+    "data_gaps": "dataGaps",
+    "progress": "progress",
+    "trust_summary": "trust",
+    "integrity": "integrity",
+    "news": "news",
+    "verify_claims": "verifyClaims",
+    "web_lookup": "webLookup",
+    "event_check": "eventCheck",
+    "event_archive": "eventArchive",
+    "event_alias": "eventAlias",
+    "worldlink": "worldlink",
+    "activity": "activity",
+    "query": "query",
+    "web_browse": "webBrowse",
+    "status": "status",
+    "sites": "sites",
+}
+
+HTTP_SUMMARIES: dict[str, str] = {
+    "lookup": "Entity matches",
+    "resolve_name": "Official localized name matches",
+    "term_lookup": "Extracted terms and their cross-language names",
+    "term_penetrate": "Cross-language per-line penetration for a term at a story position",
+    "fact_pack": "Compact fact pack",
+    "freshness": "Data freshness",
+    "refresh": "Reload cached indexes from disk",
+    "tag_clouds": "Tag clouds split by released(multi-lang) vs unreleased(ja-only)",
+    "data_gaps": "Known data source limitations visible to agents",
+    "progress": "Per-region completeness percentages",
+    "trust_summary": "A/B/C/D trust distribution",
+    "integrity": "Dedup and fidelity integrity report",
+    "news": "Synced official news and announcements",
+    "verify_claims": "Verification results",
+    "web_lookup": "Crawled web text matches",
+    "event_check": "New-event detection, base-data sync and classification",
+    "event_archive": "Archived event classifications by region",
+    "event_alias": "Community event shorthand resolved to box event",
+    "worldlink": "World Link shorthand resolved to world_bloom event",
+    "activity": "Shorthand resolved to a numbered activity (wl or box) or kind=unresolved",
+    "query": "Unified metadata and web text matches",
+    "web_browse": "Crawled web text filtered by source/category",
+    "status": "Store, master, web and freshness status",
+    "sites": "Configured site profile from settings.json",
+}
+
+HTTP_404_DESCRIPTIONS: dict[str, str] = {
+    "event_alias": "No matching alias or ordinal",
+    "worldlink": "No matching World Link alias or ordinal",
+}
+
+
+def openapi_parameter(param: Param) -> dict:
+    """One OpenAPI ``in: query`` parameter object derived from a Param."""
+    schema: dict[str, Any] = {}
+    if param.kind == "int":
+        schema["type"] = "integer"
+    elif param.kind == "bool":
+        schema["type"] = "boolean"
+    elif param.kind == "csv_or_list":
+        schema["type"] = "array"
+        schema["items"] = {"type": "string"}
+    else:
+        schema["type"] = "string"
+    if param.default is not None:
+        schema["default"] = param.default
+    schema.update(_constraint_keys(param))
+    entry: dict[str, Any] = {"name": param.name, "in": "query", "schema": schema}
+    if param.required:
+        entry["required"] = True
+    if param.description:
+        entry["description"] = param.description
+    return entry
+
+
+def _http_params(spec: ToolSpec) -> tuple[Param, ...]:
+    if spec.http_method == "POST":
+        # POST endpoints take their arguments from the JSON body, not the
+        # query string (events/check and verify_claims are the only ones).
+        return ()
+    return spec.args
+
+
+def _request_body_schema(spec: ToolSpec) -> Optional[dict]:
+    if spec.http_method != "POST":
+        return None
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for param in spec.args:
+        if param.mcp_schema is not None:
+            schema = dict(param.mcp_schema)
+            schema.update(_constraint_keys(param))
+        elif param.kind == "int":
+            schema = {"type": "integer", **_constraint_keys(param)}
+        elif param.kind == "bool":
+            schema = {"type": "boolean"}
+        elif param.kind == "csv_or_list":
+            schema = {"type": "array", "items": {"type": "string"}, **_constraint_keys(param)}
+        else:
+            schema = {"type": "string", **_constraint_keys(param)}
+        properties[param.name] = schema
+        if param.required:
+            required.append(param.name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def build_openapi(specs: Iterable[ToolSpec] = TOOLS) -> dict:
+    """Derive the OpenAPI document from the same registry that drives MCP.
+
+    The previous hand-written constant drifted from ``tools.py`` (it still
+    advertised ``GET /api/v1/events/check`` and dropped ``news``'s
+    parameters); generating both from one source makes that class of drift
+    impossible.
+    """
+    paths: dict[str, Any] = {}
+    for spec in specs:
+        if not spec.http_path:
+            continue
+        method = spec.http_method.lower()
+        operation: dict[str, Any] = {
+            "operationId": HTTP_OPERATION_IDS.get(spec.name, spec.name),
+        }
+        params = _http_params(spec)
+        if params:
+            operation["parameters"] = [openapi_parameter(p) for p in params]
+        body = _request_body_schema(spec)
+        if body is not None:
+            operation["requestBody"] = {
+                "required": bool(body["required"]),
+                "content": {"application/json": {"schema": body}},
+            }
+        responses: dict[str, Any] = {
+            "200": {"description": HTTP_SUMMARIES.get(spec.name, spec.name)}
+        }
+        if spec.http_not_found is not None or spec.name in HTTP_404_DESCRIPTIONS:
+            responses["404"] = {
+                "description": HTTP_404_DESCRIPTIONS.get(spec.name, "Not found")
+            }
+        operation["responses"] = responses
+        paths.setdefault(spec.http_path, {})[method] = operation
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "SekaiSync Local API", "version": __version__},
+        "servers": [{"url": "http://127.0.0.1:8787"}],
+        "paths": paths,
+    }

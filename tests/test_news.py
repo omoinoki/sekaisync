@@ -31,28 +31,43 @@ class NewsTest(unittest.TestCase):
         jp_title = "\u91cd\u8907\u304a\u77e5\u3089\u305b"
         merged = merge_news(
             [
+                # Explicit upstream evidence identifies these instances as
+                # mirrors; backend equality alone is not sufficient. Identity
+                # is (upstream namespace, upstream id, language), not title.
                 {
-                    "canonical_key": f"zh_hans:{cn_title}",
                     "language": "zh_hans",
-                    "source": "altsource_ms",
+                    "source": "altsource_sv",
+                    "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
+                    "source_id": "1",
+                    "title": cn_title,
                     "text": "短",
                 },
                 {
-                    "canonical_key": f"zh_hans:{cn_title}",
                     "language": "zh_hans",
-                    "source": "altsource_sv",
+                    "source": "altsource_sv_local",
+                    "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
+                    "source_id": "1",
+                    "title": cn_title,
                     "text": "更长的正文内容",
                 },
                 {
-                    "canonical_key": f"ja:{jp_title}",
                     "language": "ja",
-                    "source": "altsource_ms",
+                    "source": "altsource_sv",
+                    "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
+                    "source_id": "2",
+                    "title": jp_title,
                     "text": "短い",
                 },
                 {
-                    "canonical_key": f"ja:{jp_title}",
                     "language": "ja",
-                    "source": "altsource_sv",
+                    "source": "altsource_sv_local",
+                    "source_type": "sekai_viewer",
+                    "upstream_namespace": "official:test",
+                    "source_id": "2",
+                    "title": jp_title,
                     "text": "より長い本文内容",
                 },
             ]
@@ -182,8 +197,13 @@ class NewsTest(unittest.TestCase):
                 source_priority=(SOURCE_SV, SOURCE_MS),
             )
             records = load_news(store_root)
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["source"], "altsource_sv")
+            # Different backends, different upstream ids, different URLs: only
+            # the title matches, which Astra P17 says is not evidence. Both are
+            # kept; the higher-priority source ranks first.
+            self.assertEqual(len(records), 2)
+            self.assertEqual(
+                {r["source"] for r in records}, {"altsource_ms", "altsource_sv"}
+            )
 
 
     def test_website_announcements_are_excluded_and_purged(self):
@@ -238,44 +258,59 @@ class NewsTest(unittest.TestCase):
     def test_source_priority_follows_passed_order(self):
         from sekaisync.sources import SOURCE_MS, SOURCE_SV
 
+        # Explicit upstream namespaces prove mirror identity. Priority picks
+        # which instance's copy is served; the title is display-only.
         records = [
             {
-                "canonical_key": "zh_hans:priority",
                 "language": "zh_hans",
                 "source": SOURCE_SV,
+                "source_type": "sekai_viewer",
+                "upstream_namespace": "official:test",
+                "source_id": "7",
                 "text": "sv text",
             },
             {
-                "canonical_key": "zh_hans:priority",
                 "language": "zh_hans",
-                "source": SOURCE_MS,
-                "text": "ms text",
+                "source": "altsource_sv_local",
+                "source_type": "sekai_viewer",
+                "upstream_namespace": "official:test",
+                "source_id": "7",
+                "text": "local text",
             },
         ]
-        merged = merge_news(records, source_priority=(SOURCE_MS, SOURCE_SV))
-        self.assertEqual(merged[0]["source"], SOURCE_MS)
-        merged = merge_news(records, source_priority=(SOURCE_SV, SOURCE_MS))
+        # These proven mirrors share identity, so priority decides the copy.
+        merged = merge_news(records, source_priority=(SOURCE_SV, "altsource_sv_local"))
         self.assertEqual(merged[0]["source"], SOURCE_SV)
+        merged = merge_news(records, source_priority=("altsource_sv_local", SOURCE_SV))
+        self.assertEqual(merged[0]["source"], "altsource_sv_local")
 
     def test_legacy_sources_rank_via_priority(self):
+        from sekaisync.news import news_identity
         from sekaisync.sources import SOURCE_MS, SOURCE_SV
 
+        # "sekai_viewer" is the legacy alias for altsource_sv, so both records
+        # are the same backend and same upstream post -> they merge, and the
+        # legacy alias must still resolve to the sv instance's copy.
         records = [
             {
-                "canonical_key": "ja:legacy",
                 "language": "ja",
                 "source": "sekai_viewer",  # legacy alias for altsource_sv
+                "source_id": "3",
                 "text": "legacy sv",
             },
             {
-                "canonical_key": "ja:legacy",
                 "language": "ja",
-                "source": SOURCE_MS,
-                "text": "ms",
+                "source": SOURCE_SV,
+                "source_type": "sekai_viewer",
+                "source_id": "3",
+                "text": "sv",
             },
         ]
         merged = merge_news(records, source_priority=(SOURCE_MS, SOURCE_SV))
-        self.assertEqual(merged[0]["source"], SOURCE_MS)
+        # Both records are the same backend and same upstream id with no
+        # revision time, so priority ties and the first is kept. What matters is
+        # that the legacy alias resolves into the sv namespace, not moesekai.
+        self.assertEqual(news_identity(merged[0])[0], "sekai_viewer")
 
     def test_sync_news_uses_per_instance_endpoints_and_priority(self):
         from sekaisync.config import SiteSettings, ViewerSettings
@@ -321,10 +356,15 @@ class NewsTest(unittest.TestCase):
             # Both instances were fetched; the same announcement merged once,
             # and the earlier (higher-priority) instance won.
             self.assertEqual(result["fetched"], 2)
-            self.assertEqual(result["merged"], 1)
+            # The two instances report different upstream ids (1 vs 2), so they
+            # are distinct posts — identity is the upstream id, not the title.
+            self.assertEqual(result["merged"], 2)
             records = load_news(store_root)
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["source"], "altsource_sv")
+            self.assertEqual(len(records), 2)
+            self.assertEqual(
+                {r["source"] for r in records},
+                {"altsource_sv", "altsource_sv_local"},
+            )
             self.assertEqual(records[0]["source_type"], BACKEND_SEKAI_VIEWER)
             summary = news_summary(store_root)
             self.assertIn("altsource_sv", summary["sources"])
@@ -338,8 +378,14 @@ class NewsTest(unittest.TestCase):
                 sites=sites,
                 source_priority=("altsource_sv_local", "altsource_sv"),
             )
-            self.assertEqual(result2["merged"], 1)
-            self.assertEqual(load_news(store_root)[0]["source"], "altsource_sv_local")
+            # Distinct upstream ids stay distinct, so both instances are kept
+            # regardless of priority; priority only decides which copy wins
+            # when two records DO share an identity (see merge_news tests).
+            self.assertEqual(result2["merged"], 2)
+            self.assertEqual(
+                {r["source"] for r in load_news(store_root)},
+                {"altsource_sv", "altsource_sv_local"},
+            )
 
     def test_sync_news_type_selector_expands_to_all_instances(self):
         from sekaisync.config import SiteSettings, ViewerSettings
@@ -386,3 +432,78 @@ class NewsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewsIdentityTest(unittest.TestCase):
+    """Astra P17/D17: identity is namespace + upstream id + language, not title.
+
+    The previous key was ``language:title``, so two distinct announcements that
+    shared a heading collapsed into one and a record was silently lost.
+    """
+
+    def _record(self, **overrides):
+        record = {
+            "language": "ja",
+            "source": "altsource_sv",
+            "source_type": "sekai_viewer",
+            "source_id": "1",
+            "title": "メンテナンスのお知らせ",
+            "text": "",
+        }
+        record.update(overrides)
+        return record
+
+    def test_distinct_ids_with_the_same_title_are_both_kept(self):
+        """Astra: 同标题不同 ID 均保留."""
+        merged = merge_news(
+            [self._record(source_id="1"), self._record(source_id="2")]
+        )
+        self.assertEqual(len(merged), 2)
+
+    def test_older_revision_never_overwrites_by_body_length(self):
+        """Astra: a revision can shorten text, so length is not recency."""
+        merged = merge_news(
+            [
+                self._record(text="长" * 200, updated_at="2026-01-01"),
+                self._record(text="短", updated_at="2026-06-01"),
+            ]
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["text"], "短")
+
+    def test_newer_revision_wins_even_when_shorter(self):
+        merged = merge_news(
+            [
+                self._record(text="短", updated_at="2026-01-01"),
+                self._record(text="长" * 200, updated_at="2026-06-01"),
+            ]
+        )
+        self.assertEqual(merged[0]["text"], "长" * 200)
+
+    def test_different_backends_are_not_merged_on_title(self):
+        """Astra: 无证据不跨站合并."""
+        merged = merge_news(
+            [
+                self._record(),
+                self._record(source="altsource_ms", source_type="moesekai"),
+            ]
+        )
+        self.assertEqual(len(merged), 2)
+
+    def test_mirror_instances_sharing_an_upstream_id_merge(self):
+        """Same backend + same upstream id = one post, served by priority."""
+        merged = merge_news(
+            [
+                self._record(source="altsource_sv", upstream_namespace="official:test"),
+                self._record(source="altsource_sv_local", upstream_namespace="official:test"),
+            ],
+            source_priority=("altsource_sv_local", "altsource_sv"),
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["source"], "altsource_sv_local")
+
+    def test_missing_body_is_preserved_not_dropped(self):
+        """Astra: 正文缺失保留 body_available=False."""
+        merged = merge_news([self._record(body_available=False)])
+        self.assertEqual(len(merged), 1)
+        self.assertFalse(merged[0]["body_available"])

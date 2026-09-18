@@ -97,13 +97,25 @@ def discover_words(
     promotes grammar phrasing that merely happens to co-occur often, which is
     the dominant source of noise in the Chinese vocabulary.
     """
-    joined = "\n".join(t for t in texts if t)
-    # Cap volume by dropping WHOLE chunks — character-stride slicing shreds
-    # words (网络天堂 -> 络天…) and silently kills discovery.
-    if len(joined) > max_chars:
-        chunks = [t for t in texts if t]
-        keep_every = math.ceil(len(joined) / max_chars)
-        joined = "\n".join(chunks[i] for i in range(0, len(chunks), keep_every))
+    # One pass, bounded prefix, identical for lists and one-shot iterators.
+    # Never stride characters or revisit the iterable. The final chunk may be
+    # truncated at the budget; its artificial end has no right-context evidence.
+    if max_chars <= 0:
+        return set()
+    chunks: list[str] = []
+    remaining = max_chars
+    for text in texts:
+        if not text:
+            continue
+        if chunks:
+            remaining -= 1  # the inter-document newline also consumes budget
+        if remaining <= 0:
+            break
+        chunks.append(text[:remaining])
+        remaining -= len(chunks[-1])
+        if remaining <= 0:
+            break
+    joined = "\n".join(chunks)
 
     stop = set(stop_marks)
     boundary = set(boundary_stop_chars)

@@ -17,8 +17,15 @@ from typing import Any, Callable, Iterable, Optional
 
 from sekaisync.config import REGIONS
 from sekaisync.endpoints import current_endpoints
-from sekaisync.eventalias import _build_jp_box_map, _load_json
-from sekaisync.layout import events_archive_path, region_master_dir, region_source_dir
+from sekaisync.eventalias import _build_jp_box_map
+from sekaisync.layout import (
+    events_archive_path,
+    master_source_dir,
+    region_master_dir,
+    region_source_dir,
+    read_master_table,
+    _records_from_master_payload,
+)
 
 EVENT_BASE_TABLES = ("events", "eventStories", "eventCards", "cards", "eventMusics", "musics")
 
@@ -63,7 +70,7 @@ def _source_write_dir(store_root: Path, region: str) -> Path:
     source.mkdir(parents=True, exist_ok=True)
     return source
 def _local_table_path(store_root: Path, region: str, table: str) -> Optional[Path]:
-    base = region_master_dir(store_root, region)
+    base = master_source_dir(store_root, region)
     patterns = (
         base / "**" / f"{table}.json",
         base / f"{table}.json",
@@ -76,10 +83,10 @@ def _local_table_path(store_root: Path, region: str, table: str) -> Optional[Pat
             return matches[0]
     return None
 def load_local_events(store_root: Path, region: str) -> list[dict[str, Any]]:
-    path = _local_table_path(store_root, region, "events")
-    if path is None:
-        return []
-    return _load_json(path)
+    # Compatibility list API; completeness-sensitive callers use TableRead.
+    from sekaisync.registry import capture_raw_snapshot
+
+    return read_master_table(capture_raw_snapshot(store_root, [region]), region, "events").records
 
 
 def fetch_remote_events(
@@ -94,15 +101,21 @@ def fetch_remote_events(
         )
     fetch = fetcher or default_fetcher
     raw = fetch(_remote_master_url(region, "events"), timeout)
-    data = json.loads(raw)
-    if isinstance(data, dict):
-        for key in ("records", "items", "data"):
-            if isinstance(data.get(key), list):
-                data = data[key]
-                break
-        else:
-            data = []
-    return [item for item in data if isinstance(item, dict)]
+    return _parse_remote_table(raw, "events")
+
+
+class InvalidMasterTable(ValueError):
+    """Fetched JSON is not a complete, structurally valid master table."""
+
+
+def _parse_remote_table(raw: str, table: str) -> list[dict[str, Any]]:
+    try:
+        records = _records_from_master_payload(json.loads(raw))
+    except (ValueError, UnicodeError) as exc:
+        raise InvalidMasterTable(f"{table}: invalid JSON: {exc}") from exc
+    if records is None:
+        raise InvalidMasterTable(f"{table}: expected a list of objects or supported list wrapper")
+    return records
 
 
 def detect_new_events(
@@ -125,41 +138,93 @@ def _merge_table_records(
     existing: list[dict[str, Any]],
     incoming: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Merge rows by natural key.
+
+    Rows are keyed by :func:`_row_identity` rather than ``id`` alone. The old
+    ``if key:`` guard silently **dropped** every row without an ``id`` — fine
+    while every table in this path has one, but a trap the moment a table like
+    ``eventMusics`` (137/137 rows id-less in the real store) is routed here.
+    Unkeyed rows now keep distinct identities instead of vanishing.
+    """
     seen: dict[str, dict[str, Any]] = {}
     for record in existing:
         if not isinstance(record, dict):
             continue
-        key = str(record.get("id"))
-        if key:
-            seen.setdefault(key, record)
+        seen.setdefault(_row_identity("", record), record)
     for record in incoming:
         if not isinstance(record, dict):
             continue
-        key = str(record.get("id"))
-        if key:
-            seen.setdefault(key, record)
+        seen.setdefault(_row_identity("", record), record)
     return [seen[key] for key in sorted(seen, key=lambda k: (len(k), k))]
+
+
+#: Relation tables have no single ``id``; their identity is the combination of
+#: fields that actually identifies the relationship. ``seq`` is deliberately
+#: excluded: it is ordering/versioning, not identity, so including it would let
+#: the same relationship be appended again under a new seq.
+_RELATION_NATURAL_KEYS: dict[str, tuple[str, ...]] = {
+    "eventMusics": ("eventId", "musicId"),
+    "eventCards": ("eventId", "cardId"),
+    "eventDeckBonus": ("eventId", "cardId", "bonusType"),
+}
+
+
+def _row_identity(table: str, record: dict[str, Any]) -> str:
+    """Natural key for one row, per Astra P16/D16.
+
+    Entity tables use ``id``. Relation tables use their actual relationship
+    fields. A row with **no usable key** gets a unique identity derived from its
+    full content, so distinct rows are never merged — the previous code keyed
+    every key-less row as ``""``, so only the first survived and the rest were
+    silently dropped. Identical rows still deduplicate, which is what "去掉完整
+    行相同的重复" asks for.
+    """
+    fields = _RELATION_NATURAL_KEYS.get(table)
+    if fields:
+        parts = [str(record.get(field) or "") for field in fields]
+        if any(parts):
+            return f"{table}:" + "\x1f".join(parts)
+
+    value = record.get("id")
+    if value is not None and str(value) != "":
+        return f"{table}:id:{value}"
+
+    # No natural key at all: fall back to the whole row's content, so two
+    # genuinely different rows cannot collide.
+    try:
+        return f"{table}:row:{json.dumps(record, sort_keys=True, ensure_ascii=False)}"
+    except (TypeError, ValueError):
+        return f"{table}:repr:{repr(sorted(record.items(), key=lambda kv: str(kv[0])))}"
 
 
 def _merge_event_rows(
     existing: list[dict[str, Any]],
     incoming: Iterable[dict[str, Any]],
     new_event_ids: set[str],
+    table: str = "",
 ) -> list[dict[str, Any]]:
-    """Merge tables whose records are tied to an event id (eventCards / eventMusics)."""
+    """Merge tables whose records are tied to an event id (eventCards / eventMusics).
+
+    Passing ``table`` enables the relation natural key. Without it the legacy
+    ``id``-only behaviour is kept, which is only safe for entity tables — callers
+    merging relation rows must name the table or id-less rows are lost.
+    """
     result = list(existing)
-    seen = {str(record.get("id")) for record in result if record.get("id") is not None}
+    seen = {
+        _row_identity(table, record)
+        for record in result
+        if isinstance(record, dict)
+    }
     for record in incoming:
         if not isinstance(record, dict):
             continue
         event_id = str(record.get("eventId") or "")
         if event_id and event_id not in new_event_ids:
             continue
-        key = str(record.get("id"))
+        key = _row_identity(table, record)
         if key in seen:
             continue
-        if key:
-            seen.add(key)
+        seen.add(key)
         result.append(record)
     return result
 
@@ -196,6 +261,23 @@ def merge_new_event_tables(
     Only the small per-event tables are filtered; events/eventStories/musics are
     merged by primary key so future checks never duplicate them.
     """
+    from sekaisync.registry import capture_raw_snapshot
+
+    # Preflight the complete input and baseline before creating or writing any
+    # file. This is not a six-file transaction; generation publication remains
+    # the responsibility of sync, not this legacy incremental writer.
+    for table in EVENT_BASE_TABLES:
+        rows = tables.get(table)
+        if not isinstance(rows, list) or _records_from_master_payload(rows) is None:
+            raise InvalidMasterTable(f"{table}: missing or invalid incoming table")
+    snapshot = capture_raw_snapshot(store_root, [region])
+    if snapshot.generations.get(region):
+        raise ValueError("published raw generation requires sync; legacy merge is unsupported")
+    local_tables = {table: read_master_table(snapshot, region, table) for table in EVENT_BASE_TABLES}
+    initial = all(result.status == "missing" for result in local_tables.values())
+    for table, result in local_tables.items():
+        if not result.ok and not initial:
+            raise InvalidMasterTable(f"{table}: {result.status} local table; run sync")
     write_dir = _source_write_dir(store_root, region)
     counts: dict[str, int] = {}
     new_card_ids: set[str] = set()
@@ -206,11 +288,12 @@ def merge_new_event_tables(
                 new_card_ids.add(card_id)
 
     for table in EVENT_BASE_TABLES:
-        path = write_dir / f"{table}.json"
-        existing = _load_json(path) if path.exists() else []
-        incoming = tables.get(table, [])
+        result = local_tables[table]
+        path = Path(result.source) if result.ok else write_dir / f"{table}.json"
+        existing = result.records
+        incoming = tables[table]
         if table in {"eventCards", "eventMusics"}:
-            merged = _merge_event_rows(existing, incoming, new_event_ids)
+            merged = _merge_event_rows(existing, incoming, new_event_ids, table=table)
         elif table == "cards":
             merged = _merge_cards(existing, incoming, new_card_ids)
         else:
@@ -280,28 +363,20 @@ def _jp_placeholder_event_ids(store_root: Path) -> set[str]:
     real activity sequence count, which aligns SekaiSync's numbering with
     the fan-translation community's counting.
     """
+    from sekaisync.registry import capture_raw_snapshot
+
     ids: set[str] = set()
-    events_path = _local_table_path(store_root, "jp", "events")
-    if events_path is None:
+    snapshot = capture_raw_snapshot(store_root, ["jp"])
+    tables = {table: read_master_table(snapshot, "jp", table)
+              for table in ("events", "eventCards", "eventMusics", "eventStories")}
+    if not all(result.ok for result in tables.values()):
+        # Missing evidence cannot establish that an event is a placeholder.
         return ids
-    try:
-        records = json.loads(events_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return ids
-    if not isinstance(records, list):
-        return ids
+    records = tables["events"].records
 
     def load_ids(table: str) -> set[str]:
-        path = _local_table_path(store_root, "jp", table)
-        if path is None:
-            return set()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return set()
-        if not isinstance(data, list):
-            return set()
-        return {str(item.get("eventId") or item.get("id") or "") for item in data if isinstance(item, dict)}
+        return {str(item.get("eventId") or item.get("id") or "")
+                for item in tables[table].records}
 
     card_ids = load_ids("eventCards")
     music_ids = load_ids("eventMusics")
@@ -406,17 +481,30 @@ def check_events(
                 "archive": str((events_archive_path(store_root)).resolve()),
             }
 
+    from sekaisync.registry import capture_raw_snapshot
+
+    snapshot = capture_raw_snapshot(store_root, selected)
     for region in selected:
-        local = load_local_events(store_root, region)
-        if not local and not allow_initial:
+        local_tables = {table: read_master_table(snapshot, region, table) for table in EVENT_BASE_TABLES}
+        table_states = {table: result.status for table, result in local_tables.items()}
+        local = local_tables["events"].records
+        initial = allow_initial and all(state == "missing" for state in table_states.values())
+        if not initial and not all(result.ok for result in local_tables.values()):
             summary["regions"][region] = {
-                "status": "no_local_baseline",
-                "reason": "local events table not found; run sync or events check first",
+                "status": "no_local_baseline" if table_states["events"] == "missing" and not allow_initial else "incomplete_local",
+                "reason": "required local tables missing or invalid; run sync to repair",
+                "table_states": table_states,
                 "new_events": [],
             }
             continue
         try:
             remote = fetch_remote_events(region, fetcher=fetcher, timeout=timeout)
+        except InvalidMasterTable as exc:
+            summary["regions"][region] = {
+                "status": "fetch_failed", "reason": str(exc),
+                "table_states": table_states, "new_events": [],
+            }
+            continue
         except ValueError:
             raise
         except Exception as exc:  # network unavailable: stay local, do not fail the run
@@ -427,6 +515,13 @@ def check_events(
             }
             continue
         new_events = detect_new_events(remote, local)
+        if (new_events or initial) and snapshot.generations.get(region):
+            summary["regions"][region] = {
+                "status": "sync_required",
+                "reason": "active raw generation cannot be updated by legacy event merge; run sync",
+                "table_states": table_states, "new_events": [],
+            }
+            continue
         box_event_ids_cache: Optional[set[str]] = None
 
         def box_event_ids() -> set[str]:
@@ -439,25 +534,20 @@ def check_events(
             "status": "ok" if new_events else "up_to_date",
             "local_events": len(local),
             "remote_events": len(remote),
+            "table_states": table_states,
             "new_events": [],
         }
-        if new_events:
+        if new_events or initial:
             try:
-                tables: dict[str, list[dict[str, Any]]] = {}
+                # Reuse the events sample used for detection rather than
+                # fetching it twice and possibly merging a different version.
+                tables: dict[str, list[dict[str, Any]]] = {"events": remote}
                 for table in EVENT_BASE_TABLES:
-                    if fetcher is not None:
-                        raw = fetcher(_remote_master_url(region, table), timeout)
-                    else:
-                        raw = default_fetcher(_remote_master_url(region, table), timeout)
-                    data = json.loads(raw)
-                    if isinstance(data, dict):
-                        for key in ("records", "items", "data"):
-                            if isinstance(data.get(key), list):
-                                data = data[key]
-                                break
-                        else:
-                            data = []
-                    tables[table] = [item for item in data if isinstance(item, dict)]
+                    if table == "events":
+                        continue
+                    fetch = fetcher or default_fetcher
+                    raw = fetch(_remote_master_url(region, table), timeout)
+                    tables[table] = _parse_remote_table(raw, table)
                 counts = merge_new_event_tables(
                     store_root,
                     region,

@@ -633,6 +633,8 @@ def extract_zh_candidates_from_story(
 
     def add(w: str, quoted: bool):
         w = w.strip("　 ")
+        if normalize_name(w.strip('「」『』“”\"')) in protagonists_norm:
+            return
         # 种子词表命中：即使 2 字也强制保留（贝斯/网球/美元）
         if w in seed and normalize_name(w) not in protagonists_norm:
             if w not in seen:
@@ -887,7 +889,7 @@ def extract_terms_zhfirst(
         and not term_quoted.get(canon)
     ]
     llm_kept: set[str] = set()
-    if needs_filter and llm is not None:
+    if needs_filter:
         llm_kept = llm_filter_terms(needs_filter, llm)
     for canon, stories in term_stories.items():
         key = normalize_name(canon)

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import heapq
+import itertools
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from sekaisync import dbstore
+from sekaisync import searchindex
 from sekaisync.filecache import cached_json
 from sekaisync.layout import web_category_dir, web_index_path, web_pages_path, web_root
 from sekaisync.models import WebPage
@@ -587,7 +590,7 @@ def save_web_pages(
     if existing is None:
         existing = load_existing_page_map(store_root, source)
     for page in pages:
-        existing[page.id] = web_page_to_dict(page)
+        existing[page.id] = {**existing.get(page.id, {}), **web_page_to_dict(page)}
     merged = list(existing.values())
     dbstore.save_web_pages_full(store_root, source, merged)
     if write_categories:
@@ -655,11 +658,16 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
     """Recompute canonical/trust/flag columns for every source from stored text."""
     from sekaisync.models import WebPage
 
+    # Maintenance is also the right moment to backfill the walkable browse
+    # index: stores created before it existed keep working but sort in SQL
+    # (measured ~8s per browse on the real store). Reads must not write, so
+    # this explicit entry point is where the index gets built.
+    browse_index = dbstore.ensure_browse_index(store_root)
     sources: dict[str, int] = {}
     rebuilt: dict[str, int] = {}
     for source, items in dbstore.load_web_pages(store_root).items():
         pages = [web_page_from_dict(recompute_language_flags(item)) for item in items]
-        merged = [web_page_to_dict(page) for page in pages]
+        merged = [{**item, **web_page_to_dict(page)} for item, page in zip(items, pages)]
         dbstore.save_web_pages_full(store_root, source, merged)
         write_category_files(
             web_category_dir(store_root, source),
@@ -673,6 +681,7 @@ def rebuild_web_index(store_root: Path) -> dict[str, Any]:
         "pages": sum(sources.values()),
         "index": str(dbstore.db_file(store_root)),
         "rebuilt": rebuilt,
+        "browse_index": browse_index,
     }
 
 
@@ -713,12 +722,58 @@ def web_search(
     include_text: bool = False,
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
+    kind: Optional[str] = None,
 ) -> list[dict[str, Any]]:
+    """Search page titles/bodies, best match first within source priority.
+
+    Streams the scoring window out of SQLite instead of materialising every
+    page with its full body first (Astra P06; the window is the same
+    ``text[:20000]`` the baseline scorer used, so scores are identical).
+
+    Ranking stays in Python on purpose: the score comes from
+    ``best_match``'s Unicode-normalised fuzzy matching, and replacing it with
+    ``LIKE '%query%' LIMIT K`` would change recall and source priority rather
+    than speed it up. Instead a fixed-size heap keeps memory at O(limit +
+    batch) while still considering **every** candidate — the scoring loop is
+    still linear, and Astra's text is explicit that this must not be sold as
+    an algorithmic speedup.
+
+    ``kind`` uses exact raw-kind matching before scoring and heap selection.
+    Filtering after the heap would let unrelated kinds consume the result
+    limit and hide matching pages. SQL iteration remains streamed.
+    """
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
-    pages = flatten_web_pages(store_root)
-    scored: list[tuple[dict[str, Any], int]] = []
-    for page in pages:
+
+    resolved = _sql_filter_values(
+        store_root, wanted_source=wanted_source, kind=None
+    )
+
+    # Candidate prefilter (Astra P06 follow-up). The index proposes which rows
+    # *could* match; the scorer below still decides every result and its order.
+    # ``None`` means the index is unavailable, stale, or cannot answer this
+    # query — all ordinary, and all resolved by scanning exactly as before.
+    # Recall is unchanged rather than merely measured: see
+    # ``sekaisync/searchindex.py`` for the per-tier superset argument.
+    candidate_keys = searchindex.candidates(
+        store_root,
+        query,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        include_overlay=include_overlay,
+    )
+
+    # (rank, -score, seq) ordering, so the heap keeps the same winners a full
+    # sort would: lower source rank first, then higher score.
+    heap: list[tuple[int, int, int, dict[str, Any]]] = []
+    counter = itertools.count()
+    for page in dbstore.iter_web_search_rows(
+        store_root,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        include_overlay=include_overlay,
+        keys=candidate_keys,
+    ):
         if is_derived_page(page) and not is_auxiliary_page(page):
             continue
         if is_auxiliary_page(page) and not include_overlay:
@@ -727,11 +782,42 @@ def web_search(
             continue
         if language and page.get("language") != language:
             continue
-        haystack = "\n".join([page.get("title", ""), page.get("text", "")[:20000]])
+        if kind and page.get("kind") != kind:
+            continue
+        head = page.get("text_head") or ""
+        haystack = "\n".join([page.get("title", ""), head])
         matched = best_match(query, [haystack])
         if matched is None:
             continue
         _, score = matched
+        rank = source_rank(page.get("source", ""), priority)
+        # Quality order is (rank asc, score desc, arrival asc) — arrival
+        # ascending because the previous implementation used a *stable* sort
+        # over store order, so equal-quality rows kept their store position.
+        # This is a MIN-heap whose root must be the WORST entry, which means
+        # the key must decrease as quality decreases:
+        #   -rank     -> a worse (higher-rank) source is smaller
+        #   +score    -> a worse (lower) score is smaller
+        #   -arrival  -> a LATER arrival is smaller, so ties evict the newest
+        #                rather than the oldest
+        # The arrival sign is easy to get backwards and silent when wrong: with
+        # mostly-tied scores, the result still looks reasonable while picking
+        # different rows than a stable sort would.
+        entry = (-rank, score, -next(counter), page)
+        if len(heap) < limit:
+            heapq.heappush(heap, entry)
+        elif entry > heap[0]:
+            # Better than the current worst of the top-K: evict the root.
+            heapq.heapreplace(heap, entry)
+
+    # Best first: invert the heap key back into quality order.
+    winners = [
+        entry[3]
+        for entry in sorted(heap, key=lambda e: (-e[0], -e[1], -e[2]))
+    ]
+    items: list[dict[str, Any]] = []
+    for page in winners:
+        head = page.get("text_head") or ""
         item = {
             "id": page.get("id", ""),
             "source": page.get("source", ""),
@@ -742,12 +828,13 @@ def web_search(
             "language": page.get("language", ""),
             "kind": page.get("kind", ""),
             "crawled_at": page.get("crawled_at", ""),
-            "snippet": _make_snippet(page.get("text", ""), query),
-            "text_length": len(page.get("text", "")),
+            "snippet": _make_snippet(head, query),
+            # The SQL `length(text)` value; the body itself was not selected.
+            "text_length": int(page.get("text_length") or 0),
             "trust": trust_for_page(page),
             "canonical_key": canonical_key_for_page(page),
             "source_hash": page.get("source_hash", ""),
-            "text_hash": page.get("text_hash") or sha256_hex(page.get("text", "")),
+            "text_hash": page.get("text_hash") or "",
             "untranslated": bool(page.get("untranslated", False)),
             "untranslated_placeholder": page.get("untranslated_placeholder", ""),
             "original_text_hash": page.get("original_text_hash", ""),
@@ -762,13 +849,90 @@ def web_search(
             "episode_no": page.get("episode_no", 0),
             "overlay": bool(page.get("overlay", False)),
         }
-        if include_text:
-            item["text"] = page.get("text", "")
-        scored.append((item, score))
-    # Higher-priority sources (earlier in the profile) rank first; within a
-    # source, better text matches rank first.
-    scored.sort(key=lambda pair: (source_rank(pair[0].get("source", ""), priority), -pair[1]))
-    return [page for page, _score in scored[:limit]]
+        items.append(item)
+
+    if include_text and items:
+        # Bodies only for the returned rows, after the candidate set is fixed.
+        bodies = dbstore.web_page_texts(
+            store_root,
+            [(item.get("source", ""), item.get("id", "")) for item in items],
+        )
+        for item in items:
+            item["text"] = bodies.get(
+                (item.get("source", ""), item.get("id", "")), ""
+            )
+    return items
+
+
+def _sql_filter_values(
+    store_root: Path,
+    *,
+    wanted_source: Optional[str],
+    kind: Optional[str],
+) -> dict[str, Any]:
+    """Resolve filter rules into finite value sets for SQL.
+
+    `web_browse`'s filters are defined in Python (`matches_source_filter`
+    compares a page's *backend class*, `page_category` maps many raw `kind`
+    spellings onto one category).  Rather than reimplement those rules in SQL
+    — which is how recall quietly changes — the distinct dimension values
+    actually present in the store are enumerated (a few thousand rows at
+    most, versus 752k pages) and each rule is evaluated **by calling the
+    original function**.  The results are finite sets that SQL can compare
+    against exactly.
+
+    Returns ``{}`` when a filter cannot be resolved, which the caller treats
+    as "do not narrow".
+    """
+    if not wanted_source and not kind:
+        # Neither filter needs a value set.  The rules below only turn a filter
+        # *into* a set of stored values, so with no filter there is nothing to
+        # resolve — and the enumeration is a full 752k-row scan (measured 9.6s
+        # warm, 46s cold on the real store) whose result the caller discards.
+        return {}
+    resolved: dict[str, Any] = {}
+    with dbstore.connect(store_root) as conn:
+        rows = list(
+            conn.execute(
+                "SELECT DISTINCT source, kind, aux_flag, derived_flag, source_type "
+                "FROM web_pages"
+            )
+        )
+    # Distinct (backend, source) pairs described the same way `page_backend` does.
+    probes: list[dict[str, Any]] = []
+    seen_probe: set[tuple] = set()
+    for source, kind_value, aux_flag, derived_flag, source_type in rows:
+        key = (source, kind_value, aux_flag, derived_flag, source_type)
+        if key in seen_probe:
+            continue
+        seen_probe.add(key)
+        probes.append(
+            {
+                "source": source,
+                "kind": kind_value,
+                "auxiliary": bool(aux_flag),
+                "derived": bool(derived_flag),
+                "source_type": source_type,
+            }
+        )
+
+    if wanted_source:
+        resolved["source_ids"] = sorted(
+            {
+                probe["source"]
+                for probe in probes
+                if matches_source_filter(probe, wanted_source)
+            }
+        )
+
+    if kind:
+        matching_kinds = {
+            str(probe["kind"])
+            for probe in probes
+            if page_category(probe) == kind or str(probe["kind"]) == kind
+        }
+        resolved["kinds"] = sorted(matching_kinds)
+    return resolved
 
 
 def web_browse(
@@ -781,11 +945,37 @@ def web_browse(
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
 ) -> list[dict[str, Any]]:
+    """Browse page metadata, newest-crawl-first within source priority.
+
+    Filtering, ordering and the row limit are pushed into SQL so returning 20
+    rows no longer reads 752k full-text rows (Astra D06; measured 50.2s → see
+    the commit message).  The Python predicates below are still applied to the
+    narrowed candidate set, so the result is identical to the previous
+    full-scan behaviour by construction rather than by re-implementation.
+
+    SQL narrows on exactly the conditions the Python filter uses:
+
+    - ``NOT (derived_flag AND NOT aux_flag)`` is the derived-page exclusion
+    - ``aux_flag = 0 OR include_overlay`` is the auxiliary exclusion
+    - source ids and raw kinds come from :func:`_sql_filter_values`, which
+      evaluates the real rule functions over the distinct stored values
+    """
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
-    pages = flatten_web_pages(store_root)
+
+    resolved = _sql_filter_values(store_root, wanted_source=wanted_source, kind=kind)
+    candidates = dbstore.browse_web_rows(
+        store_root,
+        source_ids=resolved.get("source_ids"),
+        language=language,
+        kinds=resolved.get("kinds"),
+        limit=limit,
+        include_overlay=include_overlay,
+        source_priority=priority,
+    )
+
     items: list[dict[str, Any]] = []
-    for page in pages:
+    for page in candidates:
         if is_derived_page(page) and not is_auxiliary_page(page):
             continue
         if is_auxiliary_page(page) and not include_overlay:
@@ -797,7 +987,12 @@ def web_browse(
         if kind:
             if page_category(page) != kind and page.get("kind") != kind:
                 continue
-        snippet = " ".join(str(page.get("text", ""))[:300].split())
+        # `text_head` is the SQL-side first 300 chars; fall back to `text` when
+        # a caller supplied full rows (e.g. a non-SQL path).
+        head = page.get("text_head")
+        if head is None:
+            head = str(page.get("text", ""))[:300]
+        snippet = " ".join(str(head).split())
         item = {
             "id": page.get("id", ""),
             "source": page.get("source", ""),
@@ -809,7 +1004,14 @@ def web_browse(
             "kind": page.get("kind", ""),
             "crawled_at": page.get("crawled_at", ""),
             "snippet": snippet,
-            "text_length": len(page.get("text", "")),
+            # `text_length` comes from the SQL `length(text)` supplied with the
+            # row. Deriving it from `page["text"]` would report 0 for every page
+            # in the SQL path, since the body is deliberately not selected.
+            "text_length": int(
+                page.get("text_length")
+                if page.get("text_length") is not None
+                else len(str(page.get("text", "")))
+            ),
             "trust": trust_for_page(page),
             "canonical_key": canonical_key_for_page(page),
             "source_hash": page.get("source_hash", ""),
@@ -835,7 +1037,21 @@ def web_browse(
     # priority ascending (earlier profile entries first).
     items.sort(key=lambda item: str(item.get("crawled_at", "")), reverse=True)
     items.sort(key=lambda item: source_rank(item.get("source", ""), priority))
-    return items[:limit]
+    items = items[:limit]
+
+    if include_text and items:
+        # Bodies are fetched only for the rows actually being returned — the
+        # whole point of the SQL projection is that text does not cross the
+        # boundary for candidates that get filtered out or truncated.
+        bodies = dbstore.web_page_texts(
+            store_root,
+            [(item.get("source", ""), item.get("id", "")) for item in items],
+        )
+        for item in items:
+            item["text"] = bodies.get(
+                (item.get("source", ""), item.get("id", "")), ""
+            )
+    return items
 
 
 def _make_snippet(text: str, query: str, radius: int = 140) -> str:

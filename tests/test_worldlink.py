@@ -5,12 +5,20 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sekaisync.worldlink import (
+    _numeral_to_int,
+    _parse_ordinal,
     build_wl_map,
     parse_wl_query,
     resolve_wl,
 )
+
+# The bound is part of the contract; read it from the module under test so the
+# tests exercise behaviour rather than a copied literal.
+_MAX_ORDINAL = 999
+_MAX_ORDINAL_INPUT_LEN = len(str(_MAX_ORDINAL)) + 1
 
 # Mirrors real JP master data for the 17 JP world_bloom events (as of 2026-08).
 WL_EVENTS = [
@@ -233,6 +241,108 @@ class ParseWLQueryTest(unittest.TestCase):
         self.assertIsNone(parse_wl_query("khn3"))
         self.assertIsNone(parse_wl_query("foo bar"))
 
+    def test_valid_inputs_unchanged(self):
+        # Regression guard: every genuinely valid form keeps its old meaning.
+        self.assertEqual(parse_wl_query("wl3"), ("round", "", 3))
+        self.assertEqual(parse_wl_query("wl 3"), ("round", "", 3))
+        self.assertEqual(parse_wl_query("wl1g6"), ("code", "1", 6))
+        self.assertEqual(parse_wl_query("wl3第2组"), ("code", "3", 2))
+        self.assertEqual(parse_wl_query("第三轮第二组"), ("code", "3", 2))
+        self.assertEqual(parse_wl_query("第10轮第5组"), ("code", "10", 5))
+        self.assertEqual(parse_wl_query("vbs wl2"), ("unit_wl", "street", 2))
+        self.assertEqual(parse_wl_query("vs wl2"), ("virtual_singer", "", 2))
+        self.assertEqual(parse_wl_query("round2"), ("round", "", 2))
+        # Zero padding was accepted before and stays accepted.
+        self.assertEqual(parse_wl_query("wl0003"), ("round", "", 3))
+
+
+class WLOrdinalBoundTest(unittest.TestCase):
+    """D20d/P20d: unbounded and ambiguous ordinal input.
+
+    ``int()`` must never be reached with an over-long or non-decimal string,
+    and an explicit ``0`` / out-of-range ordinal must be rejected rather than
+    silently folded onto round 1 by an ``or``-style default.
+    """
+
+    def test_parse_ordinal_bounds_digits_before_int(self):
+        self.assertEqual(_parse_ordinal("3"), 3)
+        self.assertEqual(_parse_ordinal("999"), 999)
+        self.assertEqual(_parse_ordinal("３"), 3)  # full-width
+        self.assertEqual(_parse_ordinal("007"), 7)
+        self.assertEqual(_parse_ordinal("0003"), 3)
+        for bad in ("0", "000", "1000", "9999", "00009", "", "  ", "²", "٣", "三"):
+            self.assertIsNone(_parse_ordinal(bad), bad)
+
+    def test_numeral_to_int_keeps_chinese_compounds(self):
+        self.assertEqual(_numeral_to_int("三"), 3)
+        self.assertEqual(_numeral_to_int("二十三"), 23)
+        self.assertEqual(_numeral_to_int("十"), 10)
+        self.assertEqual(_numeral_to_int("十一"), 11)
+        self.assertEqual(_numeral_to_int("二十"), 20)
+        self.assertIsNone(_numeral_to_int("0"))
+        self.assertIsNone(_numeral_to_int("1000"))
+        self.assertIsNone(_numeral_to_int("十十"))
+
+    def test_very_long_digit_string_returns_none_without_raising(self):
+        for digits in ("9" * 4000, "9" * 5000, "0" * 5000):
+            self.assertIsNone(_parse_ordinal(digits))
+            self.assertIsNone(_numeral_to_int(digits))
+            # A bare long run is not a valid round either.
+            self.assertIsNone(parse_wl_query("wl" + digits))
+            self.assertIsNone(parse_wl_query("wl1g" + digits))
+            self.assertIsNone(parse_wl_query("wl" + digits + "g1"))
+            self.assertIsNone(parse_wl_query("vs wl" + digits))
+            self.assertIsNone(parse_wl_query("vbs wl" + digits))
+            self.assertIsNone(parse_wl_query("round" + digits))
+
+    def test_int_never_receives_an_over_long_string(self):
+        # The guard is on the input, not on the interpreter's int-string limit.
+        lengths: list[int] = []
+        real_int = int
+
+        def recording_int(value=0, *args, **kwargs):
+            if isinstance(value, str):
+                lengths.append(len(value))
+            return real_int(value, *args, **kwargs)
+
+        inputs = ["3", "007", "0003", "0", "1000", "9" * 4000, "0" * 4000, "²"]
+        with mock.patch("builtins.int", side_effect=recording_int):
+            for text in inputs:
+                _parse_ordinal(text)
+            for text in inputs:
+                _numeral_to_int(text)
+        self.assertTrue(lengths)
+        self.assertLessEqual(max(lengths), _MAX_ORDINAL_INPUT_LEN)
+
+    def test_explicit_zero_and_overflow_are_not_coerced_to_round_one(self):
+        # Only a completely omitted ordinal means round 1.
+        self.assertEqual(parse_wl_query("wl"), ("round", "", 1))
+        self.assertEqual(parse_wl_query("vs wl"), ("virtual_singer", "", 1))
+        self.assertEqual(parse_wl_query("vbs wl"), ("unit_wl", "street", 1))
+        # Explicit 0 / 1000 / overflow are rejected, not folded to 1.
+        for bad in ("wl0", "wl1000", "wl00", "wl000", "vs wl0", "vs wl1000", "vbs wl0",
+                    "vbs wl1000", "round0", "round1000", "wl9999"):
+            self.assertIsNone(parse_wl_query(bad), bad)
+
+    def test_code_path_bounds_both_numbers(self):
+        self.assertEqual(parse_wl_query("wl1g6"), ("code", "1", 6))
+        self.assertEqual(parse_wl_query("wl999g999"), ("code", "999", 999))
+        for bad in ("wl0g1", "wl1g0", "wl1000g1", "wl1g1000", "wl0g0"):
+            self.assertIsNone(parse_wl_query(bad), bad)
+        # Both numbers on the code path are bounded before int(); 5000 digits
+        # used to raise ValueError out of the parser.
+        for bad in ("wl1g" + "9" * 5000, "wl" + "9" * 5000 + "g1", "wl1g" + "0" * 5000):
+            self.assertIsNone(parse_wl_query(bad), bad[:16])
+
+    def test_numeral_to_int_and_parse_ordinal_agree_on_decimals(self):
+        # The two entry points must agree on every pure-decimal input, and
+        # both must reject the non-ASCII "digits" that str.isdigit accepts
+        # but int() refuses (``²`` used to raise ValueError).
+        for text in ("3", "３", "007", "0", "1000", "999", "10", "²", "٣", "9" * 5000):
+            self.assertEqual(_parse_ordinal(text), _numeral_to_int(text), text)
+        self.assertEqual(_numeral_to_int("三"), 3)
+        self.assertIsNone(_parse_ordinal("三"))
+
 
 class WLMapTest(unittest.TestCase):
     def setUp(self):
@@ -358,6 +468,53 @@ class WLMapTest(unittest.TestCase):
         result = resolve_wl(self.root, "finale", regions=["jp"])
         self.assertIn("wl2g7", result["aliases"])
         self.assertIn("finale", result["aliases"])
+
+    def test_explicit_zero_is_rejected_not_defaulted(self):
+        # "wl" alone is round 1; "wl0" is an explicit, invalid ordinal.
+        self.assertEqual(resolve_wl(self.root, "wl", regions=["jp"])["round"], 1)
+        self.assertIsNone(resolve_wl(self.root, "wl0", regions=["jp"]))
+        self.assertIsNone(resolve_wl(self.root, "wl1000", regions=["jp"]))
+        self.assertIsNone(resolve_wl(self.root, "vs wl0", regions=["jp"]))
+        self.assertIsNone(resolve_wl(self.root, "vbs wl0", regions=["jp"]))
+
+    def test_resolve_does_not_raise_on_hostile_ordinals(self):
+        for query in ("wl" + "9" * 4000, "wl1g" + "9" * 4000, "wl" + "0" * 5000,
+                      "vbs wl" + "9" * 4000, "round" + "9" * 4000, "wl²"):
+            self.assertIsNone(resolve_wl(self.root, query, regions=["jp"]), query[:16])
+
+    def test_every_emitted_alias_parses_back(self):
+        # Astra: an internally generated alias must round-trip through the
+        # public parser, otherwise it must not be offered as an input alias.
+        queries = [
+            "vbs wl1", "vbs wl2", "vs wl1", "vs wl2", "finale",
+            "wl1g6", "wl2g7", "wl3g3", "wl3g4",
+        ]
+        for unit in ("ln", "mmj", "vbs", "wxs", "25ji"):
+            queries.append(f"{unit} wl1")
+            queries.append(f"{unit} wl2")
+        checked = 0
+        for query in queries:
+            result = resolve_wl(self.root, query, regions=["jp"])
+            if result is None:
+                continue
+            for alias in result["aliases"]:
+                checked += 1
+                self.assertIsNotNone(
+                    parse_wl_query(alias),
+                    f"emitted alias {alias!r} from {query!r} does not parse back",
+                )
+                again = resolve_wl(self.root, alias, regions=["jp"])
+                self.assertIsNotNone(
+                    again,
+                    f"emitted alias {alias!r} from {query!r} does not resolve",
+                )
+                self.assertEqual(again["code"], result["code"], alias)
+        self.assertGreater(checked, 0)
+
+    def test_canonical_unit_keys_are_parseable_aliases(self):
+        # resolve_wl emits "<unit_key> wlN"; those tokens must be inputs too.
+        for unit in ("light_sound", "idol", "street", "theme_park", "school_refusal"):
+            self.assertEqual(parse_wl_query(f"{unit} wl2"), ("unit_wl", unit, 2))
 
 
 if __name__ == "__main__":

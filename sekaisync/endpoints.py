@@ -13,8 +13,10 @@ behaviour-preserving migration.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Optional
 
 from sekaisync.config import MoesekaiSettings, ViewerSettings
@@ -51,13 +53,67 @@ class SourceEndpoints:
     )
 
 
+    def __post_init__(self) -> None:
+        for name in ("ALTSOURCE_MS_METADATA_BASES", "ALTSOURCE_MS_ASSET_BASES"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        # P14: the snapshot is shared across threads; the mapping fields are
+        # stored as read-only copies so a caller mutating the dict (or the
+        # settings-derived mapping after construction) cannot change a snapshot
+        # that other contexts are already using.
+        object.__setattr__(
+            self,
+            "ALTSOURCE_MS_LOCALE_SERVERS",
+            MappingProxyType(dict(self.ALTSOURCE_MS_LOCALE_SERVERS)),
+        )
+        object.__setattr__(
+            self,
+            "ALTSOURCE_MS_LOCALE_LANGUAGES",
+            MappingProxyType(dict(self.ALTSOURCE_MS_LOCALE_LANGUAGES)),
+        )
+        object.__setattr__(
+            self,
+            "ALTSOURCE_SV_ASSET_BUCKETS",
+            MappingProxyType(dict(self.ALTSOURCE_SV_ASSET_BUCKETS)),
+        )
+
+
 _current = SourceEndpoints()
 _lock = threading.Lock()
 _UNSET = object()
 
+#: Per-context endpoint override (Astra P14/D14).
+#:
+#: The module-level ``_current`` snapshot is process-global, so two callers with
+#: different configurations overwrite each other and "the last one configured
+#: wins" for everybody — including work already in flight. A
+#: :class:`~sekaisync.runtime.RuntimeContext` installs its own snapshot here for
+#: the duration of its scope, so interleaved callers each see their own
+#: endpoints. A ContextVar (not a global) is used so concurrent threads and
+#: asyncio tasks keep separate values.
+_override: "contextvars.ContextVar[Optional[SourceEndpoints]]" = (
+    contextvars.ContextVar("sekaisync_endpoints_override", default=None)
+)
+
 
 def current_endpoints() -> SourceEndpoints:
-    return _current
+    """The endpoints in effect for the current context.
+
+    Returns the context-scoped override when one is active (an explicit
+    :class:`RuntimeContext` scope), otherwise the process-wide configured
+    snapshot.
+    """
+    scoped = _override.get()
+    return scoped if scoped is not None else _current
+
+
+def _set_override(snapshot: SourceEndpoints):
+    """Install a context-scoped snapshot; returns the reset token."""
+    return _override.set(snapshot)
+
+
+def _reset_override(token) -> None:
+    """Restore the previous context-scoped snapshot."""
+    _override.reset(token)
 
 
 def configure_endpoints(

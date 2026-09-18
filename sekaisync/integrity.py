@@ -35,7 +35,36 @@ def _issue(code: str, severity: str, item: str, detail: str) -> dict[str, str]:
     }
 
 
+def effective_text_hash(item: dict[str, Any]) -> str:
+    """The hash to compare this page by, computed from the raw text when absent.
+
+    The previous inline form was ``str(item.get("text_hash")) or
+    sha256_hex(...)``.  ``str(None)`` is the *string* ``"None"``, which is
+    truthy, so for a page with no stored hash the fallback never ran and every
+    such page collapsed to the group hash ``"None"``.  Two pages with
+    completely different text were therefore judged to be mirrors of each
+    other — a real content conflict silently reported as a duplicate.
+
+    Empty string and whitespace already fell through correctly; the bug was
+    specific to a missing/None hash.  Returning the computed hash keeps the
+    "unknown hash" case from erasing a genuine difference.
+    """
+    raw = item.get("text_hash")
+    stored = "" if raw is None else str(raw).strip()
+    if stored:
+        return stored
+    return sha256_hex(str(item.get("text", "")))
+
+
 def verify_web_integrity(store_root: Path, limit: int = 20) -> dict[str, Any]:
+    """Audit web-page integrity, keeping totals distinct from samples.
+
+    ``limit`` bounds how many *examples* are returned.  It must not bound the
+    counts: previously ``issues`` was sliced to ``limit`` and the caller then
+    reported ``len(that slice)`` as the total, so a store with 200 problems
+    reported 20 and looked healthier than it was.  Totals now count every
+    problem found; ``*_truncated`` flags say whether the sample is complete.
+    """
     pages = flatten_web_pages(store_root)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     issues: list[dict[str, str]] = []
@@ -116,11 +145,7 @@ def verify_web_integrity(store_root: Path, limit: int = 20) -> dict[str, Any]:
     for canonical, items in sorted(groups.items()):
         if len(items) <= 1:
             continue
-        hashes = {
-            str(item.get("text_hash"))
-            or sha256_hex(str(item.get("text", "")))
-            for item in items
-        }
+        hashes = {effective_text_hash(item) for item in items}
         group = {
             "canonical_key": canonical,
             "count": len(items),
@@ -162,9 +187,20 @@ def verify_web_integrity(store_root: Path, limit: int = 20) -> dict[str, Any]:
         "scenario_id_mismatches": scenario_id_mismatches,
         "canonical_missing": canonical_missing,
         "canonical_not_applicable": canonical_not_applicable,
+        # Totals count every problem; the *_samples lists are capped by `limit`.
+        # A caller must be able to tell "3 problems, all shown" from
+        # "300 problems, 20 shown" — before this split, a large store looked
+        # clean because only the sample size was reported.
+        "duplicate_groups_total": len(duplicate_groups),
+        "conflict_groups_total": len(conflict_groups),
+        "issues_total": len(issues),
         "duplicate_groups": duplicate_groups[:limit],
         "conflict_group_samples": conflict_groups[:limit],
         "issues": issues[:limit],
+        "sample_limit": limit,
+        "duplicate_groups_truncated": len(duplicate_groups) > limit,
+        "conflict_groups_truncated": len(conflict_groups) > limit,
+        "issues_truncated": len(issues) > limit,
     }
 
 
@@ -195,10 +231,7 @@ def cross_instance_reconciliation(store_root: Path, limit: int = 20) -> dict[str
             by_source[str(item.get("source") or "")].append(item)
         if len(by_source) <= 1:
             continue
-        hashes = {
-            str(item.get("text_hash")) or sha256_hex(str(item.get("text", "")))
-            for item in items
-        }
+        hashes = {effective_text_hash(item) for item in items}
         entry = {
             "canonical_key": canonical,
             "drift": len(hashes) > 1,
@@ -206,11 +239,7 @@ def cross_instance_reconciliation(store_root: Path, limit: int = 20) -> dict[str
                 source: {
                     "pages": len(inst),
                     "text_hashes": sorted(
-                        {
-                            str(item.get("text_hash"))
-                            or sha256_hex(str(item.get("text", "")))
-                            for item in inst
-                        }
+                        {effective_text_hash(item) for item in inst}
                     ),
                     "last_modified": max(
                         (str(item.get("source_last_modified") or "") for item in inst),
@@ -268,6 +297,10 @@ def _verify_unique_layer(
         "items": len(items),
         "duplicate_ids": len(duplicate_ids),
         "issues": issues,
+        # One issue per duplicated id: the total is known even when the sample
+        # is capped, so callers never have to infer a total from a sample.
+        "issues_total": len(duplicate_ids),
+        "issues_truncated": len(duplicate_ids) > limit,
     }
 
 
@@ -295,6 +328,13 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
         + glossary["issues"]
         + terms["issues"]
     )
+    issues_sample = all_issues[:limit]
+    issues_total = (
+        web["issues_total"]
+        + registry["issues_total"]
+        + glossary["issues_total"]
+        + terms["issues_total"]
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "layers": {
@@ -309,13 +349,17 @@ def run_integrity_check(store_root: Path, limit: int = 20) -> dict[str, Any]:
             + glossary["duplicate_ids"]
             + terms["duplicate_ids"],
             "mirror_duplicates": web["mirror_duplicates"],
-            "conflicts": web["conflict_groups"],
+            "conflicts": web["conflict_groups_total"],
             "cross_instance_drift": reconciliation["summary"]["drift_keys"],
             "hash_mismatches": web["hash_mismatches"],
             "asset_mismatches": web["asset_mismatches"],
             "content_language_mismatches": web["content_language_mismatches"],
             "scenario_id_mismatches": web["scenario_id_mismatches"],
-            "issues": len(all_issues),
+            # Every problem found, not the size of the returned sample.
+            "issues": issues_total,
+            "issues_sample_count": len(issues_sample),
+            "issues_truncated": issues_total > len(issues_sample),
+            "sample_limit": limit,
         },
-        "issues": all_issues[:limit],
+        "issues": issues_sample,
     }

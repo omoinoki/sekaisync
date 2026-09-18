@@ -187,8 +187,8 @@ def build_coverage(
     region: str,
     demo: bool = False,
     web_status: dict[str, Any] | None = None,
-    news_available: bool = False,
-    master_available: bool = True,
+    news_available: bool | None = False,
+    master_available: bool | None = True,
 ) -> dict[str, dict[str, str]]:
     coverage: dict[str, dict[str, str]] = {}
     for item in SOURCE_CATALOG:
@@ -206,7 +206,10 @@ def build_coverage(
         coverage["official_localized_names"]["note"] = (
             "Source-language names for jp; official localized names for en/tc/kr/cn."
         )
-        if not master_available:
+        if master_available is None:
+            for key in ("master_db", "official_localized_names", "story_metadata"):
+                coverage[key] = {"status": "unknown", "note": "No region master measurement was supplied."}
+        elif not master_available:
             missing_note = (
                 "No local master source directory; run sekaisync sync --regions "
                 + region
@@ -218,11 +221,20 @@ def build_coverage(
                 "status": "partial",
                 "note": "Web text may exist, but the region master is missing so completeness cannot be measured.",
             }
-        web_state = "available" if web_status and web_status.get("enabled") else "missing"
-        coverage["web_text"] = {
-            "status": web_state,
-            "note": "Crawled pages exist locally." if web_state == "available" else "Run sekaisync crawl and accept the TOS first.",
-        }
+        # `None` means "no region-scoped measurement exists yet": a global or
+        # another region's positive signal must not be presented as this
+        # region's state (Astra P18), so the row degrades to ``unknown``
+        # instead of available/missing.
+        if web_status is None:
+            web_state = "unknown"
+            web_note = "No region-scoped web status was supplied for this region."
+        elif bool(web_status.get("enabled")):
+            web_state = "available"
+            web_note = "Crawled pages exist locally."
+        else:
+            web_state = "missing"
+            web_note = "Run sekaisync crawl and accept the TOS first."
+        coverage["web_text"] = {"status": web_state, "note": web_note}
         category_counts = (web_status or {}).get("category_counts") or {}
         text_categories = {
             "mainline",
@@ -240,33 +252,62 @@ def build_coverage(
             if isinstance(source_counts, dict)
             for category, count in source_counts.items()
             if category in text_categories
-        ):
+        ) and master_available is True:
             coverage["story_full_text"]["status"] = "available"
             coverage["story_full_text"]["note"] = (
                 "Localized story text is present in the crawled web store."
             )
-    if not demo and news_available:
-        coverage["official_news"] = {
-            "status": "available",
-            "note": "Official news/announcements are stored in the news layer (store/news/news.json in v1, store/kb/news/*.json in v2).",
-        }
+    if not demo:
+        if news_available is None:
+            coverage["official_news"] = {
+                "status": "unknown",
+                "note": "No region-scoped news availability was supplied for this region.",
+            }
+        elif news_available:
+            coverage["official_news"] = {
+                "status": "available",
+                "note": "Official news/announcements are stored in the news layer (store/news/news.json in v1, store/kb/news/*.json in v2).",
+            }
     return coverage
 
 
 def build_region_coverage(
     regions: Iterable[str],
-    web_status: dict[str, Any] | None = None,
-    news_available: bool = False,
+    web_status: Any = None,
+    news_available: Any = False,
     master_available: dict[str, bool] | None = None,
 ) -> dict[str, dict[str, dict[str, str]]]:
+    """Accept region-keyed measurements; never infer region from global totals.
+
+    Even a single selected region does not establish provenance for a global
+    positive signal. Callers without regional measurements receive unknown.
+    """
     master_available = master_available or {}
-    return {
-        region: build_coverage(
+    global_web = isinstance(web_status, dict) and any(
+        key in web_status for key in ("enabled", "category_counts", "sources")
+    )
+    regions = tuple(regions)
+    result: dict[str, dict[str, dict[str, str]]] = {}
+    for region in regions:
+        if region == "demo":
+            result[region] = build_coverage(region, demo=True)
+            continue
+        if isinstance(web_status, dict):
+            # Only region-keyed mappings carry provenance; a global status
+            # dict stays unknown for every region (P18).
+            region_web = web_status.get(region) if not global_web else None
+        else:
+            region_web = None
+        region_news: Optional[bool]
+        if isinstance(news_available, dict):
+            region_news = news_available.get(region)
+        else:
+            region_news = None
+        result[region] = build_coverage(
             region,
-            demo=(region == "demo"),
-            web_status=web_status,
-            news_available=news_available,
-            master_available=bool(master_available.get(region, True)),
+            demo=False,
+            web_status=region_web,
+            news_available=region_news,
+            master_available=master_available.get(region, None),
         )
-        for region in regions
-    }
+    return result

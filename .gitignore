@@ -1,0 +1,51 @@
+# Project-local exclusion rules.
+#
+# These used to live only in `.git/info/exclude`, which is a *private* file: it
+# does not travel with the repository, so a fresh clone had no protection at
+# all. That mattered once the search index appeared — `store/cache/
+# web_search_index.db` is ~341 MB, and an unwary `git add` would have committed
+# it. Anything a collaborator also needs ignored belongs here instead.
+#
+# NOTE: `work/` is ignored by these local rules but is deliberately tracked with
+# `git add -f` for the small subset of audit/handoff documents that must travel
+# with the branch (see work/CHECKPOINT.md).
+
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+
+# Local stores and their regenerable projections.
+store/
+store-v1/
+sekaisync.db
+
+# Regenerable search index (searchindex.py); several hundred MB.
+store/cache/
+
+work/
+
+settings.json.legacy
+docs/
+HANDOFF.md
+.tmp-test/
+
+frontends/WinUI3/
+frontends/WinUI3/bin/
+frontends/WinUI3/obj/
+
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.log

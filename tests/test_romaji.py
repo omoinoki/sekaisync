@@ -8,6 +8,7 @@
 import unittest
 
 from sekaisync.romaji import (
+    is_abbrev_form_only,
     is_generic_katakana,
     is_plausible_translation,
     katakana_to_romaji,
@@ -121,3 +122,30 @@ class GenericKatakanaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbbrevFormOnlyTest(unittest.TestCase):
+    """Astra P08/D08 — the abbreviation form rule is eligibility, not identity.
+
+    `ニーゴ→N25` and `ニーゴ→N99` score identically (0.6) under the
+    same-initial+digit rule, so that rule cannot distinguish a real alias from
+    an adjacent negative. `is_abbrev_form_only` exposes which matches rest on
+    it alone, so the pipeline can withhold "confirmed translit" status.
+    """
+
+    def test_n25_and_n99_are_both_abbrev_form_only(self):
+        from sekaisync.romaji import is_abbrev_form_only, similarity
+
+        self.assertEqual(similarity("ニーゴ", "N25"), similarity("ニーゴ", "N99"))
+        self.assertTrue(is_abbrev_form_only("ニーゴ", "N25"))
+        self.assertTrue(is_abbrev_form_only("ニーゴ", "N99"))
+
+    def test_real_translits_are_not_abbrev_form_only(self):
+        for katakana, english in (("セカイ", "SEKAI"), ("イオリ", "Iori"), ("カイト", "KAITO")):
+            with self.subTest(katakana=katakana):
+                self.assertFalse(is_abbrev_form_only(katakana, english))
+
+    def test_plausibility_gate_is_unchanged(self):
+        """The eligibility gate keeps its documented behaviour."""
+        self.assertTrue(is_plausible_translation("ニーゴ", "N25"))
+        self.assertFalse(is_plausible_translation("テスト", "Huh"))

@@ -15,6 +15,9 @@ from sekaisync.event_detection import (
     detect_new_events,
     list_events,
     load_local_events,
+    _merge_event_rows,
+    _merge_table_records,
+    _row_identity,
 )
 from sekaisync.progress import expected_text_units, expected_fact_units
 
@@ -129,7 +132,11 @@ class EventDetectionTest(unittest.TestCase):
         self.assertEqual(by_id[3]["label"], "箱活")
         self.assertEqual(by_id[4]["category"], "world_bloom")
         self.assertEqual(by_id[4]["label"], "WL")
-        self.assertEqual(by_id[5]["category"], "other")
+        # Event 5 is a marathon event with a rarity-4 card and a dedicated song,
+        # so it qualifies as a box event. It previously classified as "other"
+        # only because the id-less eventMusics rows collapsed to a single
+        # survivor, leaving events 4 and 5 without their song (Astra P16/D16).
+        self.assertEqual(by_id[5]["category"], "box")
 
         # Base data was merged into the local source tree.
         events = load_local_events(self.root, "jp")
@@ -139,7 +146,7 @@ class EventDetectionTest(unittest.TestCase):
         by_id = {e["event_id"]: e for e in listed["regions"]["jp"]}
         self.assertEqual(by_id[3]["category"], "box")
         self.assertEqual(by_id[4]["category"], "world_bloom")
-        self.assertEqual(by_id[5]["category"], "other")
+        self.assertEqual(by_id[5]["category"], "box")
 
     def test_idempotent_check(self):
         check_events(self.root, regions=["jp"], fetcher=fake_fetcher, timeout=5)
@@ -304,10 +311,86 @@ class SequenceNumberTest(unittest.TestCase):
             self.assertEqual(result["total"], 2)
 
 
+class RelationRowIdentityTest(unittest.TestCase):
+    """Astra P16/D16 — relation tables must keep every row.
+
+    `eventMusics.json` has NO `id` field in the real store (137/137 rows), so
+    keying relation rows by `str(record.get("id"))` collapsed all of them to the
+    single key "None" and only the first survived. Every later event lost its
+    dedicated song, which also corrupted box-event classification.
+    """
+
+    def test_id_less_relation_rows_are_all_kept(self):
+        """Astra: 无 id 三关系输入保留三条."""
+        rows = [
+            {"eventId": 1, "musicId": 10, "seq": 1},
+            {"eventId": 1, "musicId": 11, "seq": 1},
+            {"eventId": 1, "musicId": 12, "seq": 1},
+        ]
+        merged = _merge_event_rows([], rows, {"1"}, table="eventMusics")
+        self.assertEqual(len(merged), 3)
+        self.assertEqual(
+            sorted(r["musicId"] for r in merged), [10, 11, 12]
+        )
+
+    def test_repeated_merge_does_not_duplicate(self):
+        """Astra: 重复运行不增加."""
+        rows = [
+            {"eventId": 1, "musicId": 10, "seq": 1},
+            {"eventId": 1, "musicId": 11, "seq": 1},
+        ]
+        once = _merge_event_rows([], rows, {"1"}, table="eventMusics")
+        twice = _merge_event_rows(once, rows, {"1"}, table="eventMusics")
+        self.assertEqual(len(twice), 2)
+
+    def test_seq_is_not_part_of_identity(self):
+        """seq is ordering, not identity: a new seq must not add a duplicate."""
+        first = [{"eventId": 1, "musicId": 10, "seq": 1}]
+        second = [{"eventId": 1, "musicId": 10, "seq": 2}]
+        merged = _merge_event_rows(first, second, {"1"}, table="eventMusics")
+        self.assertEqual(len(merged), 1)
+
+    def test_updating_one_event_does_not_touch_others(self):
+        """Astra: 更新一活动不伤其他活动."""
+        existing = [
+            {"eventId": 1, "musicId": 10, "seq": 1},
+            {"eventId": 2, "musicId": 20, "seq": 1},
+        ]
+        incoming = [{"eventId": 1, "musicId": 11, "seq": 1}]
+        merged = _merge_event_rows(existing, incoming, {"1"}, table="eventMusics")
+        by_event = {}
+        for row in merged:
+            by_event.setdefault(row["eventId"], []).append(row["musicId"])
+        self.assertEqual(sorted(by_event[1]), [10, 11])
+        self.assertEqual(by_event[2], [20])
+
+    def test_identical_rows_still_deduplicate(self):
+        """Duplicate whole rows collapse, per '去掉完整行相同的重复'."""
+        row = {"eventId": 1, "musicId": 10, "seq": 1}
+        merged = _merge_event_rows([row], [dict(row)], {"1"}, table="eventMusics")
+        self.assertEqual(len(merged), 1)
+
+    def test_unkeyed_rows_are_not_dropped_by_table_merge(self):
+        """The `if key:` guard used to discard every id-less row outright."""
+        rows = [{"musicId": 1}, {"musicId": 2}, {"musicId": 3}]
+        merged = _merge_table_records([], rows)
+        self.assertEqual(len(merged), 3)
+
+    def test_distinct_unkeyed_rows_get_distinct_identities(self):
+        a = {"foo": 1}
+        b = {"foo": 2}
+        self.assertNotEqual(_row_identity("", a), _row_identity("", b))
+
+    def test_real_event_musics_shape_keeps_every_row(self):
+        """Regression fixture matching the real 137-row `eventMusics.json`."""
+        rows = [
+            {"eventId": i, "musicId": 60 + i, "seq": 1, "releaseConditionId": 1}
+            for i in range(1, 138)
+        ]
+        merged = _merge_event_rows([], rows, {str(i) for i in range(1, 138)},
+                                   table="eventMusics")
+        self.assertEqual(len(merged), 137)
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-

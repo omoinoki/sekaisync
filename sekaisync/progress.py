@@ -3,16 +3,14 @@ from __future__ import annotations
 import json
 import re
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from sekaisync.config import DEFAULT_REGION_ORDER, REGIONS
-from sekaisync.filecache import cached_json
 from sekaisync.layout import (
     progress_path,
-    region_master_dir,
+    master_source_dir,
     registry_path,
     web_index_path,
 )
@@ -60,74 +58,127 @@ def _remote_master_url(region: str, table: str) -> str:
 
 
 def _default_fetcher(url: str, timeout: int = 20) -> str:
-    request = urllib.request.Request(
+    """Bounded fallback transport for one live master-table read.
+
+    P18: this used to call ``response.read()`` with no cap; a hostile or
+    misbehaving mirror could return unbounded bytes into a progress run. The
+    shared transport's byte budget now bounds it (still no unbounded read).
+    """
+    from sekaisync.fetcher import fetch_bytes, BUDGET_JSON_BYTES
+
+    return fetch_bytes(
         url,
-        headers={
-            "User-Agent": "SekaiSync/0.3 (+local progress)",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8", errors="replace")
+        max_bytes=BUDGET_JSON_BYTES,
+        timeout=timeout,
+        what="live master table",
+    ).decode("utf-8", errors="replace")
+
+
+def _parse_records(raw: str) -> list[dict[str, Any]]:
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = next((data[key] for key in ("records", "items", "data")
+                     if isinstance(data.get(key), list)), None)
+    if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+        raise ValueError("invalid record container")
+    return data
+
+
+class _TableState:
+    """Result of one table read for the current compute_progress request.
+
+    P18: ``missing`` (no file / no live response), ``invalid`` (present but
+    unparseable or wrongly shaped) and ``valid`` / ``valid_empty`` are
+    distinct outcomes. They must not collapse into ``[]`` — an absent table
+    and an empty one produce different percentages-with-unknown-denominator
+    semantics, and only ``valid`` is a basis for a live answer.
+    """
+
+    __slots__ = ("state", "records", "detail")
+
+    def __init__(self, state: str, records: list, detail: str = ""):
+        self.state = state
+        self.records = records
+        self.detail = detail
+
+
+class _RequestTables:
+    """Request-scoped memo for table reads inside one compute_progress call.
+
+    Live fetches are made at most once per (region, table) per request, so a
+    single ``--live`` run neither hammers the mirror with duplicate reads nor
+    mixes two different upstream snapshots into one report. Local reads share
+    the same memo so every helper in one request sees one consistent table.
+    """
+
+    def __init__(
+        self,
+        store_root: Path,
+        live: bool = False,
+        fetcher: Optional[Callable[[str], str]] = None,
+    ):
+        self._store_root = store_root
+        self._live = live
+        self._fetcher = fetcher
+        self._cache: dict[tuple[str, str], _TableState] = {}
+        self._bases: dict[str, Path] = {}
+        self.live_states: dict[str, dict[str, Any]] = {}
+
+    def get(self, region: str, table: str) -> _TableState:
+        key = (region, table.removesuffix(".json"))
+        if key not in self._cache:
+            self._cache[key] = self._load(region, table)
+        return self._cache[key]
+
+    def _read_local(self, path: Path) -> _TableState:
+        try:
+            records = _parse_records(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return _TableState("invalid", [])
+        return _TableState("valid" if records else "valid_empty", records)
+
+    def _load(self, region: str, table: str) -> _TableState:
+        table = table.removesuffix(".json")
+        live_error = ""
+        if self._live and table == "events":
+            try:
+                records = _parse_records((self._fetcher or _default_fetcher)(
+                    _remote_master_url(region, table)))
+            except Exception as exc:
+                # Never expose endpoint, proxy, credential or response details.
+                live_error = "live_events_failed:" + type(exc).__name__
+            else:
+                self.live_states[region] = {
+                    "requested_live": True,
+                    "effective_source": "live_events_local_tables",
+                    "degraded": False, "reason": None,
+                }
+                return _TableState("valid" if records else "valid_empty", records)
+
+        if region not in self._bases:
+            store_root = self._store_root
+            self._bases[region] = master_source_dir(store_root, region)
+        base = self._bases[region]
+        direct = base / f"{table}.json"
+        paths = [direct] if direct.is_file() else sorted(base.glob(f"**/{table}.json"))
+        state = self._read_local(paths[0]) if paths else _TableState("missing", [])
+        if table == "events":
+            known = state.state in {"valid", "valid_empty"}
+            self.live_states[region] = {
+                "requested_live": self._live,
+                "effective_source": "local" if known else "unknown",
+                "degraded": bool(live_error),
+                "reason": live_error or (None if known else "local_events_" + state.state),
+            }
+        return state
 
 
 def _load_records(
-    store_root: Path,
-    region: str,
-    table: str,
-    live: bool = False,
+    store_root: Path, region: str, table: str, live: bool = False,
     fetcher: Optional[Callable[[str], str]] = None,
+    tables: Optional[_RequestTables] = None,
 ) -> list[dict[str, Any]]:
-    if live and table == "events":
-        fetch = fetcher or _default_fetcher
-        try:
-            data = json.loads(fetch(_remote_master_url(region, table)))
-            if isinstance(data, dict):
-                for key in ("records", "items", "data"):
-                    if isinstance(data.get(key), list):
-                        data = data[key]
-                        break
-                else:
-                    data = []
-            if isinstance(data, list):
-                return [item for item in data if isinstance(item, dict)]
-        except Exception:
-            pass
-
-    base = region_master_dir(store_root, region)
-    table = table.removesuffix(".json")
-    candidates = [
-        base / f"{table}.json",
-        base / "*" / f"{table}.json",
-        base / "**" / f"{table}.json",
-        base / "master" / f"{table}.json",
-        base / "db" / f"{table}.json",
-        base / "source" / f"{table}.json",
-    ]
-    path = None
-    for pattern in candidates:
-        matches = sorted(base.glob(str(pattern.relative_to(base))))
-        if matches:
-            path = matches[0]
-            break
-    if path is None or not path.exists():
-        return []
-
-    def _read_records(p: Path) -> list[dict[str, Any]]:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-        if isinstance(data, dict):
-            for key in ("records", "items", "data"):
-                if isinstance(data.get(key), list):
-                    data = data[key]
-                    break
-            else:
-                return []
-        return [item for item in data if isinstance(item, dict)]
-
-    return cached_json(path, _read_records, scope="master_table")
+    return (tables or _RequestTables(store_root, live, fetcher)).get(region, table).records
 
 
 def _now_ms(now: Optional[float] = None) -> int:
@@ -165,10 +216,11 @@ def expected_fact_units(
     now_ms: int,
     live: bool = False,
     fetcher: Optional[Callable[[str], str]] = None,
+    tables: Optional[_RequestTables] = None,
 ) -> dict[str, set[str]]:
     expected: dict[str, set[str]] = {category: set() for category in FACT_TABLES}
     for category, (table, date_field) in FACT_TABLES.items():
-        for record in _load_records(store_root, region, table, live=live, fetcher=fetcher):
+        for record in _load_records(store_root, region, table, live=live, fetcher=fetcher, tables=tables):
             unit_id = record.get("id")
             if unit_id is None:
                 continue
@@ -206,17 +258,18 @@ def expected_text_units(
     now_ms: int,
     live: bool = False,
     fetcher: Optional[Callable[[str], str]] = None,
+    tables: Optional[_RequestTables] = None,
 ) -> dict[str, set[str]]:
     expected: dict[str, set[str]] = {category: set() for category in TEXT_TABLES}
     language = REGIONS[region].language if region in REGIONS else "unknown"
 
-    events = _load_records(store_root, region, "events", live=live, fetcher=fetcher)
+    events = _load_records(store_root, region, "events", live=live, fetcher=fetcher, tables=tables)
     released_events = {
         str(record.get("id"))
         for record in events
         if _is_released(record, "startAt", now_ms, require_date=True)
     }
-    for story in _load_records(store_root, region, "eventStories"):
+    for story in _load_records(store_root, region, "eventStories", tables=tables):
         event_id = story.get("eventId") or story.get("id")
         if event_id is None or str(event_id) not in released_events:
             continue
@@ -226,7 +279,7 @@ def expected_text_units(
                 expected["event_story"].add(f"event_story:{language}:{event_id}:{episode_no}")
 
     unit_counts: dict[str, int] = {}
-    for unit in _load_records(store_root, region, "unitStories"):
+    for unit in _load_records(store_root, region, "unitStories", tables=tables):
         unit_key = unit.get("unit")
         for chapter in unit.get("chapters") or []:
             for episode in chapter.get("episodes") or []:
@@ -243,15 +296,15 @@ def expected_text_units(
 
     released_cards = {
         str(record.get("id"))
-        for record in _load_records(store_root, region, "cards")
+        for record in _load_records(store_root, region, "cards", tables=tables)
         if _is_released(record, "releaseAt", now_ms, require_date=True)
     }
-    for episode in _load_records(store_root, region, "cardEpisodes"):
+    for episode in _load_records(store_root, region, "cardEpisodes", tables=tables):
         card_id = episode.get("cardId")
         if card_id is not None and str(card_id) in released_cards:
             expected["card_story"].add(f"card_story:{language}:{episode.get('id')}")
 
-    for record in _load_records(store_root, region, "specialStories"):
+    for record in _load_records(store_root, region, "specialStories", tables=tables):
         if not _is_released(record, "startAt", now_ms, require_date=True):
             continue
         for episode in record.get("episodes") or []:
@@ -264,7 +317,7 @@ def expected_text_units(
                 f"special_story:{language}:{episode.get('id') or scenario_id}"
             )
 
-    for record in _load_records(store_root, region, "virtualLives"):
+    for record in _load_records(store_root, region, "virtualLives", tables=tables):
         if not _is_released(record, "startAt", now_ms, require_date=True):
             continue
         for setlist in record.get("virtualLiveSetlists") or []:
@@ -278,25 +331,25 @@ def expected_text_units(
                 f"virtual_live:{language}:{setlist.get('id') or record.get('id')}"
             )
 
-    for record in _load_records(store_root, region, "actionSets"):
+    for record in _load_records(store_root, region, "actionSets", tables=tables):
         scenario_id = record.get("scenarioId")
         if scenario_id:
             expected["area_talk"].add(f"area_talk:{language}:{scenario_id}")
 
-    for record in _load_records(store_root, region, "characterProfiles"):
+    for record in _load_records(store_root, region, "characterProfiles", tables=tables):
         scenario_id = record.get("scenarioId")
         if scenario_id:
             expected["self_intro"].add(f"self_intro:{language}:{scenario_id}")
 
-    for record in _load_records(store_root, region, "characterArchiveVoices"):
+    for record in _load_records(store_root, region, "characterArchiveVoices", tables=tables):
         if record.get("id") is not None:
             expected["home_line"].add(f"home_line:{language}:{record.get('id')}")
 
-    for record in _load_records(store_root, region, "mysekaiCharacterTalks"):
+    for record in _load_records(store_root, region, "mysekaiCharacterTalks", tables=tables):
         if record.get("id") is not None:
             expected["mysekai_talk"].add(f"mysekai_talk:{language}:{record.get('id')}")
 
-    for record in _load_records(store_root, region, "mysekaiCharacterTalkTweets"):
+    for record in _load_records(store_root, region, "mysekaiCharacterTalkTweets", tables=tables):
         if record.get("id") is not None:
             expected["mysekai_tweet"].add(f"mysekai_tweet:{language}:{record.get('id')}")
 
@@ -309,33 +362,34 @@ def excluded_units(
     now_ms: int,
     live: bool = False,
     fetcher: Optional[Callable[[str], str]] = None,
+    tables: Optional[_RequestTables] = None,
 ) -> dict[str, int]:
     excluded: dict[str, int] = {}
     for category, (table, date_field) in FACT_TABLES.items():
         if date_field is None:
             continue
-        records = _load_records(store_root, region, table, live=live, fetcher=fetcher)
+        records = _load_records(store_root, region, table, live=live, fetcher=fetcher, tables=tables)
         excluded[f"fact_{category}"] = sum(
             1
             for record in records
             if not _is_released(record, date_field, now_ms, require_date=True)
         )
 
-    events = _load_records(store_root, region, "events", live=live, fetcher=fetcher)
+    events = _load_records(store_root, region, "events", live=live, fetcher=fetcher, tables=tables)
     unreleased_events = {
         str(record.get("id"))
         for record in events
         if not _is_released(record, "startAt", now_ms, require_date=True)
     }
     event_episode_count = 0
-    for story in _load_records(store_root, region, "eventStories"):
+    for story in _load_records(store_root, region, "eventStories", tables=tables):
         event_id = story.get("eventId") or story.get("id")
         if str(event_id) not in unreleased_events:
             continue
         event_episode_count += len(story.get("eventStoryEpisodes") or [])
     excluded["text_event_story"] = event_episode_count
 
-    cards = _load_records(store_root, region, "cards")
+    cards = _load_records(store_root, region, "cards", tables=tables)
     unreleased_cards = {
         str(record.get("id"))
         for record in cards
@@ -343,18 +397,18 @@ def excluded_units(
     }
     excluded["text_card_story"] = sum(
         1
-        for episode in _load_records(store_root, region, "cardEpisodes")
+        for episode in _load_records(store_root, region, "cardEpisodes", tables=tables)
         if str(episode.get("cardId")) in unreleased_cards
     )
 
     excluded["text_special_story"] = sum(
         1
-        for record in _load_records(store_root, region, "specialStories")
+        for record in _load_records(store_root, region, "specialStories", tables=tables)
         if not _is_released(record, "startAt", now_ms, require_date=True)
     )
     excluded["text_virtual_live"] = sum(
         1
-        for record in _load_records(store_root, region, "virtualLives")
+        for record in _load_records(store_root, region, "virtualLives", tables=tables)
         if not _is_released(record, "startAt", now_ms, require_date=True)
     )
     return excluded
@@ -379,9 +433,9 @@ def matched_text_units(
     return matched
 
 
-def _integer_percent(matched: int, expected: int) -> int:
+def _integer_percent(matched: int, expected: int) -> Optional[int]:
     if expected <= 0:
-        return 0
+        return None
     return int(round(100 * matched / expected))
 
 
@@ -473,13 +527,14 @@ def compute_progress(
     overall_text_matched = 0
     overall_excluded_total = 0
 
+    tables = _RequestTables(store_root, live, fetcher)
     for region in selected:
-        events = _load_records(store_root, region, "events", live=live, fetcher=fetcher)
-        fact_expected = expected_fact_units(store_root, region, now_ms, live=live, fetcher=fetcher)
+        events = tables.get(region, "events").records
+        fact_expected = expected_fact_units(store_root, region, now_ms, tables=tables)
         fact_matched = matched_fact_units(store_root, region, fact_expected)
-        text_expected = expected_text_units(store_root, region, now_ms, live=live, fetcher=fetcher)
+        text_expected = expected_text_units(store_root, region, now_ms, tables=tables)
         text_matched = matched_text_units(store_root, region, text_expected)
-        excluded = excluded_units(store_root, region, now_ms, live=live, fetcher=fetcher)
+        excluded = excluded_units(store_root, region, now_ms, tables=tables)
         region_excluded_total = sum(excluded.values())
         overall_excluded_total += region_excluded_total
 
@@ -487,7 +542,33 @@ def compute_progress(
         text_scores = _category_scores(text_expected, text_matched)
         combined_expected = fact_scores["expected_total"] + text_scores["expected_total"]
         combined_matched = fact_scores["matched_total"] + text_scores["matched_total"]
+        table_states = {
+            table: {"state": state.state}
+            for (key_region, table), state in tables._cache.items() if key_region == region
+        }
+        incomplete = any(row["state"] in {"missing", "invalid"} for row in table_states.values())
+        for scores, dependencies in (
+            (fact_scores, {key: {table} for key, (table, _) in FACT_TABLES.items()}),
+            (text_scores, {key: {table} | ({"events"} if key == "event_story" else
+                                         {"cards"} if key == "card_story" else set())
+                           for key, table in TEXT_TABLES.items()}),
+        ):
+            for category, score in scores["categories"].items():
+                complete = all(table_states[table]["state"] in {"valid", "valid_empty"}
+                               for table in dependencies[category])
+                score["denominator_complete"] = complete
+                score["known_subset_pct"] = score["pct"]
+                if not complete:
+                    score["pct"] = None
+            scores["denominator_complete"] = all(
+                score["denominator_complete"] for score in scores["categories"].values())
+            scores["known_subset_pct"] = scores["pct"]
+            if not scores["denominator_complete"]:
+                scores["pct"] = None
         region_results[region] = {
+            "live_state": tables.live_states[region],
+            "table_states": table_states,
+            "denominator_complete": not incomplete,
             "language": REGIONS[region].language,
             "activity": _activity_progress(events, now_ms),
             "fact": fact_scores,
@@ -497,7 +578,8 @@ def compute_progress(
             "overall": {
                 "expected_units": combined_expected,
                 "matched_units": combined_matched,
-                "pct": _integer_percent(combined_matched, combined_expected),
+                "pct": None if incomplete else _integer_percent(combined_matched, combined_expected),
+                "known_subset_pct": _integer_percent(combined_matched, combined_expected),
             },
         }
         overall_fact_expected += fact_scores["expected_total"]
@@ -507,26 +589,36 @@ def compute_progress(
 
     combined_expected = overall_fact_expected + overall_text_expected
     combined_matched = overall_fact_matched + overall_text_matched
+    fact_complete = bool(region_results) and all(row["fact"]["denominator_complete"] for row in region_results.values())
+    text_complete = bool(region_results) and all(row["text"]["denominator_complete"] for row in region_results.values())
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "now_ms": now_ms,
-        "live": live,
+        "live": live,  # compatibility: requested, not proof of live success
+        "requested_live": live,
+        "live_degraded": any(row["live_state"]["degraded"] for row in region_results.values()),
         "regions": region_results,
         "overall": {
             "fact": {
                 "expected_units": overall_fact_expected,
                 "matched_units": overall_fact_matched,
-                "pct": _integer_percent(overall_fact_matched, overall_fact_expected),
+                "denominator_complete": fact_complete,
+                "pct": _integer_percent(overall_fact_matched, overall_fact_expected) if fact_complete else None,
+                "known_subset_pct": _integer_percent(overall_fact_matched, overall_fact_expected),
             },
             "text": {
                 "expected_units": overall_text_expected,
                 "matched_units": overall_text_matched,
-                "pct": _integer_percent(overall_text_matched, overall_text_expected),
+                "denominator_complete": text_complete,
+                "pct": _integer_percent(overall_text_matched, overall_text_expected) if text_complete else None,
+                "known_subset_pct": _integer_percent(overall_text_matched, overall_text_expected),
             },
             "expected_units": combined_expected,
             "matched_units": combined_matched,
             "excluded_units_total": overall_excluded_total,
-            "pct": _integer_percent(combined_matched, combined_expected),
+            "denominator_complete": fact_complete and text_complete,
+            "pct": _integer_percent(combined_matched, combined_expected) if fact_complete and text_complete else None,
+            "known_subset_pct": _integer_percent(combined_matched, combined_expected),
         },
         "caveat": (
             "JP and overseas servers are roughly one year apart, but collab-style "

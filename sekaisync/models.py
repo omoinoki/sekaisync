@@ -4,6 +4,17 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 
+@dataclass(frozen=True)
+class RegionFacts:
+    """Facts from one region, with the provenance of that exact input."""
+
+    region: str
+    facts: Dict[str, Any]
+    source: str
+    version: Optional[str]
+    retrieval: Dict[str, Any]
+
+
 @dataclass
 class Entity:
     id: str
@@ -16,6 +27,10 @@ class Entity:
     version: Optional[str] = None
     demo: bool = False
     trust: str = ""
+    # Per-region facts keyed by region (Astra P03). Empty for legacy entities
+    # whose facts were merged before provenance existed: those stay available
+    # as legacy_unscoped evidence, never copied into verified region slots.
+    region_facts: Dict[str, RegionFacts] = field(default_factory=dict)
 
     @property
     def canonical_name(self) -> str:

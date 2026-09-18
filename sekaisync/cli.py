@@ -41,6 +41,7 @@ from sekaisync.fetcher import write_freshness
 from sekaisync.http_server import serve_http
 from sekaisync.llm_client import LLMClient, load_llm_config
 from sekaisync.mcp_server import run_mcp_server
+from sekaisync.runtime import build_runtime
 from sekaisync.trinity import build_candidate_pool, scrub_trinity
 from sekaisync.zhfirst import _load_manual_seed
 from sekaisync.termindex import (
@@ -598,8 +599,28 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
     existing = [] if args.reset else dbstore.load_terms_records(config.store_root, include_sentences=True)
     seeded = seed_from_glossary(config.store_root)
     merged = merge_terms([*existing, *seeded])
-    dbstore.save_terms_records(config.store_root, merged, replace_evidence=True)
-    path = dbstore.db_file(config.store_root)
+    # Astra P01: terms init/reset publishes a full snapshot — records absent
+    # from `merged` are removed, and evidence travels with each record. The
+    # snapshot contract requires evidence to be *stated* for every id, which is
+    # what makes "this record has no evidence" different from "its evidence was
+    # not loaded". On a slot store the same snapshot goes through slot
+    # decisions, because names_json there is only ever the accepted projection.
+    if dbstore.inspect_schema(config.store_root).version in {"2", "3"}:
+        from sekaisync.term_slots import ingest_record_snapshot
+
+        with dbstore.connect(config.store_root) as conn:
+            revision = dbstore.current_revision(conn)
+        ingest_record_snapshot(
+            config.store_root,
+            [term_to_dict(rec) for rec in merged],
+            expected_revision=revision,
+        )
+    else:
+        dbstore.replace_terms_snapshot(
+            config.store_root,
+            merged,
+            evidence_by_id={rec.id: list(rec.evidence or []) for rec in merged},
+        )
     print(
         json.dumps(
             {
@@ -618,17 +639,40 @@ def cmd_terms_init(args: argparse.Namespace) -> int:
 
 
 def _names_from_conflict(conflict: dict) -> dict:
-    """冲突项 → 各语言的候选集合（取每个语言的首个候选作为提案）。"""
-    names = {}
-    for lang, values in (conflict.get("candidates") or {}).items():
-        cand_values = list(values.keys()) if isinstance(values, dict) else list(values)
-        if cand_values:
-            names[str(lang)] = cand_values[0]
-    return names
+    """冲突项 → ``{language: [candidates]}`` 待审提案。
+
+    真实结构（``trinity.py`` arbitrate 的返回）是::
+
+        {"lang": "en", "candidates": {candidate_value: [channels]}, ...}
+
+    语言在**外层** ``lang``，``candidates`` 的键是**候选译名**、值是给出它的通道。
+
+    旧实现把 ``candidates`` 当成 ``{language: candidates}`` 遍历，于是候选译名被当成语言键、
+    通道被当成译名，产出 ``{"SEKAI": "translit"}`` 这种假语言 —— 真正的语言槽 ``en`` 丢失，
+    下游 ``apply_methodology_batch`` 也就无从按 ``(term, language)`` 结算。
+    """
+    lang = str(conflict.get("lang") or "").strip()
+    candidates = conflict.get("candidates") or {}
+    values: list[str] = []
+    if isinstance(candidates, dict):
+        # {candidate_value: [channels]} — the shape arbitrate actually returns.
+        values = [str(value) for value in candidates.keys() if str(value)]
+    elif isinstance(candidates, (list, tuple)):
+        # Tolerate a plain candidate list from other callers.
+        values = [str(value) for value in candidates if str(value)]
+    if not lang or not values:
+        return {}
+    return {lang: values}
 
 
 def _proposals_from_rows(rows: list) -> dict:
-    """待裁决行 → apply_methodology_batch 需要的 {term: {lang: [candidates]} 结构。"""
+    """待裁决行 → ``apply_methodology_batch`` 需要的 ``{term: {lang: [candidates]}}``。
+
+    ``row["names"]`` 可能是 ``{lang: value}``（待裁决行）或 ``{lang: [values]}``
+    （冲突项，见 :func:`_names_from_conflict`）。两种都接受：冲突本来就有多个并列候选，
+    只取首个会丢掉其余候选，而入队判定用的是完整候选集合 —— 二者必须一致
+    （Astra P11：consult/enqueue 使用同一候选集合，不能一处取首候选、另一处用全候选）。
+    """
     proposals = {}
     for row in rows:
         term = str(row.get("term") or "")
@@ -639,8 +683,10 @@ def _proposals_from_rows(rows: list) -> dict:
             if not value:
                 continue
             values_list = slot.setdefault(str(lang), [])
-            if str(value) not in values_list:
-                values_list.append(str(value))
+            incoming = value if isinstance(value, (list, tuple)) else [value]
+            for candidate in incoming:
+                if candidate and str(candidate) not in values_list:
+                    values_list.append(str(candidate))
     return proposals
 
 def _review_item_id(term: str, language: str, values: tuple) -> str:
@@ -836,6 +882,41 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             item for item in _review_items_from_trinity(result)
             if item.term not in settled]
         queued = agent_review.enqueue(config.store_root, review_items)
+        # ── 落库：把管线**已经做出的裁决**写进槽库（Astra P08/P11）────────
+        # 这一段以前不存在：分支只写了 methodology.json / review_queue.json 两个
+        # 旁路文件就 return 0，`term_slots` 一行没动，`slot_decisions` 也整个
+        # 丢弃——打印的 accepted 计数因此不是任何一次提交的结果。事务在应用层
+        # （``trinity.apply_scrub_result``：单事务，槽 + 证据 + 待审队列 +
+        # revision），CLI 只选择输入、调用、打印。
+        #
+        # 既有键一个不动：上面的 ``accepted`` 仍是**管线自身**的口径。真实提交
+        # 状态另开 ``slot_commit`` 键，两套数字分开写，谁也不会被误读成对方。
+        from sekaisync.trinity import _Corpus, apply_scrub_result
+
+        schema_version = dbstore.inspect_schema(config.store_root).version
+        if schema_version in {"2", "3"}:
+            with dbstore.connect(config.store_root) as conn:
+                scrub_revision = dbstore.current_revision(conn)
+            # `_Corpus` 按内容缓存、用到这里只剩惰性读取（证据行已挂在
+            # `slot_decisions` 上），重建一份是廉价的。
+            slot_commit = dict(
+                applied=True, reason="",
+                **apply_scrub_result(
+                    config.store_root, result, _Corpus(groups, sorted(keys)),
+                    expected_revision=scrub_revision,
+                ),
+            )
+        else:
+            # v1 库没有槽表。**明说**没有提交，而不是让打印的计数冒充提交结果；
+            # 也不在这里顺手迁移（v1→v2 是显式的、要备份的管理操作）。
+            slot_commit = {
+                "applied": False,
+                "reason": (
+                    f"schema {schema_version} 无 term_slots 表：先显式迁移 "
+                    "（dbstore.migrate_store(root, target_version=2, "
+                    "dry_run=False, backup_path=...)）才能让 --layered 落库"
+                ),
+            }
         print(
             json.dumps(
                 {
@@ -850,6 +931,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                     "methodology_applied": len(applied.get("settled") or {}),
                     "queued_for_agent": queued,
                     "channel_stats": result.get("stats", {}),
+                    "slot_commit": slot_commit,
                     "review_next": "sekaisync terms review export --out queue.txt",
                 },
                 ensure_ascii=False,
@@ -885,7 +967,45 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         )
         llm_model = llm.config.model
     records = merge_terms(records)
-    dbstore.save_terms_records(config.store_root, records, replace_evidence=True)
+    # Astra P01: an extraction pass is a partial upsert, not a snapshot —
+    # terms the pass did not touch must stay exactly as they are, and each
+    # touched term's evidence is replaced with what this pass saw (records
+    # were loaded with sentences, so their evidence lists are authoritative).
+    # A slot store takes the same intent through slot decisions.
+    if dbstore.inspect_schema(config.store_root).version in {"2", "3"}:
+        from sekaisync import term_slots
+
+        with dbstore.connect(config.store_root) as conn:
+            revision = dbstore.current_revision(conn)
+        term_slots.commit_slot_decisions(
+            config.store_root,
+            # ``records`` are TermRecord objects here, and `decisions_from_record`
+            # reads a mapping — passing them raw raised
+            # AttributeError: 'TermRecord' object has no attribute 'get' before
+            # any slot was written, so this whole branch never committed.
+            [decision for rec in records
+             for decision in term_slots.decisions_from_record(term_to_dict(rec))],
+            records=[term_to_dict(rec) for rec in records],
+            evidence_by_id={rec.id: list(rec.evidence or []) for rec in records},
+            expected_revision=revision,
+            # Without a verifier `_certificate` returns None before it reads
+            # anything (`term_slots.py:104`), so every decision this pass makes
+            # landed pending/insufficient_evidence without an error — the pass
+            # reported success while accepting nothing. This pass reads story
+            # text, so its rows can be certified from the corpus: the rows
+            # already carry the per-story identity, language, source and
+            # value-bearing sentence the gate needs.
+            verifier=term_slots.corpus_verifier(),
+        )
+    else:
+        dbstore.upsert_terms(
+            config.store_root,
+            records,
+            evidence_updates={
+                rec.id: {"mode": "replace", "items": list(rec.evidence or [])}
+                for rec in records
+            },
+        )
     print(
         json.dumps(
             {
@@ -1344,13 +1464,16 @@ def cmd_kb_status(args: argparse.Namespace) -> int:
 
 def cmd_serve_mcp(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    core = SekaiSyncCore(config.store_root)
+    # A served Core performs network work (event_check), so it needs the
+    # configuration bound explicitly instead of reading a process-global
+    # snapshot at call time (Astra P14).
+    core = SekaiSyncCore(config.store_root, runtime=build_runtime(config))
     return run_mcp_server(core)
 
 
 def cmd_serve_http(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    core = SekaiSyncCore(config.store_root)
+    core = SekaiSyncCore(config.store_root, runtime=build_runtime(config))
     serve_http(core, host=args.host, port=args.port, sites=config.sites)
     return 0
 
@@ -1793,7 +1916,25 @@ def main(argv: list[str] | None = None) -> int:
                 rebuild_indexes_after_event_check(config)
         except Exception as exc:
             args.auto_event_check = {"status": "error", "reason": str(exc)}
-    return args.func(args)
+    try:
+        return args.func(args)
+    except dbstore.SchemaVersionError as exc:
+        # P07 gate: the store was not written by this build (newer/older/unknown
+        # schema, or unreadable). Fail with an actionable message and a non-zero
+        # code instead of a traceback — the store is left byte-identical.
+        print(json.dumps(
+            {
+                "error": str(exc),
+                "schema_status": exc.status,
+                "schema_version_found": exc.found,
+                "schema_version_supported": exc.supported,
+                "store_db": str(exc.path) if exc.path else None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

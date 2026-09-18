@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from sekaisync.layout import region_source_dir
+from sekaisync.layout import master_source_dir, region_source_dir
 from typing import Any, Optional
 
 # Region keys in the order used by the CLI.
@@ -123,15 +123,53 @@ _JAPANESE_DIGITS = {
     "九": 9,
 }
 
+# Box-event ordinals are a handful of small integers, so the accepted input is
+# bounded tightly and *before* ``int()`` ever runs: at most 4 accepted
+# characters (three significant digits plus cosmetic zero padding) with a value
+# of 1..999.  This keeps the parser total for adversarial input (a 4000-digit
+# run, or a Unicode "digit" such as ``²`` that ``str.isdigit`` accepts but
+# ``int`` rejects) without touching the interpreter's integer-string
+# conversion limit.
+_MAX_ORDINAL = 999
+_MAX_ORDINAL_DIGITS = len(str(_MAX_ORDINAL))
+_MAX_ORDINAL_INPUT_LEN = _MAX_ORDINAL_DIGITS + 1
+
+
+def _normalize_numeral(text: str) -> str:
+    """Strip and fold full-width digits exactly once for all ordinal paths."""
+    return text.strip().translate(_ARABIC_DIGITS)
+
+
+def _bounded_digits(text: str) -> Optional[int]:
+    """Bounded decimal conversion; ``text`` must already be normalised.
+
+    Accepted: at most :data:`_MAX_ORDINAL_INPUT_LEN` ASCII decimal characters
+    holding 1..999 once leading zeros are dropped.  Everything else -- ``0``,
+    values above 999, over-long runs, non-ASCII "digits" -- returns ``None``.
+    ``int()`` only ever sees at most three characters, whatever the input.
+    """
+    if not (text.isascii() and text.isdigit()):
+        return None
+    if len(text) > _MAX_ORDINAL_INPUT_LEN:
+        return None
+    significant = text.lstrip("0")
+    if not significant or len(significant) > _MAX_ORDINAL_DIGITS:
+        return None
+    value = int(significant)
+    return value if 1 <= value <= _MAX_ORDINAL else None
+
 
 def numeral_text_to_int(text: str) -> Optional[int]:
-    """Convert a community ordinal like ``三`` or ``二十`` to an integer."""
-    text = text.strip().translate(_ARABIC_DIGITS)
+    """Convert a community ordinal like ``三`` or ``二十`` to an integer.
+
+    Total: malformed or out-of-range input returns ``None``.
+    """
+    text = _normalize_numeral(text)
     if not text:
         return None
-    if text.isdigit():
-        value = int(text)
-        return value if 1 <= value <= 999 else None
+    value = _bounded_digits(text)
+    if value is not None:
+        return value
     if text in _JAPANESE_DIGITS:
         return _JAPANESE_DIGITS[text]
     if text == "十":
@@ -139,9 +177,9 @@ def numeral_text_to_int(text: str) -> Optional[int]:
     # 二十 / 十一 / 二十三 style compounds.
     if text.startswith("十"):
         tail = text[1:]
-        if not tail:
-            return None
-        return 10 + _JAPANESE_DIGITS.get(tail, 0)
+        if tail in _JAPANESE_DIGITS:
+            return 10 + _JAPANESE_DIGITS[tail]
+        return None
     head, sep, tail = text.partition("十")
     if sep and head in _JAPANESE_DIGITS and tail in _JAPANESE_DIGITS:
         return _JAPANESE_DIGITS[head] * 10 + _JAPANESE_DIGITS[tail]
@@ -150,11 +188,20 @@ def numeral_text_to_int(text: str) -> Optional[int]:
     return None
 
 
+def _normalize_query(query: str) -> str:
+    """Fold a query to its canonical lookup form (whitespace removed, lowered).
+
+    Used by both :func:`parse_query` and :func:`resolve_event_alias` so that a
+    query the parser accepts is never rejected later by the resolver.
+    """
+    return re.sub(r"\s+", "", query).lower()
+
+
 def parse_query(query: str) -> Optional[tuple[CharacterInfo, int]]:
     """Parse ``khn3`` / ``豆三箱`` / ``小豆泽心羽三箱`` style shorthand."""
     if not query:
         return None
-    normalized = re.sub(r"\s+", "", query).lower()
+    normalized = _normalize_query(query)
     for key in sorted(_ALIAS_LOOKUP, key=len, reverse=True):
         info = _ALIAS_LOOKUP[key]
         if not normalized.startswith(key):
@@ -178,7 +225,7 @@ def _load_json(path: Path) -> list[dict]:
 
 
 def _region_source_root(store_root: Path, region: str) -> Path:
-    return region_source_dir(store_root, region) / _REGION_FOLDER[region]
+    return master_source_dir(store_root, region) / _REGION_FOLDER[region]
 
 
 @dataclass
@@ -426,9 +473,22 @@ def resolve_event_alias(
         return None
     box = boxes[ordinal - 1]
     mapping = box["regions"]
+    # Normalise once, exactly as parse_query did, so an accepted query can
+    # never miss its own alias here (leading/trailing whitespace used to raise
+    # StopIteration from the exhausted generator).
+    normalized = _normalize_query(query)
+    alias = next(
+        (alias for alias in info.aliases if normalized.startswith(alias.lower())),
+        None,
+    )
+    if alias is None:
+        # parse_query accepted this query, so this is unreachable unless the
+        # alias table and the parser disagree; report it as unmatched rather
+        # than raising out of the resolver.
+        return None
     return {
         "query": query,
-        "alias": next(alias for alias in info.aliases if query.lower().startswith(alias.lower())),
+        "alias": alias,
         "character": {
             "id": info.id,
             "unit": info.unit,

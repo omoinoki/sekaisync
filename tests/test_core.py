@@ -40,6 +40,32 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(cn_gap["scope"], "cn")
             self.assertEqual(cn_gap["severity"], "missing")
 
+    def test_data_gaps_declare_multi_file_generation_limitation(self):
+        """P13 — the missing generation guarantee must be stated, not implied.
+
+        Until raw/news publish as immutable generations with an active pointer,
+        a multi-file aggregate can mix two generations. Astra B2 requires that
+        to be declared rather than silently presented as a consistent snapshot,
+        so this pins the declaration's presence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            create_demo_store(store_root)
+            core = SekaiSyncCore(store_root)
+            gaps = core.data_gaps()
+            gap = next(
+                (g for g in gaps if g["domain"] == "multi_file_generation_consistency"),
+                None,
+            )
+            self.assertIsNotNone(
+                gap,
+                "the multi-file generation limitation is no longer declared; "
+                "either generation publishing landed (remove this test and "
+                "update CHECKPOINT) or the declaration was lost",
+            )
+            self.assertEqual(gap["severity"], "partial")
+            self.assertTrue(gap["agent_guidance"])
+
     def test_demo_store_lookup_and_resolve(self):
         with tempfile.TemporaryDirectory() as tmp:
             store_root = Path(tmp) / "store"

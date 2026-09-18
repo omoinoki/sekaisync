@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -73,7 +74,9 @@ REGIONS: Dict[str, Region] = {
 
 DEFAULT_REGION_ORDER = ["jp", "en", "tc", "kr", "cn"]
 
-
+# The historical fuzzy parser is kept for the ``altsource`` legacy block only,
+# where the old defaults were permissive.  Modern ``sites`` entries use
+# ``require_bool_flag`` below.
 def _parse_bool_flag(value: object, default: bool) -> bool:
     """Parse a JSON boolean flag, tolerating string forms like ``"false"``."""
     if isinstance(value, str):
@@ -81,6 +84,86 @@ def _parse_bool_flag(value: object, default: bool) -> bool:
     if value is None:
         return default
     return bool(value)
+
+
+class ConfigError(ValueError):
+    """Base class for settings.json values that must be reported, not patched.
+
+    The loader never rewrites the user's file to "correct" an input; it raises
+    so the wrong value stays visible and fixable at the source.
+    """
+
+
+class ConfigTypeError(ConfigError):
+    """A settings value has the wrong JSON type (e.g. ``"false"`` for a bool)."""
+
+
+def require_bool_flag(value: object, field: str, site_id: str) -> bool:
+    """Return a real JSON boolean, rejecting truthy-but-wrong values.
+
+    ``bool("false")`` is ``True``, so a string here would silently mean the
+    opposite of what the file says.  The user's file is never rewritten to
+    "fix" the value: a wrong type is reported instead.
+    """
+    if isinstance(value, bool):
+        return value
+    raise ConfigTypeError(
+        f"Site '{site_id}' field '{field}' must be a JSON boolean "
+        f"(true/false), got {type(value).__name__}: {value!r}"
+    )
+
+
+# Source IDs are used as directory names and cache namespaces, so they are
+# restricted to an explicit safe character set rather than "anything except
+# the separators we thought of".
+SOURCE_ID_ALLOWED_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def validate_source_id(value: str) -> str:
+    """Validate a site instance ID used as a path/cache namespace component.
+
+    Rejects path separators, drive/ADS syntax, traversal, whitespace, Unicode
+    lookalikes and over-long values.  Returns the canonical (trimmed) ID.
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise ConfigError("Each site entry needs an 'id'")
+    if not SOURCE_ID_ALLOWED_RE.match(text):
+        raise ConfigError(
+            f"Site id {text!r} must match [a-z0-9][a-z0-9_-]* (lower-case letters, "
+            "digits, '_' and '-'; max 64 chars) because it names a store "
+            "directory and cache namespace"
+        )
+    return text
+
+
+def assert_no_case_collisions(ids: Iterable[str]) -> None:
+    """Reject IDs that collide only by case or by auxiliary-suffix naming.
+
+    Store paths and SQLite identifiers are effectively case-insensitive on
+    Windows and macOS, so ``Foo`` and ``foo`` would share one directory; the
+    auxiliary source IDs (``_i18n`` / ``_translation``) add a second way for
+    two instances to claim the same namespace.
+    """
+    seen: dict[str, str] = {}
+    ordered = [str(raw or "").strip() for raw in ids]
+    for raw in ordered:
+        key = raw.casefold()
+        if key in seen:
+            raise ConfigError(
+                f"Site instance ids collide after case normalization: "
+                f"{seen[key]!r} and {raw!r}"
+            )
+        seen[key] = raw
+    for raw in ordered:
+        key = raw.casefold()
+        for suffix in ("_i18n", "_translation"):
+            other = seen.get(f"{key}{suffix}")
+            if other is not None:
+                raise ConfigError(
+                    f"Site instance id {raw!r} collides with the auxiliary "
+                    f"namespace of {other!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -124,6 +207,13 @@ class MoesekaiSettings:
         ("ko-kr", "ko"),
     )
     fallback_to_viewer_cdn: bool = True
+
+    def __post_init__(self) -> None:
+        # Python callers may supply lists despite the tuple annotations.
+        for name in ("metadata_bases", "asset_bases"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        for name in ("locale_servers", "locale_languages"):
+            object.__setattr__(self, name, tuple(tuple(pair) for pair in getattr(self, name)))
 
     def server_for(self, locale: str) -> str:
         key = (str(locale or "")).strip().lower()
@@ -210,6 +300,9 @@ class ViewerSettings:
     )
     i18n_base: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "asset_buckets", tuple(tuple(pair) for pair in self.asset_buckets))
+
     def bucket_for(self, region: str) -> str:
         for key, bucket in self.asset_buckets:
             if key == region:
@@ -261,6 +354,16 @@ class SiteSettings:
     moesekai: Optional[MoesekaiSettings] = None
     viewer: Optional[ViewerSettings] = None
 
+    def __post_init__(self) -> None:
+        # ``id`` names a store directory and cache namespace, so the safe
+        # character set is enforced here rather than only on the JSON path.
+        object.__setattr__(self, "id", validate_source_id(self.id))
+        if not isinstance(self.enabled, bool):
+            raise ConfigTypeError(
+                f"Site '{self.id}' field 'enabled' must be a JSON boolean "
+                f"(true/false), got {type(self.enabled).__name__}: {self.enabled!r}"
+            )
+
     def matches(self, source_id: str) -> bool:
         return str(source_id or "").strip() == self.id
 
@@ -274,10 +377,8 @@ class SiteSettings:
 
     @classmethod
     def from_dict(cls, data: dict) -> "SiteSettings":
-        site_id = str(data.get("id") or "").strip()
+        site_id = validate_source_id(data.get("id") or "")
         backend = str(data.get("backend") or "").strip().lower()
-        if not site_id:
-            raise ValueError("Each site entry needs an 'id'")
         if backend not in KNOWN_BACKENDS:
             raise ValueError(
                 f"Unknown site backend {backend!r} (known: {', '.join(KNOWN_BACKENDS)})"
@@ -292,7 +393,7 @@ class SiteSettings:
             id=site_id,
             backend=backend,
             name=str(data.get("name") or ""),
-            enabled=bool(data.get("enabled", True)),
+            enabled=require_bool_flag(data.get("enabled", True), "enabled", site_id),
             moesekai=moesekai,
             viewer=viewer,
         )
@@ -516,7 +617,13 @@ def load_site_profile(base_dir: Path) -> tuple[SiteSettings, ...]:
                 continue
             try:
                 site = SiteSettings.from_dict(item)
+            except ConfigError:
+                # A wrong *type* in the user's file must stay visible: silently
+                # dropping the entry would quietly change which sources exist.
+                raise
             except ValueError:
+                # Unknown backend / unusable id: this entry is not usable, but
+                # the rest of the profile still is.
                 continue
             if site.id in seen:
                 raise ValueError(
@@ -524,6 +631,7 @@ def load_site_profile(base_dir: Path) -> tuple[SiteSettings, ...]:
                 )
             seen.add(site.id)
             parsed.append(site)
+        assert_no_case_collisions(site.id for site in parsed)
         if parsed:
             return tuple(parsed)
     block = data.get("altsource") if isinstance(data, dict) else None

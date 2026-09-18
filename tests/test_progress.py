@@ -94,6 +94,13 @@ class ProgressTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        for table in (
+            "musics", "gachas", "virtualLives", "areas", "stamps",
+            "gameCharacters", "gameCharacterUnits", "specialStories", "actionSets",
+            "characterProfiles", "characterArchiveVoices", "mysekaiCharacterTalks",
+            "mysekaiCharacterTalkTweets",
+        ):
+            (source / f"{table}.json").write_text("[]", encoding="utf-8")
         entities = build_registry(store_root, ["jp"])
         save_registry(entities, store_root / "kb" / "registry.json")
 
