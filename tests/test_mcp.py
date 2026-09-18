@@ -408,7 +408,8 @@ class McpVersionNegotiationTest(unittest.TestCase):
     Before this change the handler ignored ``params`` entirely and answered
     with its own constant, so an old client and a new client got the same
     silent pass.  The rules under test are the MCP lifecycle ones: echo a
-    supported request, error on an unsupported one.
+    supported request, **counter-offer** an unsupported one (never refuse),
+    and reject only a malformed value.
     """
 
     def setUp(self):
@@ -426,9 +427,17 @@ class McpVersionNegotiationTest(unittest.TestCase):
         )
 
     def test_target_version_is_the_documented_one(self):
-        """The literal delivered target; everything else uses the constant."""
-        self.assertEqual(PROTOCOL_VERSION, "2025-06-18")
-        self.assertIn(PROTOCOL_VERSION, SUPPORTED_VERSIONS)
+        """The newest supported revision is what current clients ask for.
+
+        2025-11-25 heads the list because Claude Code, VS Code/Copilot, Cline,
+        Continue and Zed all initialize with it; a server whose newest offer is
+        older would counter-offer to every one of them.
+        """
+        self.assertEqual(PROTOCOL_VERSION, "2025-11-25")
+        self.assertEqual(SUPPORTED_VERSIONS[0], PROTOCOL_VERSION)
+        # 2025-06-18 stays served: several clients (and the TypeScript SDK's
+        # DEFAULT_NEGOTIATED_PROTOCOL_VERSION path) still speak it.
+        self.assertIn("2025-06-18", SUPPORTED_VERSIONS)
 
     def test_every_supported_version_is_echoed_back(self):
         for version in SUPPORTED_VERSIONS:
@@ -450,22 +459,44 @@ class McpVersionNegotiationTest(unittest.TestCase):
         self.assertIsNone(failure)
         self.assertEqual(version, "2024-11-05")
 
-    def test_unsupported_version_is_rejected_not_silently_passed(self):
+    def test_unsupported_version_is_counter_offered_not_rejected(self):
+        """The lifecycle MUST: respond with another version we support.
+
+        This used to return -32602, copying the spec page's Error Handling
+        example -- which contradicts the MUST on the same page.  Measured
+        fallout of the error form: every mainstream SDK aborts the connection
+        on a JSON-RPC error instead of retrying, so the Lens Studio server
+        (which did exactly this) broke VS Code and Claude Code simultaneously
+        (microsoft/vscode#286908, anthropics/claude-code#17319), and the
+        protocol maintainers ruled the error form non-compliant
+        (inspector#959).  The counter-offer is disclosed -- the response names
+        2025-11-25, not what the client asked -- so nothing is silent, and a
+        client that cannot speak it disconnects itself per the spec.
+        """
         response = self._initialize({"protocolVersion": "2024-11-05"})
-        self.assertNotIn("result", response, response)
-        error = response["error"]
-        # The spec's own example initialize error: -32602, with the
-        # supported/requested pair in `data`.
-        self.assertEqual(error["code"], -32602)
-        self.assertIn("2024-11-05", error["message"])
-        self.assertEqual(error["data"]["requested"], "2024-11-05")
-        self.assertEqual(error["data"]["supported"], list(SUPPORTED_VERSIONS))
-        # A rejection is a hard failure: no capabilities leak out with it.
-        self.assertNotIn("capabilities", response)
+        self.assertIn("result", response, response)
+        self.assertEqual(response["result"]["protocolVersion"], PROTOCOL_VERSION)
         self.assertEqual(response["id"], 1)
 
-    def test_unparseable_version_is_rejected(self):
-        for bad in ("", "latest", "2025-13-99", "2025-6-18", 5, True, ["2025-06-18"]):
+    def test_counter_offer_discloses_not_silently_passes(self):
+        """A counter-offer must be visible: the announced version differs from
+        what the client asked.  This is what separates it from the original
+        defect (echoing a hardcoded constant whatever the client said)."""
+        for requested in ("2024-11-05", "2025-03-26", "2026-07-28"):
+            with self.subTest(requested=requested):
+                response = self._initialize({"protocolVersion": requested})
+                announced = response["result"]["protocolVersion"]
+                self.assertNotEqual(announced, requested)
+                self.assertIn(announced, SUPPORTED_VERSIONS)
+
+    def test_malformed_version_is_rejected(self):
+        """Non-revisions stay errors: they cannot be a protocol version at all.
+
+        ``2025-13-99`` parses as a date shape but is not a real revision;
+        rejecting it is fine either way, so the assertion is only that it does
+        not silently initialize.
+        """
+        for bad in ("", "latest", 5, True, ["2025-06-18"]):
             with self.subTest(bad=bad):
                 response = self._initialize({"protocolVersion": bad})
                 self.assertNotIn("result", response, bad)
@@ -491,16 +522,17 @@ class McpVersionNegotiationTest(unittest.TestCase):
         )
         self.assertEqual(response["result"]["protocolVersion"], SUPPORTED_VERSIONS[0])
 
-    def test_rejected_initialize_leaves_the_session_usable(self):
+    def test_malformed_initialize_leaves_the_session_usable(self):
         """A version error must not poison the loop for the next frame."""
-        rejected = self._initialize({"protocolVersion": "1999-01-01"})
+        rejected = self._initialize({"protocolVersion": "not-a-version"})
         self.assertNotIn("result", rejected)
         followed = self.server.handle(
             {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": PROTOCOL_VERSION}}
         )
         self.assertEqual(followed["result"]["protocolVersion"], PROTOCOL_VERSION)
 
-    def test_rejected_version_over_stdio_answers_then_keeps_reading(self):
+    def test_unsupported_version_over_stdio_still_gets_an_answer(self):
+        """A counter-offered initialize answers normally and keeps reading."""
         frames = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2024-11-05"}},
@@ -514,8 +546,8 @@ class McpVersionNegotiationTest(unittest.TestCase):
             )
         responses = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
         self.assertEqual(len(responses), 2)
-        self.assertEqual(responses[0]["error"]["code"], -32602)
-        self.assertNotIn("result", responses[0])
+        self.assertEqual(responses[0]["result"]["protocolVersion"], PROTOCOL_VERSION)
+        self.assertNotIn("error", responses[0])
         self.assertEqual(responses[1]["result"], {})
 
 

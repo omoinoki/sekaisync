@@ -157,7 +157,7 @@ class HttpMcpTest(unittest.TestCase):
         )
         self.assertEqual(init["result"]["serverInfo"]["name"], "SekaiSync")
         self.assertEqual(init["result"]["protocolVersion"], PROTOCOL_VERSION)
-        self.assertEqual(PROTOCOL_VERSION, "2025-06-18")
+        self.assertEqual(PROTOCOL_VERSION, "2025-11-25")
 
         call = handle_mcp_message(
             self.core,
@@ -736,7 +736,7 @@ class McpProtocolVersionTest(unittest.TestCase):
                 )
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.header("MCP-Protocol-Version"), PROTOCOL_VERSION)
-                self.assertEqual(response.header("MCP-Protocol-Version"), "2025-06-18")
+                self.assertEqual(response.header("MCP-Protocol-Version"), "2025-11-25")
 
     def test_initialized_version_is_echoed_over_http(self):
         response = self._post({
@@ -748,20 +748,18 @@ class McpProtocolVersionTest(unittest.TestCase):
             response.json()["result"]["protocolVersion"], SUPPORTED_VERSIONS[0]
         )
 
-    def test_unsupported_version_is_a_32602_error_not_a_result(self):
+    def test_unsupported_version_is_counter_offered_over_http(self):
+        """The lifecycle MUST (respond with another supported version) applies
+        on HTTP too: a well-formed but unspeakable version counter-offers, it
+        does not error."""
         response = self._post({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": "2024-11-05"},
         })
         self.assertEqual(response.status, 200)
         payload = response.json()
-        self.assertNotIn("result", payload, payload)
-        self.assertEqual(payload["error"]["code"], -32602)
-        self.assertIn("2024-11-05", payload["error"]["message"])
-        self.assertEqual(payload["error"]["data"]["requested"], "2024-11-05")
-        self.assertEqual(
-            payload["error"]["data"]["supported"], list(SUPPORTED_VERSIONS)
-        )
+        self.assertIn("result", payload, payload)
+        self.assertEqual(payload["result"]["protocolVersion"], PROTOCOL_VERSION)
 
     def test_matching_request_header_is_accepted(self):
         response = self._post(
@@ -771,16 +769,23 @@ class McpProtocolVersionTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.json()["result"], {})
 
-    def test_unsupported_request_header_is_400(self):
-        """2025-06-18: an invalid/unsupported header MUST be 400 Bad Request."""
+    def test_malformed_request_header_is_400(self):
+        """2025-06-18: an *invalid* header MUST be 400 Bad Request.
+
+        A well-formed-but-unspeakable revision is allowed (it is what the
+        negotiated counter-offer covers, and Claude Code has been observed
+        sending headers that contradict its own negotiation --
+        anthropics/claude-code#92835), but a value that is not a revision at
+        all is refused: it cannot be acted on.
+        """
         response = self._post(
             {"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            headers={"MCP-Protocol-Version": "2024-11-05"},
+            headers={"MCP-Protocol-Version": "latest"},
         )
         self.assertEqual(response.status, 400)
         payload = response.json()
         self.assertNotIn("result", payload, payload)
-        self.assertIn("2024-11-05", payload["error"]["message"])
+        self.assertIn("latest", payload["error"]["message"])
         self.assertEqual(payload["error"]["data"]["supported"], list(SUPPORTED_VERSIONS))
 
     def test_absent_request_header_is_not_an_error(self):
@@ -794,13 +799,13 @@ class McpProtocolVersionTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.json()["result"], {})
 
-    def test_header_rejection_happens_before_the_body_is_read(self):
+    def test_malformed_header_rejection_happens_before_the_body_is_read(self):
         response = call_handler(
             self.core, "/mcp", method="POST", body="not json at all",
-            headers={"MCP-Protocol-Version": "1999-01-01"},
+            headers={"MCP-Protocol-Version": "not a version"},
         )
         self.assertEqual(response.status, 400)
-        self.assertIn("1999-01-01", response.json()["error"]["message"])
+        self.assertIn("not a version", response.json()["error"]["message"])
 
     def test_other_endpoints_ignore_the_mcp_header(self):
         """The header governs /mcp only; REST routes do not require it."""

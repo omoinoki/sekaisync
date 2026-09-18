@@ -12,6 +12,7 @@ P15/D15 hardening:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any, Callable, Iterable, Optional
 
@@ -25,24 +26,29 @@ from sekaisync.tools import (
     mcp_tools_list,
 )
 
-#: MCP revisions this server can actually speak, newest first.  ``initialize``
-#: answers with the *client's* version when it appears here -- see
-#: ``McpServer._handle_request`` -- so this tuple, not the constant below, is
-#: what "supported" means.
+#: MCP revisions this server can actually speak, newest first.
 #:
-#: Only 2025-06-18 is listed, deliberately:
-#: * 2025-03-26 additionally requires a server to *receive* JSON-RPC batch
-#:   arrays (MUST).  This server answers an array message with -32600 by
-#:   design, so advertising that revision would be a false claim.
-#: * 2024-11-05 cannot be honestly advertised for the HTTP surface: its
-#:   transport is HTTP+SSE (``/sse`` + ``/messages``), which this server does
-#:   not host.  The ``/mcp`` endpoint it does host is the Streamable HTTP
-#:   transport introduced in 2025-03-26.
-SUPPORTED_VERSIONS: tuple[str, ...] = ("2025-06-18",)
+#: ``initialize`` echoes the client's version when it appears here and
+#: otherwise **counter-offers** ``PROTOCOL_VERSION`` -- it does not error.  See
+#: ``negotiate_protocol_version`` for why, and for the evidence.
+#:
+#: ``2025-11-25`` is listed because it is the revision every current client
+#: actually asks for (Claude Code, VS Code/Copilot, Cline, Continue, Zed all
+#: send it).  It removes JSON-RPC batching, the same as 2025-06-18, so it is a
+#: superset of what this server needs; its additions (tasks, URL elicitation,
+#: ``Implementation.description``) are opt-in behind capabilities this server
+#: never advertises.  Serving it is honest for stdio and for ``/mcp``, which is
+#: the Streamable HTTP transport both revisions define.
+#:
+#: ``2025-03-26`` is still not listed: it requires a server to *receive*
+#: JSON-RPC batch arrays (MUST), and this server answers an array with -32600 by
+#: design.  ``2024-11-05`` is still not listed: its HTTP transport is HTTP+SSE
+#: (``/sse`` + ``/messages``), which this server does not host.
+SUPPORTED_VERSIONS: tuple[str, ...] = ("2025-11-25", "2025-06-18")
 
-#: Newest supported revision; also the fallback for a client that sends no
-#: ``protocolVersion`` at all (a client MUST send one, so this is a
-#: compatibility fallback, not a claim that the member is optional).
+#: Newest supported revision.  Used for a client that sends no
+#: ``protocolVersion`` at all, and as the counter-offer for one this server
+#: cannot speak.
 PROTOCOL_VERSION = SUPPORTED_VERSIONS[0]
 
 # P15 provisional budget: one stdio frame.  Marked provisional because a real
@@ -64,49 +70,77 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
+#: A protocol revision is a date (``2025-06-18``). Anything else in
+#: ``protocolVersion`` is malformed rather than merely unsupported, which is
+#: the one case that stays an error.
+REVISION_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
 
 def negotiate_protocol_version(
     params: dict, supported: Optional[tuple[str, ...]] = None
 ) -> tuple[Optional[str], Optional[dict]]:
     """Resolve the protocol revision for one ``initialize`` request.
 
-    Returns ``(version, None)`` with the version the response must announce,
-    or ``(None, failure)`` where ``failure`` carries the ``message`` and
-    ``data`` of an error response.  ``supported`` defaults to the module-level
-    :data:`SUPPORTED_VERSIONS`, resolved at call time (not bound as a default)
-    so a test can widen the list and exercise the echo rule.
+    Returns ``(version, None)`` with the version the response must announce, or
+    ``(None, failure)`` where ``failure`` carries the ``message`` and ``data``
+    of an error response -- which now only happens for a *malformed* member.
+    ``supported`` defaults to the module-level :data:`SUPPORTED_VERSIONS`,
+    resolved at call time (not bound as a default) so a test can widen the list
+    and exercise the echo rule.
 
-    The rule is the MCP lifecycle one, stated in both 2024-11-05 and
-    2025-06-18: *"If the server supports the requested protocol version, it
-    MUST respond with the same version."*  So a supported request is
-    **echoed**, never upgraded to the server's newest -- announcing a version
-    the client did not offer would be a silent mismatch, and clients are told
-    to disconnect when they meet one.  An unsupported version is an error
-    (the revision's own example initialize error: ``-32602`` with
-    ``data.supported`` / ``data.requested``), because falling back would hide
-    the disagreement exactly the way the old hardcoded constant did.
+    Two rules, from the lifecycle's Version Negotiation section:
 
-    An absent (or explicit ``null``) member is not something the client can
-    support; it is the absence of an offer.  Older clients in the wild send
-    ``params: {}``, so this stays a compatibility fallback to the newest
-    supported revision rather than a hard failure.
+    * a version this server speaks is **echoed** -- never silently upgraded to
+      the server's newest, because announcing a version the client did not
+      offer is the mismatch the handshake exists to catch;
+    * a well-formed version this server does *not* speak is **counter-offered**
+      with :data:`PROTOCOL_VERSION`, not refused.
+
+    The counter-offer is the spec's own MUST: *"If the server supports the
+    requested protocol version, it MUST respond with the same version.
+    Otherwise, the server MUST respond with another protocol version it
+    supports."*  This function used to return ``-32602`` instead, copying the
+    Error Handling example on that same page -- which contradicts the MUST.
+    Measured consequences of that choice, all documented:
+
+    * every mainstream SDK (TypeScript 1.30/2.0, Python 2.2/1.30, Go, Rust
+      rmcp) lists 2025-06-18 in its accepted set, but **aborts the connection**
+      on a JSON-RPC error rather than retrying;
+    * current clients ask for ``2025-11-25``, so a server that rejects
+      everything else is rejected by all of them -- the Lens Studio server did
+      exactly this and produced simultaneous bug reports against VS Code
+      (microsoft/vscode#286908) and Claude Code (anthropics/claude-code#17319);
+    * the protocol maintainers ruled it non-compliant (inspector#959).
+
+    A counter-offer costs nothing: the client learns the version it will
+    actually be speaking and (per the spec) SHOULD disconnect itself if it
+    cannot accept it. That decision belongs to the client, not to us.
+
+    Malformed values still fail: a non-string, or a string that is not a
+    ``YYYY-MM-DD`` date, cannot be a protocol revision and is rejected with
+    ``-32602`` -- an error clients can act on, unlike a bare version mismatch.
     """
     supported = tuple(SUPPORTED_VERSIONS if supported is None else supported)
     requested = params.get("protocolVersion")
     if requested is None:
         # The newest *supported* revision, not a parallel constant, so the
-        # fallback cannot drift from the list.
+        # fallback cannot drift from the list. A client MUST send this member,
+        # but older ones in the wild send ``params: {}``; treating an absent
+        # offer as "cannot be supported" would fail them for no benefit.
         return supported[0], None
     if not isinstance(requested, str) or isinstance(requested, bool):
         return None, {
             "message": "protocolVersion must be a string",
             "data": {"supported": list(supported), "requested": requested},
         }
-    if requested not in supported:
+    if not REVISION_RE.fullmatch(requested.strip()):
         return None, {
-            "message": f"Unsupported protocol version: {requested}",
+            "message": f"Malformed protocol version: {requested!r}",
             "data": {"supported": list(supported), "requested": requested},
         }
+    if requested not in supported:
+        # Counter-offer rather than refuse: see the docstring.
+        return supported[0], None
     return requested, None
 
 

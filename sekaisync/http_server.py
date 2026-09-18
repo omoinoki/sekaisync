@@ -15,6 +15,7 @@ from sekaisync.core import SekaiSyncCore
 from sekaisync.mcp_server import (
     INVALID_REQUEST,
     PROTOCOL_VERSION,
+    REVISION_RE,
     SUPPORTED_VERSIONS,
     McpServer,
 )
@@ -501,31 +502,40 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             self._release_slot()
 
     def _validate_mcp_protocol_version(self) -> bool:
-        """Enforce the ``MCP-Protocol-Version`` request header on ``/mcp``.
+        """Check the ``MCP-Protocol-Version`` request header on ``/mcp``.
 
-        2025-06-18 Streamable HTTP: *"If the server receives a request with an
-        invalid or unsupported ``MCP-Protocol-Version``, it MUST respond with
-        ``400 Bad Request``."*  A **present** but unsupported value is refused
-        here, before the body is read, instead of being silently ignored --
-        silent acceptance is the same defect ``initialize`` used to have.
+        The revision says: *"If the server receives a request with an invalid
+        or unsupported ``MCP-Protocol-Version``, it MUST respond with ``400
+        Bad Request``."*  Both halves are load-bearing, so they are handled
+        differently:
 
-        An **absent** header is not refused: the revision says a server that
-        cannot otherwise identify the version SHOULD assume ``2025-03-26``,
-        and that assumption would make every header-less local client fail
-        against a server that only speaks :data:`SUPPORTED_VERSIONS`.  Since
-        this server does not implement that fallback, it treats an absent
-        header as "nothing to check" -- ``initialize`` is still the authority
-        on the version.
+        * **malformed** (not a ``YYYY-MM-DD`` revision) -> ``400``.  A request
+          whose version is unreadable cannot be acted on, and 400 is what the
+          revision asks for.
+        * **well-formed but not what this server speaks** -> allowed.  Refusing
+          here is a documented way to break working clients: Claude Code has
+          been observed sending a header that contradicts the version it
+          negotiated (`anthropics/claude-code#92835`, where the server's 400
+          left the client reporting "Connected" with zero tools), and VS Code
+          sent none at all until 2026-04
+          (`microsoft/vscode#308766`).  A version this server can serve through
+          a counter-offer is not an error condition; ``initialize`` remains the
+          authority on what is actually spoken.
+
+        An absent header is allowed for the same reason: the revision's
+        SHOULD-assume-``2025-03-26`` fallback is not one this server
+        implements, and treating absence as failure would reject every
+        header-less local client.
         """
         declared = self._header("MCP-Protocol-Version").strip()
-        if not declared or declared in SUPPORTED_VERSIONS:
+        if not declared or REVISION_RE.fullmatch(declared):
             return True
         self._send_json(400, {
             "jsonrpc": "2.0",
             "id": None,
             "error": {
                 "code": INVALID_REQUEST,
-                "message": f"Unsupported MCP-Protocol-Version: {declared}",
+                "message": f"Malformed MCP-Protocol-Version: {declared!r}",
                 "data": {"supported": list(SUPPORTED_VERSIONS), "requested": declared},
             },
         })
