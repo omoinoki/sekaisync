@@ -48,10 +48,26 @@ token 效率（硬要求）
 ``hits`` 计数，可追溯"这条规则是谁什么时候根据哪次干预定的"；:func:`retire_methodology_entry`
 提供失效接口（软删除，默认不再被 ``consult`` 采用，但保留审计痕迹）。
 
-存储（唯一数据层 kb/，不用可再生成的 cache/）
---------------------------------------------
-``store/kb/terms/review_queue.json``     待裁决队列
-``store/kb/terms/methodology.json``      方法论库
+存储（权威在 SQLite kb/sekaisync.db，JSON 降级为导出/交换格式）
+----------------------------------------------------------------
+Astra P10/D10：权威状态改进**同一个 SQLite 库**，不再让两份 JSON 独自承担事务。
+v2/v3 库（有 ``review_queue`` / ``review_decisions`` / ``review_rules`` 表）上：
+
+``db.review_queue``      待裁决队列（权威）
+``db.review_decisions``  一次性裁决日志（权威；consult 复用的判定来源）
+``db.review_rules``      generalize 沉淀的规则（与 methodology.json 双写）
+``store/kb/terms/methodology.json``     方法论条目（**暂留 JSON**，见下）
+``store/kb/terms/review_queue.json``    导出/交换格式 + 旧 store 存量的一次性导入源
+
+``methodology.json`` 暂留 JSON 的边界：pattern 的 scope/hit_terms/retire 语义
+（:func:`consult` 的形态匹配与审计留痕）整体留在文件层；但**复用判定本身**
+来自 SQLite——没有 methodology 文件时，:func:`consult` 从 ``review_decisions``
+复用一次性裁决。写入侧 :func:`submit_judgments` 把 generalize 规则同时写
+``review_rules``（权威、幂等、revision 单调）与 ``methodology.json``
+（兼容既有读法），两处由同一事务顺序维护。
+
+v1 库没有 review 表：保持 JSON 权威的现状（本模块所有写路径按 schema 版本
+分流，v1 上不建表——迁移是 :func:`sekaisync.dbstore.migrate_store` 的事）。
 
 硬约束：零第三方依赖（只用标准库）；不修改任何既有文件；Python 3.10+。
 """
@@ -211,6 +227,646 @@ def _read_json(path: Path) -> dict:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+# ── SQLite 权威层（Astra P10/D10；仅 v2/v3 库） ─────────────────────────
+#
+# 三张表由 term_slots.create_schema 在 v2/v3 库上建好：
+#   review_queue(item_id PK, term_id, language, scope_json, candidates_json,
+#                evidence_refs_json, evidence_snapshot_json, input_revision,
+#                evidence_revision, status, UNIQUE(term_id,language,evidence_revision))
+#   review_decisions(decision_id PK, item_id, term_id, language, action, value,
+#                    scope_json, evidence_revision, evidence_snapshot_json,
+#                    decision_revision, payload_json)
+#   review_rules(rule_id PK, family, key, scope_json, value, active, revision,
+#                payload_json, UNIQUE(family,key,scope_json,revision))
+# 本模块不建表、不改 schema：v1 库没有这些表，直接走 JSON 权威（历史行为）。
+
+#: 本模块写入 review_queue 行时``scope_json``里携带的 JSON 字段（ReviewItem 的
+#: 派生信息：kind/channels/hint/reason/created_at/stories）。evidence/stories
+#: 分别落在 evidence_snapshot_json；evidence_refs_json 记故事 key 的引用视图。
+_QUEUE_SCOPE_KEYS = ("kind", "chosen_hint", "channels", "reason", "created_at")
+
+
+def _sqlite_version(store_root: Path) -> Optional[str]:
+    """本库的 schema stamp（``'1'/'2'/'3'``）；打不开/不存在 → ``None``。
+
+    只读分类，绝不建文件、不写 stamp（v1 上建表是迁移的事，不是这里的事）。
+    """
+    try:
+        from sekaisync import dbstore
+
+        return dbstore.inspect_schema(store_root).version
+    except Exception:
+        return None
+
+
+def _uses_sqlite(store_root: Path) -> bool:
+    """v2/v3 库走 SQLite 权威；v1/未知/无库 → False（JSON 权威，历史行为）。"""
+    return _sqlite_version(store_root) in ("2", "3")
+
+
+def _queue_evidence_revision(item: ReviewItem) -> str:
+    """队列条目的内容版本：与 term_slots._write_queue 同口径的摘要思想。
+
+    ``[term, language, kind, candidates, evidence, stories, reason]`` 的
+    sha256 摘要——同内容 ⇒ 同 evidence_revision，UNIQUE 约束即"同证据版本
+    不重复入队"；内容变了 ⇒ 新版本，允许再次入队（旧的留待 submit 置
+    superseded）。
+    """
+    identity = [item.term, item.language, item.kind, item.candidates,
+                item.evidence, item.story_keys, item.reason]
+    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False)
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _queue_scope_json(item: ReviewItem) -> str:
+    scope = {key: getattr(item, key) for key in _QUEUE_SCOPE_KEYS}
+    scope["story_keys"] = list(item.story_keys)
+    return json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
+
+
+def _queue_snapshot_json(item: ReviewItem) -> str:
+    return json.dumps(item.evidence, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
+
+
+def _queue_refs_json(item: ReviewItem) -> str:
+    return json.dumps(item.story_keys, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
+
+
+def _queue_row_to_item(row: tuple) -> ReviewItem:
+    """一行 review_queue → ReviewItem。列序见 :data:`_QUEUE_READ_COLUMNS`。"""
+    item_id, term_id, language, scope_json, candidates_json, refs_json, snapshot_json, _status = row
+    try:
+        scope = json.loads(scope_json or "{}")
+    except json.JSONDecodeError:
+        scope = {}
+    if not isinstance(scope, dict):
+        scope = {}
+    try:
+        candidates = json.loads(candidates_json or "[]")
+        evidence = json.loads(snapshot_json or "[]")
+        story_keys = json.loads(refs_json or "[]")
+    except json.JSONDecodeError:
+        candidates, evidence, story_keys = [], [], []
+    return ReviewItem(
+        id=str(item_id),
+        kind=str(scope.get("kind") or "pending"),
+        term=str(term_id or ""),
+        language=str(language or ""),
+        candidates=[str(x) for x in candidates],
+        chosen_hint=scope.get("chosen_hint") or None,
+        evidence=[str(x) for x in evidence],
+        story_keys=[str(x) for x in story_keys],
+        channels=[str(x) for x in (scope.get("channels") or [])],
+        reason=str(scope.get("reason") or ""),
+        created_at=str(scope.get("created_at") or ""),
+    )
+
+
+_QUEUE_READ_COLUMNS = (
+    "item_id, term_id, language, scope_json, candidates_json, "
+    "evidence_refs_json, evidence_snapshot_json, status"
+)
+
+
+def _sqlite_connect(store_root: Path):
+    from sekaisync import dbstore
+
+    return dbstore.connect(store_root)
+
+
+def _import_json_queue_once(conn, store_root: Path) -> int:
+    """旧 store 的 JSON 存量一次性导入（防双权威）。
+
+    触发条件：SQLite ``review_queue`` 表为**空**而 ``review_queue.json``
+    带有 items。之后 JSON 不再是权威：再次满足条件也只会发生在
+    "SQLite 又被清空"这种损坏场景，INSERT OR IGNORE 按 item_id 幂等。
+    返回导入行数。
+    """
+    existing = conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0]
+    if existing:
+        return 0
+    legacy = _read_json(queue_path(store_root))
+    raw = legacy.get("items")
+    if not isinstance(raw, list):
+        return 0
+    imported = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            item = ReviewItem.from_dict(entry)
+        except Exception:
+            continue
+        if not item.id:
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO review_queue(item_id,term_id,language,scope_json,"
+            "candidates_json,evidence_refs_json,evidence_snapshot_json,input_revision,"
+            "evidence_revision,status) VALUES(?,?,?,?,?,?,?,?,?,'queued')",
+            (item.id, item.term, item.language, _queue_scope_json(item),
+             json.dumps(item.candidates, ensure_ascii=False, separators=(",", ":")),
+             _queue_refs_json(item), _queue_snapshot_json(item), 0,
+             _queue_evidence_revision(item)),
+        )
+        imported += 1 if cur.rowcount else 0
+    return imported
+
+
+def _sqlite_read_queue(
+    store_root: Path,
+    *,
+    limit: int = 0,
+    kind: Optional[str] = None,
+) -> list[ReviewItem]:
+    """SQLite 权威读（v2/v3）。顺手做一次性的 JSON 存量导入。"""
+    with _sqlite_connect(store_root) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            imported = _import_json_queue_once(conn, store_root)
+            if imported:
+                from sekaisync import dbstore
+
+                dbstore.bump_revision(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        if kind:
+            # kind 存在 scope_json 里；LIKE 走前缀 + 校验兜底（条目量小，无索引压力）。
+            sql = (f"SELECT {_QUEUE_READ_COLUMNS} FROM review_queue "
+                   "WHERE status='queued' AND scope_json LIKE ? ESCAPE '\\' ORDER BY rowid")
+            params: list[Any] = ['%"' + _json_escape_like(kind) + '"%']
+        else:
+            sql = f"SELECT {_QUEUE_READ_COLUMNS} FROM review_queue WHERE status='queued' ORDER BY rowid"
+            params = []
+        rows = conn.execute(sql, params).fetchall()
+    items: list[ReviewItem] = []
+    for row in rows:
+        item = _queue_row_to_item(row)
+        if kind and item.kind != _sanitize_text(kind):
+            continue
+        items.append(item)
+    if limit and limit > 0:
+        items = items[:limit]
+    return items
+
+
+def _json_escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _sqlite_enqueue(store_root: Path, items: list[ReviewItem]) -> dict:
+    """SQLite 权威入队（v2/v3）。
+
+    守恒语义与 JSON 版一致：同 item_id 不重复；同
+    ``(term, language, evidence_revision)`` 不重复（UNIQUE 约束兜底）；
+    已被方法论 / 已持久化裁决结算的项 skip（不打扰智能体）。只有真正
+    插入了行才 bump revision——纯 skipped 是一次 no-op（Astra：no-op
+    不推 revision）。
+    """
+    from sekaisync.fetcher import store_writer_lock
+
+    with store_writer_lock(store_root):
+        with _sqlite_connect(store_root) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _import_json_queue_once(conn, store_root)
+                queued_ids = {
+                    row[0] for row in conn.execute(
+                        "SELECT item_id FROM review_queue WHERE status='queued'"
+                    )
+                }
+                handled_ids = {
+                    row[0]: str(row[1]) for row in conn.execute(
+                        "SELECT item_id, status FROM review_queue "
+                        "WHERE status<>'queued'"
+                    )
+                }
+                added = skipped_dup = skipped_settled = 0
+                for item in items:
+                    if not item.id:
+                        item.id = item_id(item.term, item.language, item.candidates)
+                    if item.id in queued_ids:
+                        skipped_dup += 1
+                        continue
+                    if item.id in handled_ids:
+                        # 已 resolved（裁决过）/ superseded（同槽被更新证据取代）
+                        # 的条目不复活，也不重复计数为 dup——与旧 JSON 行为一致
+                        # （裁决即出队，重入队按"已结算"跳过）。
+                        skipped_settled += 1
+                        continue
+                    if _item_is_settled(store_root, item):
+                        skipped_settled += 1
+                        continue
+                    queued_ids.add(item.id)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO review_queue(item_id,term_id,language,"
+                        "scope_json,candidates_json,evidence_refs_json,"
+                        "evidence_snapshot_json,input_revision,evidence_revision,status) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,'queued')",
+                        (item.id, item.term, item.language, _queue_scope_json(item),
+                         json.dumps(item.candidates, ensure_ascii=False, separators=(",", ":")),
+                         _queue_refs_json(item), _queue_snapshot_json(item), 0,
+                         _queue_evidence_revision(item)),
+                    )
+                    added += 1
+                if added:
+                    from sekaisync import dbstore
+
+                    dbstore.bump_revision(conn)
+                queue_size = conn.execute(
+                    "SELECT COUNT(*) FROM review_queue WHERE status='queued'"
+                ).fetchone()[0]
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+    return {
+        "added": added,
+        "skipped_dup": skipped_dup,
+        "skipped_settled": skipped_settled,
+        "queue_size": queue_size,
+    }
+
+
+def _sqlite_queue_status_counts(conn) -> dict[str, int]:
+    return {
+        str(status): count for status, count in conn.execute(
+            "SELECT status, COUNT(*) FROM review_queue GROUP BY status"
+        )
+    }
+
+
+def _sqlite_decisions_by_key(
+    conn, term: str, language: str
+) -> dict[str, dict]:
+    """某 (term, language) 下全部决策，按 ``decision_id`` 索引。"""
+    rows = conn.execute(
+        "SELECT decision_id, payload_json FROM review_decisions "
+        "WHERE term_id=? AND language=?",
+        (term, language),
+    ).fetchall()
+    by_key: dict[str, dict] = {}
+    for decision_id, payload_json in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            payload.setdefault("decision_id", decision_id)
+            by_key[decision_id] = payload
+    return by_key
+
+
+def _sqlite_lookup_decision(
+    conn, term: str, language: str, candidates: Iterable[str]
+) -> Optional[dict]:
+    """复用已持久化的一次性裁决（SQLite 权威版 :func:`_lookup_decision`）。"""
+    cands = _dedupe(candidates)
+    if not cands:
+        return None
+    by_key = _sqlite_decisions_by_key(conn, term, language)
+    if not by_key:
+        return None
+    for cand in cands:
+        entry = by_key.get(_decision_id(term, language, "accept", cand))
+        if entry is None:
+            entry = by_key.get(_decision_id(term, language, "replace", cand))
+        if entry is not None and str(entry.get("value") or ""):
+            return {
+                "decision": str(entry.get("decision") or "accept"),
+                "value": str(entry.get("value") or ""),
+                "entry": entry,
+                "candidate": cand,
+                "source": "decision",
+                "rejected": [],
+            }
+    rejects = [
+        by_key.get(_decision_id(term, language, "reject", cand)) for cand in cands
+    ]
+    if all(entry is not None for entry in rejects):
+        return {
+            "decision": "reject",
+            "value": "",
+            "entry": rejects[0],
+            "candidate": "",
+            "source": "decision",
+            "rejected": list(cands),
+        }
+    return None
+
+
+def _item_is_settled(store_root: Path, item: ReviewItem) -> bool:
+    """enqueue 的只读结算判定：方法论或已持久化裁决已覆盖此项。"""
+    _read_methodology(store_root)
+    cached = _METHOD_CACHE.get(str(methodology_path(store_root)))
+    pair_index = cached[2] if cached else {}
+    pattern_index = cached[3] if cached else []
+    settled = _lookup(pair_index, pattern_index, item.term, item.language, item.candidates)
+    if settled is not None:
+        return True
+    if methodology_path(store_root).exists():
+        return False
+    if not _uses_sqlite(store_root):
+        return _lookup_decision(store_root, item.term, item.language, item.candidates) is not None
+    with _sqlite_connect(store_root) as conn:
+        return _sqlite_lookup_decision(
+            conn, item.term, item.language, item.candidates
+        ) is not None
+
+
+def _sqlite_submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
+    """SQLite 权威写回（v2/v3）：单事务（调用方已持写者租约）。
+
+    * 裁决 → ``review_decisions``（``decision_id`` 幂等，重复 submit 不产生第二行）；
+    * 命中的队列项 → ``status='resolved'``，同 (term, language) 其余 queued 条目
+      （含 ``slot-review:`` 来源）→ ``superseded``；
+    * generalize 规则 → ``review_rules``（active=1，同 (family,key,scope) 翻转
+      判定时旧 revision 行置 active=0，新行 revision 单调递增）；
+    * methodology.json 同步维护（兼容既有读法，暂留 JSON，见模块 docstring）；
+    * 事实变化才 bump revision；纯重复 submit（全部幂等命中）不 bump。
+    """
+    from sekaisync import dbstore
+    from sekaisync.fetcher import store_writer_lock
+
+    with store_writer_lock(store_root):
+        _read_methodology(store_root)  # 预热缓存：后面的 dirty 判定与整体写回都靠它
+        with _sqlite_connect(store_root) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                result, methodology_dirty = _sqlite_submit_in_txn(
+                    conn, store_root, judgments
+                )
+                if result["facts_changed"]:
+                    dbstore.bump_revision(conn)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        if methodology_dirty:
+            # 方法论是兼容视图（权威在 review_rules / review_decisions），
+            # 但写回仍在租约内、SQL 事务提交后执行，保持文件与库一致。
+            _flush_methodology(store_root, _sqlite_submit_in_txn.entries)
+    result.pop("facts_changed", None)
+    return result
+
+
+def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tuple[dict, bool]:
+    accepted = rejected = replaced = 0
+    methodology_added = methodology_updated = decisions_added = 0
+    unknown = 0
+    errors: list[str] = []
+    facts_changed = False
+    entries = _load_methodology_entries(store_root)
+    _sqlite_submit_in_txn.entries = entries  # 供提交后的文件写回使用
+    index: dict[tuple[str, str], MethodologyEntry] = {}
+    for entry in entries:
+        index[(_KIND_FAMILY.get(entry.kind, entry.kind), entry.key)] = entry
+    settled_item_ids = {
+        str(entry.provenance.get("item_id"))
+        for entry in entries
+        if entry.provenance.get("item_id")
+    }
+    resolved_queue_rows = 0
+    superseded_queue_rows = 0
+    rules_written = 0
+    methodology_dirty = False
+
+    for judgment in judgments:
+        if not isinstance(judgment, dict):
+            errors.append("judgment 不是对象，已跳过")
+            continue
+        jid = _sanitize_text(judgment.get("id"))
+        decision = _sanitize_text(judgment.get("decision")).lower()
+        row = conn.execute(
+            f"SELECT {_QUEUE_READ_COLUMNS} FROM review_queue "
+            "WHERE item_id=? AND status='queued'",
+            (jid,),
+        ).fetchone()
+        queued_item = _queue_row_to_item(row) if row else None
+        # 队列里没有：要么重复提交，要么别的进程已处理，要么是带 term/language
+        # 的离线 judgment（兼容旧 JSON 时代的手工提交）。
+        item = None
+        if queued_item is not None:
+            item = queued_item
+        elif judgment.get("term") and judgment.get("language"):
+            item = make_review_item(
+                term=str(judgment.get("term", "")),
+                language=str(judgment.get("language", "")),
+                candidates=[str(x) for x in judgment.get("candidates", []) or []],
+                kind="pending",
+            )
+            item.id = jid or item.id
+            queued_item = None
+        if decision not in DECISIONS:
+            errors.append(f"{jid or '<无 id>'}: 非法 decision={decision!r}（应为 accept/reject/replace）")
+            continue
+        if item is None:
+            if jid and jid in settled_item_ids:
+                continue  # 已经在方法论里留痕 → 幂等跳过
+            unknown += 1
+            continue
+        runtime = item
+        runtime.id = jid or runtime.id or item_id(runtime.term, runtime.language, runtime.candidates)
+
+        ts = now_iso()
+        provenance = _new_agent_provenance(judgment, runtime, ts)
+        rationale = _sanitize_text(judgment.get("rationale"))
+        generalize = _sanitize_text(judgment.get("generalize")).lower()
+        if generalize in ("none", "null"):
+            generalize = ""
+        if generalize and generalize not in ("pair", "pattern"):
+            errors.append(f"{jid}: 非法 generalize={generalize!r}（应为 pair/pattern/None）")
+            continue
+
+        value = _sanitize_text(judgment.get("value"))
+        if decision == "accept":
+            value = value or runtime.chosen_hint or (runtime.candidates[0] if runtime.candidates else "")
+            if not value:
+                errors.append(f"{jid}: accept 缺少 value 且队列项无候选")
+                continue
+            accepted += 1
+        elif decision == "replace":
+            if not value:
+                errors.append(f"{jid}: replace 必须给出 value")
+                continue
+            replaced += 1
+        else:  # reject
+            value = ""
+            rejected += 1
+
+        if generalize:
+            added, updated, pattern_error = _generalize(
+                entries, index, runtime, decision, value, rationale, provenance, judgment
+            )
+            if pattern_error:
+                errors.append(f"{jid}: {pattern_error}")
+            else:
+                methodology_added += added
+                methodology_updated += updated
+                if added or updated:
+                    methodology_dirty = True
+
+        # 一次性裁决 → review_decisions（幂等：同 decision_id 不重复）。
+        decisions_added += _sqlite_record_decisions(
+            conn, runtime, decision, value, rationale, provenance
+        )
+
+        # 命中的队列项 → resolved；同 (term, language) 其余 queued → superseded
+        # （含 slot-review: 来源的行，两条生产路径在这里汇合）。
+        cur = conn.execute(
+            "UPDATE review_queue SET status='resolved' WHERE item_id=? AND status='queued'",
+            (runtime.id,),
+        )
+        resolved_queue_rows += cur.rowcount
+        cur = conn.execute(
+            "UPDATE review_queue SET status='superseded' "
+            "WHERE term_id=? AND language=? AND item_id<>? AND status='queued'",
+            (runtime.term, runtime.language, runtime.id),
+        )
+        superseded_queue_rows += cur.rowcount
+        facts_changed = facts_changed or bool(decisions_added) or bool(cur.rowcount)
+
+    if methodology_dirty:
+        rules_written = _sqlite_sync_review_rules(conn, entries)
+    result = {
+        "accepted": accepted,
+        "rejected": rejected,
+        "replaced": replaced,
+        "methodology_added": methodology_added,
+        "methodology_updated": methodology_updated,
+        "decisions_added": decisions_added,
+        "rules_written": rules_written,
+        "queue_resolved": resolved_queue_rows,
+        "queue_superseded": superseded_queue_rows,
+        "unknown": unknown,
+        "errors": errors,
+        "remaining": conn.execute(
+            "SELECT COUNT(*) FROM review_queue WHERE status='queued'"
+        ).fetchone()[0],
+        "facts_changed": bool(
+            decisions_added or resolved_queue_rows or superseded_queue_rows or rules_written
+        ),
+    }
+    return result, methodology_dirty
+
+
+def _sqlite_record_decisions(
+    conn,
+    item: ReviewItem,
+    decision: str,
+    value: str,
+    rationale: str,
+    provenance: Optional[dict] = None,
+) -> int:
+    """一次性裁决写 ``review_decisions``（幂等）。返回新增行数。"""
+    targets: list[tuple[str, str]] = []
+    if decision in ("accept", "replace"):
+        targets.append((value, decision))
+    else:  # reject — record each refused candidate
+        targets.extend((cand, "reject") for cand in _dedupe(item.candidates))
+    added = 0
+    evidence_revision = _queue_evidence_revision(item)
+    for target_value, kind in targets:
+        if not target_value and kind != "reject":
+            continue
+        did = _decision_id(item.term, item.language, kind, target_value)
+        payload = {
+            "term": item.term,
+            "language": item.language,
+            "candidate": target_value,
+            "decision": kind,
+            "value": target_value if kind != "reject" else "",
+            "rationale": rationale,
+            "created_at": now_iso(),
+            "provenance": dict(provenance or {}),
+        }
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO review_decisions(decision_id,item_id,term_id,language,"
+            "action,value,scope_json,evidence_revision,evidence_snapshot_json,"
+            "decision_revision,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (did, item.id, item.term, item.language, kind,
+             target_value if kind != "reject" else "",
+             _queue_scope_json(item), evidence_revision,
+             _queue_snapshot_json(item), 0,
+             json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"), allow_nan=False)),
+        )
+        added += 1 if cur.rowcount else 0
+    return added
+
+
+def _rule_scope_json(entry: MethodologyEntry) -> str:
+    """``review_rules.scope_json``：pattern 用 provenance['scope']，pair 用 {lang}。"""
+    if entry.kind.startswith("pattern"):
+        scope = entry.provenance.get("scope")
+    else:
+        scope = None
+    if scope == "global" or scope is None:
+        scope_value: Any = "global" if scope == "global" else {"lang": ""}
+        if entry.kind.startswith("pair"):
+            scope_value = {"lang": entry.key.split("|", 2)[1] if "|" in entry.key else ""}
+    else:
+        scope_value = scope
+    return json.dumps(scope_value, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
+
+
+def _sqlite_sync_review_rules(conn, entries: list[MethodologyEntry]) -> int:
+    """把方法论条目镜像进 ``review_rules``（权威层；幂等、revision 单调）。
+
+    同 ``(family, key, scope)`` 已有 active=1 行且 value 未变 → no-op；
+    value 变了（翻转/改判）→ 旧行置 active=0，新行 revision+1；
+    全新 → revision 从现有最大值+1 起。返回发生变化的行数。
+    """
+    written = 0
+    next_revision: Optional[int] = None
+    for entry in entries:
+        if entry.kind == "heuristic" or entry.retired:
+            continue
+        family = _KIND_FAMILY.get(entry.kind, entry.kind)
+        key = entry.key
+        scope_json = _rule_scope_json(entry)
+        row = conn.execute(
+            "SELECT rule_id, value, revision, active FROM review_rules "
+            "WHERE family=? AND key=? AND scope_json=? ORDER BY revision DESC LIMIT 1",
+            (family, key, scope_json),
+        ).fetchone()
+        if row is not None and row[3]:
+            if row[1] == entry.value:
+                continue
+            conn.execute("UPDATE review_rules SET active=0 WHERE rule_id=?", (row[0],))
+        revision = (row[2] if row is not None else 0) + 1
+        payload = {
+            "rationale": entry.rationale,
+            "provenance": entry.provenance,
+            "kind": entry.kind,
+        }
+        cur = conn.execute(
+            "INSERT OR REPLACE INTO review_rules(rule_id,family,key,scope_json,value,"
+            "active,revision,payload_json) VALUES(?,?,?,?,?,1,?,?)",
+            ("rr:" + hashlib.sha1(f"{family}|{key}|{scope_json}|{revision}".encode("utf-8")).hexdigest()[:16],
+             family, key, scope_json, entry.value, revision,
+             json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"), allow_nan=False)),
+        )
+        written += 1 if cur.rowcount else 0
+        next_revision = revision if next_revision is None else max(next_revision, revision)
+    return written
+
+
+def _flush_methodology(store_root: Path, entries: Optional[list[MethodologyEntry]] = None) -> None:
+    """把方法论条目写回文件（缺省取进程内缓存的整体状态）。"""
+    if entries is None:
+        cached = _METHOD_CACHE.get(str(methodology_path(store_root)))
+        entries = list(cached[1]) if cached else []
+    _write_methodology(store_root, list(entries))
 
 
 # ── 路径（唯一数据层：kb/，不用 cache/） ───────────────────────────────
@@ -418,6 +1074,9 @@ def make_review_item(
 
 
 def _read_queue(store_root: Path) -> list[ReviewItem]:
+    """读队列。v2/v3 → SQLite 权威；v1/无库 → JSON 文件（历史行为）。"""
+    if _uses_sqlite(store_root):
+        return _sqlite_read_queue(store_root)
     data = _read_json(queue_path(store_root))
     raw = data.get("items")
     if not isinstance(raw, list):
@@ -433,8 +1092,24 @@ def _read_decisions(store_root: Path) -> list[dict]:
     """Persisted one-off decisions, newest last.
 
     Keyed by ``(term, language, candidate)`` so a decision can be looked up the
-    same way `consult` looks up methodology.
+    same way `consult` looks up methodology. v2/v3 → SQLite 权威；v1/无库 →
+    JSON 文件（历史行为）。
     """
+    if _uses_sqlite(store_root):
+        with _sqlite_connect(store_root) as conn:
+            rows = conn.execute(
+                "SELECT decision_id, payload_json FROM review_decisions ORDER BY rowid"
+            ).fetchall()
+        out: list[dict] = []
+        for decision_id, payload_json in rows:
+            try:
+                payload = json.loads(payload_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                payload.setdefault("decision_id", decision_id)
+                out.append(payload)
+        return out
     data = _read_json(decisions_path(store_root))
     raw = data.get("decisions")
     if not isinstance(raw, list):
@@ -570,6 +1245,7 @@ def _lookup_decision(
 
 
 def _write_queue(store_root: Path, items: list[ReviewItem]) -> Path:
+    """JSON 队列写（仅 v1 权威路径使用；v2/v3 上只作为显式导出的实现细节）。"""
     path = queue_path(store_root)
     _write_json(
         path,
@@ -641,7 +1317,12 @@ def enqueue(store_root: Path, items: list[ReviewItem]) -> dict:
     * ``skipped_settled`` —— :func:`consult` 的**只读**版本能给出决策，即已有方法论
       可以复用，不必再打扰智能体（这正是"干预量随时间递减"的落点）。
     * 这里的检索**不累加 hits**：入队不是复用，不该虚增命中计数。
+
+    权威存储按 schema 分流（Astra P10/D10）：v2/v3 库写 ``db.review_queue``
+    （单事务，INSERT OR IGNORE 守恒）；v1/无库保持 JSON 文件（历史行为）。
     """
+    if _uses_sqlite(store_root):
+        return _sqlite_enqueue(store_root, items)
     added = 0
     skipped_dup = 0
     skipped_settled = 0
@@ -871,7 +1552,7 @@ def _decision_payload(
     }
 
 
-def _record_hit(store_root: Path, key: str, term: str) -> None:
+def _record_hit_json(store_root: Path, key: str, term: str) -> None:
     """命中计数 + 命中范围留痕，落盘（热路径唯一的一次写）。
 
     写之前重新从盘上读一遍（而非复用缓存），避免覆盖别的进程刚落盘的条目。
@@ -941,7 +1622,7 @@ def consult(store_root: Path, term: str, language: str, candidates: list[str]) -
         return None
     key = hit["entry"].get("key", "")
     if key:
-        _record_hit(store_root, key, _sanitize_text(term))
+        _record_hit_json(store_root, key, _sanitize_text(term))
     return hit
 
 
@@ -1116,7 +1797,15 @@ def submit_judgments(store_root: Path, judgments: list[dict]) -> dict:
 
     **幂等**：同一条判断重复提交不会产生重复方法论条目——第一靠 ``(family, key)``
     原地更新，第二靠队列项 id 已在方法论 provenance 中留痕（``item_id``）时直接跳过。
+
+    权威存储按 schema 分流（Astra P10/D10）：v2/v3 库的裁决写
+    ``db.review_decisions``（``decision_id`` 幂等）、队列置 resolved/superseded、
+    generalize 规则镜像 ``db.review_rules``，全部在**一个事务**里（写者租约内
+    ``BEGIN IMMEDIATE``），事实变化才 bump revision；v1/无库保持 JSON 文件。
     """
+    if _uses_sqlite(store_root):
+        return _sqlite_submit_judgments_locked(store_root, judgments)
+
     from sekaisync.fetcher import store_writer_lock
 
     # A submission both drains queue items and rewrites the methodology file.
