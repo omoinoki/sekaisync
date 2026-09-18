@@ -1425,6 +1425,68 @@ def cmd_tag_clouds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Explicit schema migration with a mandatory pre-flight dry-run.
+
+    Two steps by design (Astra P07): `--dry-run` prints the diff report and
+    exits 0 without touching anything; the apply step then requires that exact
+    `plan_digest` plus a NEW backup path, so a store cannot be changed on the
+    strength of a stale authorization. v1 must migrate to v2 before v3; the
+    command refuses to jump two levels in one call.
+    """
+    config = config_from_args(args)
+    from sekaisync import dbstore
+
+    root = config.store_root
+    state = dbstore.inspect_schema(root)
+    print(json.dumps({
+        "store": str(dbstore.db_file(root)),
+        "schema_version": state.version,
+        "status": state.status,
+    }, ensure_ascii=False))
+    if state.status not in {"current"}:
+        print(
+            f"ERROR: store is {state.status!r}; migrate expects a current v1 or v2 store.",
+            file=sys.stderr,
+        )
+        return 1
+    current = int(state.version)
+    if args.to <= current:
+        print(f"ERROR: store is already at schema {current}; --to {args.to} is not an upgrade.",
+              file=sys.stderr)
+        return 1
+    if args.to != current + 1:
+        print(
+            f"ERROR: v{current} must migrate to v{current + 1} first "
+            f"(one revision per authorized step); refusing to jump to v{args.to}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.dry_run or not args.plan_digest or not args.backup:
+        # Report what would change; apply needs the digest echoed back.
+        report = dbstore.migrate_store(root, target_version=args.to, dry_run=True)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        if args.dry_run:
+            return 0
+        print(
+            "Apply requires both --plan-digest (from a fresh dry-run) and "
+            "--backup (a NEW file path). Re-run with them to migrate.",
+            file=sys.stderr,
+        )
+        return 2
+
+    result = dbstore.migrate_store(
+        root,
+        target_version=args.to,
+        dry_run=False,
+        backup_path=Path(args.backup),
+        expected_plan_digest=args.plan_digest,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
 def cmd_kb_status(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     from sekaisync.layout import (
@@ -1505,6 +1567,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_kb_status = sub.add_parser("kb-status", help="Show the active store layout and JSON paths")
     p_kb_status.set_defaults(func=cmd_kb_status)
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="Explicit schema migration (v1->v2 term slots, v2->v3 region facts)",
+    )
+    p_migrate.add_argument("--to", type=int, required=True, help="Target schema version (2 or 3)")
+    p_migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="Report the migration diff without changing anything",
+    )
+    p_migrate.add_argument(
+        "--plan-digest",
+        help="Digest from a fresh dry-run; apply is refused if the store changed since",
+    )
+    p_migrate.add_argument(
+        "--backup", type=Path,
+        help="NEW backup file path; required for apply, never overwritten",
+    )
+    p_migrate.set_defaults(func=cmd_migrate)
 
     p_sync = sub.add_parser("sync", help="Sync master data and rebuild indexes")
     p_sync.add_argument("--regions", default=",".join(DEFAULT_REGION_ORDER), help="Comma-separated region keys")

@@ -12,7 +12,7 @@
   "name": "SekaiSync",
   "serverInfo": {
     "name": "SekaiSync",
-    "version": "0.3.0"
+    "version": "0.4.0-alpha"
   },
   "tools": [
     {
@@ -562,5 +562,5 @@
     "openapi": "/openapi.json",
     "stdio": "python -m sekaisync serve-mcp"
   },
-  "version": "0.3.0"
+  "version": "0.4.0-alpha"
 }
