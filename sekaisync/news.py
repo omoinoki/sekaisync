@@ -655,11 +655,22 @@ def _load_legacy_news(store_root: Path) -> list[dict[str, Any]]:
 
 
 def load_news(store_root: Path) -> list[dict[str, Any]]:
+    """All news records, **newest first** by ``published_at``.
+
+    The store's physical order is generation-file / legacy-insertion order —
+    effectively oldest first, so every ``[:limit]`` consumer (the HTTP/MCP
+    ``news`` tool, ``news list``) showed a window of 2020-era records no
+    matter how fresh the store was. Sorting here fixes all consumers at once;
+    records without a timestamp sort to the end, and equal timestamps keep
+    load order (stable sort).
+    """
     store_root = Path(store_root)
     pointer = active_news_generation(store_root)
     if not pointer:
-        return _load_legacy_news(store_root)
-    return _generation_records(store_root, pointer)
+        records = _load_legacy_news(store_root)
+    else:
+        records = _generation_records(store_root, pointer)
+    return sorted(records, key=lambda r: str(r.get("published_at") or ""), reverse=True)
 
 
 def filter_news(records: list[dict[str, Any]], language: Optional[str] = None,

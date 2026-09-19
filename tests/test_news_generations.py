@@ -73,6 +73,20 @@ class NewsPublicationTests(unittest.TestCase):
         self.assertEqual(news.load_news(self.root), [])
         self.assertFalse(self.root.exists())
 
+    def test_load_news_is_newest_first_regardless_of_store_order(self):
+        """[:limit] consumers (HTTP/MCP news, `news list`) must see the newest
+        records first even though the store's physical order is insertion
+        order; records without a timestamp sort last."""
+        older = record(source_id="1", published_at="2026-01-01T00:00:00+00:00")
+        newer = record(source_id="2", language="en", published_at="2026-09-20T03:00:00+00:00")
+        undated = record(source_id="3", language="ko")
+        news.save_news([older, undated, newer], self.root)
+        self.assertEqual(
+            [r["source_id"] for r in news.load_news(self.root)],
+            ["2", "1", "3"],
+            "news must read newest-first; undated records go last",
+        )
+
     def test_snapshot_replace_removes_old_and_empty_languages(self):
         news.save_news([record(), record(language="en")], self.root)
         news.save_news([record(text="new")], self.root)
