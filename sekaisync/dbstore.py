@@ -2495,6 +2495,29 @@ def bump_revision(conn: sqlite3.Connection) -> int:
     return next_revision
 
 
+def store_has_knowledge(store_root: Path) -> bool:
+    """True when any knowledge table holds at least one row.
+
+    Cheap readiness probe behind ``Core.ready()``: one read-only connection
+    and a ``LIMIT 1`` per table — no snapshot load, no store creation.  A
+    missing or unreadable store simply reads as not ready.
+    """
+    path = db_file(store_root).resolve()
+    try:
+        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=60.0)
+    except sqlite3.Error:
+        return False
+    try:
+        for table in ("entities", "glossary_terms", "terms"):
+            if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+                return True
+        return False
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 # ── raw generation pointers (Astra P13) ────────────────────────────
 #
 # `raw/` region master tables are published as immutable generations.  The

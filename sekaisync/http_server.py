@@ -123,15 +123,24 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         return {}
 
     def _reject(self, status: int, message: str, extra: Optional[dict] = None) -> None:
-        """Send a rejection with no permissive CORS headers."""
+        """Send a rejection with no permissive CORS headers.
+
+        Write failures (client already gone — e.g. the loser of a busy-slot
+        race that gave up, or a probing client that aborted) are swallowed:
+        an undeliverable rejection must not surface as a handler traceback,
+        and the slot bookkeeping around the caller is unaffected either way.
+        """
         body = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        for key, value in (extra or {}).items():
-            self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            for key, value in (extra or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def _validate_host(self) -> bool:
         """Host must name the loopback address the server actually bound."""

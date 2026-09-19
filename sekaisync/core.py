@@ -81,6 +81,20 @@ class CoreSnapshot:
         value = object.__getattribute__(self, name)
         return copy.deepcopy(value) if name in {"registry", "glossary", "terms", "factpacks"} else value
 
+    def raw(self, name: str):
+        """The shared collection itself, not a detached copy.
+
+        Attribute access on a snapshot deep-copies (~70k entities per access)
+        so that anything handed *out* of a request cannot corrupt the shared
+        state — the boundary ``view.registry`` / ``view.snapshot.registry``
+        relies on.  ``SekaiSyncCore``'s own request methods read through
+        ``raw()`` instead: they are internal, audited read-only over these
+        collections, and every result they return is copied once by the
+        ``request_scoped`` decorator.  Mutating what ``raw()`` returns would
+        leak into every request pinned to this snapshot.
+        """
+        return object.__getattribute__(self, name)
+
 
 @dataclass
 class ReadView:
@@ -182,11 +196,24 @@ class SekaiSyncCore:
         self._data_version = 0
         self._result_cache: "OrderedDict[str, tuple[tuple, dict, int]]" = OrderedDict()
         self._cache_lock = threading.Lock()
+        # Parsed SQL projections keyed by (committed revision, data version):
+        # a long-lived server re-serves the same parsed collections to every
+        # request that pins the same revision instead of re-reading ~70k
+        # entities from SQLite per request (0.4.0-alpha regression). Two
+        # revisions cover a reader straddling one concurrent sync.
+        self._snapshot_cache: "OrderedDict[tuple[int, int], CoreSnapshot]" = OrderedDict()
+        self._snapshot_cache_max = 2
+        # Fact packs are an external file not atomic with the SQL revision,
+        # so they are re-read per request — but keyed by file signature so an
+        # unchanged pack file costs one stat() instead of a full parse.
+        self._factpack_sig: "Optional[tuple[int, int]]" = None
+        self._factpacks_loaded: "Optional[tuple]" = None
 
     def _bump_data_version(self) -> None:
         with self._cache_lock:
             self._data_version += 1
             self._result_cache.clear()
+            self._snapshot_cache.clear()
 
     def _disk_signature(self) -> tuple:
         """Signature of on-disk inputs feeding the aggregate endpoints.
@@ -329,19 +356,77 @@ class SekaiSyncCore:
             conn.rollback()
             conn.close()
 
+    def _load_factpacks(self) -> tuple:
+        """Persisted fact-pack inventory, re-checked per request.
+
+        This external file is not atomic with the SQL revision — a pack
+        rebuild commits no revision bump — so a cached snapshot must never
+        pin it.  The file signature keeps an unchanged pack file at one
+        ``stat()`` per request instead of a full parse, while a changed or
+        deleted file reloads immediately.
+        """
+        path = factpack_path(self.store_root, "en")
+        try:
+            st = path.stat()
+            sig: "Optional[tuple[int, int]]" = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sig = None
+        with self._cache_lock:
+            if (
+                sig is not None
+                and self._factpack_sig == sig
+                and self._factpacks_loaded is not None
+            ):
+                return self._factpacks_loaded
+        packs = tuple(load_fact_packs(path))
+        with self._cache_lock:
+            self._factpack_sig = sig
+            self._factpacks_loaded = packs
+        return packs
+
     def load_snapshot(self, conn: sqlite3.Connection) -> CoreSnapshot:
-        """Load every SQL projection from the transaction pinned by meta."""
+        """Load every SQL projection from the transaction pinned by meta.
+
+        The registry/glossary/terms projections are cached per (committed
+        revision, data version): the revision is read first inside this
+        request's pinned transaction, so a hit is exactly the data that
+        transaction would re-derive, and any committed write — or
+        :meth:`refresh`'s forced version bump — misses and reloads under the
+        new key.  Collections are therefore shared between requests as
+        read-only state; detached copies are made at the hand-out boundaries
+        (snapshot attribute access, ``request_scoped`` results).
+        """
         revision = dbstore.current_revision(conn)
-        return CoreSnapshot(
+        key = (revision, self._data_version)
+        with self._cache_lock:
+            cached = self._snapshot_cache.get(key)
+            if cached is not None:
+                self._snapshot_cache.move_to_end(key)
+        if cached is not None:
+            # Fact packs are external and not revision-atomic: always
+            # re-checked even on a projection cache hit.  (Built outside the
+            # lock — _load_factpacks takes it too, and the lock is not
+            # reentrant.)
+            return CoreSnapshot(
+                revision=revision,
+                registry=cached.raw("registry"),
+                glossary=cached.raw("glossary"),
+                terms=cached.raw("terms"),
+                factpacks=self._load_factpacks(),
+            )
+        snapshot = CoreSnapshot(
             revision=revision,
             registry=tuple(dbstore.load_entities(self.store_root)),
             glossary=tuple(dbstore.load_glossary_terms(self.store_root)),
             terms=tuple(dbstore.load_terms_records(self.store_root)),
-            # Preserve persisted-pack inventory, captured once per request.
-            # This external file is not atomic with the SQL revision;
-            # fact_pack() still derives authoritative results from entities.
-            factpacks=tuple(load_fact_packs(factpack_path(self.store_root, "en"))),
+            factpacks=self._load_factpacks(),
         )
+        with self._cache_lock:
+            self._snapshot_cache[key] = snapshot
+            self._snapshot_cache.move_to_end(key)
+            while len(self._snapshot_cache) > self._snapshot_cache_max:
+                self._snapshot_cache.popitem(last=False)
+        return snapshot
 
     @property
     def registry(self):
@@ -350,10 +435,16 @@ class SekaiSyncCore:
         Property, not attribute: inside a request the mutable ``self._registry``
         cache must not be visible — a concurrent reload would replace what the
         request is reading mid-response (Astra P02).
+
+        Inside a view this hands the request methods the snapshot's shared
+        collection via ``raw()`` — no per-access deep copy.  Deep copies stay
+        at the boundaries callers can mutate through: ``view.registry`` /
+        ``view.snapshot.registry`` detach per access, and ``request_scoped``
+        copies every returned result.
         """
         view = _active_view()
         if view is not None and view.core is self:
-            return copy.deepcopy(view.snapshot.registry)
+            return view.snapshot.raw("registry")
         return self._registry
 
     @registry.setter
@@ -364,7 +455,7 @@ class SekaiSyncCore:
     def glossary(self):
         view = _active_view()
         if view is not None and view.core is self:
-            return copy.deepcopy(view.snapshot.glossary)
+            return view.snapshot.raw("glossary")
         return self._glossary
 
     @glossary.setter
@@ -375,7 +466,7 @@ class SekaiSyncCore:
     def terms(self):
         view = _active_view()
         if view is not None and view.core is self:
-            return copy.deepcopy(view.snapshot.terms)
+            return view.snapshot.raw("terms")
         return self._terms
 
     @terms.setter
@@ -386,20 +477,28 @@ class SekaiSyncCore:
     def factpacks(self):
         view = _active_view()
         if view is not None and view.core is self:
-            return view.snapshot.factpacks
+            return view.snapshot.raw("factpacks")
         return self._factpacks
 
     @factpacks.setter
     def factpacks(self, value) -> None:
         self._factpacks = value
 
-    @request_scoped
     def ready(self) -> bool:
-        return (
-            bool(self.registry)
-            or bool(self.glossary)
-            or bool(self.terms)
-        )
+        """Whether the store carries any knowledge at all.
+
+        Deliberately not ``request_scoped``: ``/health`` polls this, and the
+        request-scoped version reloaded the whole snapshot per probe — the
+        0.4.0-alpha regression that turned every health poll into a ~20s
+        full-store read and starved real queries.  The answer is a coarse
+        liveness flag, not generation-specific content: the in-memory
+        projections answer instantly, and a server started against an empty
+        store that was synced afterwards falls back to a cheap SQL existence
+        probe.
+        """
+        if self._registry or self._glossary or self._terms:
+            return True
+        return dbstore.store_has_knowledge(self.store_root)
 
     @request_scoped
     def lookup(
