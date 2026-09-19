@@ -476,6 +476,10 @@
             "default": false,
             "type": "boolean"
           },
+          "include_web": {
+            "default": true,
+            "type": "boolean"
+          },
           "language": {
             "maxLength": 32,
             "type": "string"

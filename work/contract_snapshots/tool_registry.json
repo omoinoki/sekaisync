@@ -748,6 +748,16 @@
           "mcp_default": null,
           "name": "include_overlay",
           "required": false
+        },
+        {
+          "core_name": null,
+          "default": true,
+          "empty_to_none": false,
+          "http_default": null,
+          "kind": "bool",
+          "mcp_default": null,
+          "name": "include_web",
+          "required": false
         }
       ],
       "core_method": "query",

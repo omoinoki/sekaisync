@@ -703,6 +703,13 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
                 Param("language", "str", max_length=32),
                 _limit(8),
                 Param("include_overlay", "bool", False),
+                # The core method defaults to include_web=True, and one web
+                # sweep costs ~2 minutes on a real store.  Without a declared
+                # param no HTTP/MCP caller could turn the web layer off — the
+                # endpoint silently ran web_lookup on every call.  Declaring
+                # it keeps True as the default while making include_web=false
+                # actually reachable.
+                Param("include_web", "bool", True),
             ),
             http_path="/api/v1/query",
         ),
