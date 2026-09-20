@@ -1756,12 +1756,31 @@ class NewsBodyBackfillTest(unittest.TestCase):
             "https://production-web.sekai.colorfulpalette.org/html/info_gacha4006_held.html",
         )
 
-    def test_entries_with_bodies_are_skipped(self):
+    def test_entries_with_official_bodies_are_skipped(self):
         from sekaisync import news as news_mod
-        news_mod.save_news([self._record(body_available=True, text="already")], self.store)
+        news_mod.save_news([self._record(
+            body_available=True, text="already",
+            body_official_url=("https://production-web.sekai.colorfulpalette.org/"
+                               "html/info_gacha4006_held.html"),
+        )], self.store)
         result = crawler_mod.crawl_news_bodies(
             self.store, fetcher=lambda url: self.fail("must not fetch"), delay=0)
         self.assertEqual(result["fetched"], 0)
+
+    def test_legacy_flat_body_is_refetched_into_new_format(self):
+        """Bodies cached by the old extractor carry body_available=True but no
+        body_official_url; they must be re-fetched once so line structure and
+        [image] markers arrive."""
+        from sekaisync import news as news_mod
+        news_mod.save_news([self._record(body_available=True, text="旧的一整行正文")], self.store)
+        body_html = ('<div class="body"><img src="/images/information/banner.png">'
+                     '<div>' + "本文です。<br>" * 40 + '</div></div>')
+        result = crawler_mod.crawl_news_bodies(
+            self.store, fetcher=lambda url: body_html, delay=0)
+        self.assertEqual(result["fetched"], 1, "legacy flat bodies must be upgraded")
+        stored = news_mod.load_news(self.store)[0]
+        self.assertIn("[/images/information/banner.png]", stored["text"])
+        self.assertGreater(stored["text"].count("\n"), 5)
 
     def test_out_of_scope_hosts_are_counted_not_fetched(self):
         from sekaisync import news as news_mod

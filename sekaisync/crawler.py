@@ -543,7 +543,9 @@ def crawl_news_bodies(
     plain HTML article pages on their CDN, and jp/en webview pages resolve to
     a static ``/html/<id>.html`` fragment (:func:`_official_body_url`); social
     media, questionnaires and official-site links stay link-only.  Entries
-    that already have a body are skipped, so repeated crawls are incremental.
+    whose body already came from the official host are skipped, so repeated
+    crawls are incremental while bodies cached by the older flat-line
+    extractor are re-fetched once into the new format.
 
     Text keeps the article's line structure and marks illustration positions
     as ``[<url>]`` (see :func:`extract_news_body_text`), so a cached
@@ -555,7 +557,12 @@ def crawl_news_bodies(
     skipped = 0
     pending = []
     for record in records:
-        if record.get("body_available"):
+        # A body is only "done" when it came from the official host *and* was
+        # shaped here — bodies cached by the older flat-line extractor carry
+        # body_available=True without body_official_url, and re-fetching them
+        # is how they pick up line structure and image placeholders.  Entries
+        # already in the new format are skipped, so runs stay incremental.
+        if record.get("body_available") and record.get("body_official_url"):
             continue
         body_url = _official_body_url(record)
         if body_url is None:
