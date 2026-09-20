@@ -357,5 +357,77 @@ class ProgressCommandTest(unittest.TestCase):
         self.assertIn("overall", snapshot)
 
 
+class SourceUnavailableExclusionTest(unittest.TestCase):
+    """Units the publisher is confirmed not to provide leave the denominator.
+
+    ``characterArchiveVoices`` ships rows whose ``displayPhrase`` is empty
+    (~53% of the real jp table) and overseas regions have no mysekai/talk Lua
+    at all.  Counting those as expected units made a store report ~70% for
+    text that cannot be fetched; they are excluded and reported separately so
+    the exclusion stays auditable.
+    """
+
+    def _store(self, tmp: str, region: str, voices: list[dict],
+               talks: list[dict]) -> Path:
+        store = Path(tmp) / "store"
+        source = store / "raw" / region / "source"
+        source.mkdir(parents=True, exist_ok=True)
+        for name, payload in (
+            ("characterArchiveVoices", voices),
+            ("mysekaiCharacterTalks", talks),
+        ):
+            (source / f"{name}.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        for table in (
+            "events", "eventStories", "cardEpisodes", "cards", "musics", "gachas",
+            "virtualLives", "areas", "stamps", "gameCharacters", "gameCharacterUnits",
+            "specialStories", "actionSets", "characterProfiles",
+            "mysekaiCharacterTalkTweets",
+        ):
+            (source / f"{table}.json").write_text("[]", encoding="utf-8")
+        return store
+
+    def test_empty_display_phrase_leaves_the_denominator(self):
+        with tempfile.TemporaryDirectory(prefix="test_srcunavail_") as tmp:
+            store = self._store(tmp, "jp", [
+                {"id": 1, "displayPhrase": "こんにちは"},
+                {"id": 2, "displayPhrase": ""},
+                {"id": 3, "displayPhrase": "   "},
+                {"id": 4},
+            ], [])
+            result = compute_progress(store, regions=["jp"])
+            home = result["regions"]["jp"]["text"]["categories"]["home_line"]
+            self.assertEqual(home["expected"], 1, "only rows carrying text are expected")
+            self.assertEqual(result["source_unavailable"]["total_units"], 3)
+            self.assertEqual(
+                result["source_unavailable"]["by_region"]["jp"]["text_home_line"], 3)
+
+    def test_overseas_mysekai_talk_is_excluded_but_jp_is_not(self):
+        talks = [{"id": 10}, {"id": 11}]
+        with tempfile.TemporaryDirectory(prefix="test_srcunavail_en_") as tmp:
+            store = self._store(tmp, "en", [], talks)
+            result = compute_progress(store, regions=["en"])
+            cat = result["regions"]["en"]["text"]["categories"]["mysekai_talk"]
+            self.assertEqual(cat["expected"], 0, "en has no mysekai/talk Lua upstream")
+            self.assertEqual(
+                result["source_unavailable"]["by_region"]["en"]["text_mysekai_talk"], 2)
+        with tempfile.TemporaryDirectory(prefix="test_srcunavail_jp_") as tmp:
+            store = self._store(tmp, "jp", [], talks)
+            result = compute_progress(store, regions=["jp"])
+            cat = result["regions"]["jp"]["text"]["categories"]["mysekai_talk"]
+            self.assertEqual(cat["expected"], 2, "jp does publish MySekai dialogue")
+            self.assertNotIn("text_mysekai_talk",
+                             result["source_unavailable"]["by_region"].get("jp", {}))
+
+    def test_explanation_block_is_auditable(self):
+        with tempfile.TemporaryDirectory(prefix="test_srcunavail_doc_") as tmp:
+            store = self._store(tmp, "jp", [{"id": 1, "displayPhrase": ""}], [])
+            result = compute_progress(store, regions=["jp"])
+            block = result["source_unavailable"]
+            self.assertIn("note", block)
+            self.assertIn("text_home_line", block["reasons"])
+            self.assertIn("text_mysekai_talk", block["reasons"])
+
+
 if __name__ == "__main__":
     unittest.main()

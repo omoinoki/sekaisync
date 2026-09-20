@@ -342,10 +342,26 @@ def expected_text_units(
             expected["self_intro"].add(f"self_intro:{language}:{scenario_id}")
 
     for record in _load_records(store_root, region, "characterArchiveVoices", tables=tables):
-        if record.get("id") is not None:
-            expected["home_line"].add(f"home_line:{language}:{record.get('id')}")
+        # ~53% of these records carry an empty ``displayPhrase`` — the source
+        # ships the voice entry but no text for it.  The crawler cannot invent
+        # that text, so counting them as expected units charges the store for
+        # something the publisher never provides.  They leave the denominator
+        # and are reported separately (:func:`source_unavailable_units`);
+        # records that do carry text stay in.
+        if record.get("id") is None:
+            continue
+        if not str(record.get("displayPhrase") or "").strip():
+            continue
+        expected["home_line"].add(f"home_line:{language}:{record.get('id')}")
 
     for record in _load_records(store_root, region, "mysekaiCharacterTalks", tables=tables):
+        # Overseas asset buckets ship no mysekai/talk Lua, so these rows have
+        # no text to crawl in en/tc/kr/cn — only jp publishes MySekai dialogue
+        # (``data_gaps: mysekai_overseas``).  Keeping them would report those
+        # four regions as 0% on a category nothing can ever fill; they leave
+        # the denominator and are reported in ``source_unavailable``.
+        if region != "jp":
+            continue
         if record.get("id") is not None:
             expected["mysekai_talk"].add(f"mysekai_talk:{language}:{record.get('id')}")
 
@@ -412,6 +428,51 @@ def excluded_units(
         if not _is_released(record, "startAt", now_ms, require_date=True)
     )
     return excluded
+
+
+def source_unavailable_units(
+    store_root: Path,
+    region: str,
+    tables: Optional[_RequestTables] = None,
+) -> dict[str, int]:
+    """Units the source is confirmed not to provide, per category.
+
+    Distinct from :func:`excluded_units`, which drops *future* content: these
+    units are in the past and permanently unfetchable, so keeping them in the
+    denominator would report a store as incomplete for text that does not
+    exist upstream.  Every entry here is backed by an observation recorded in
+    ``Core.data_gaps``; the number is the count of affected catalog rows, not
+    a guess.
+
+    Currently detected mechanically (no per-region manual list):
+
+    * ``home_line`` — ``characterArchiveVoices`` rows whose ``displayPhrase``
+      is empty.  The voice entry exists but the publisher ships no text; the
+      jp table is ~53% empty.
+    * ``mysekai_talk`` — overseas regions have no ``mysekai/talk`` Lua at all;
+      only jp publishes MySekai dialogue (``data_gaps: mysekai_overseas``).
+      jp is unaffected, so it reports 0 there.
+    """
+    unavailable: dict[str, int] = {}
+    empty_home_lines = sum(
+        1
+        for record in _load_records(store_root, region, "characterArchiveVoices", tables=tables)
+        if record.get("id") is not None
+        and not str(record.get("displayPhrase") or "").strip()
+    )
+    if empty_home_lines:
+        unavailable["text_home_line"] = empty_home_lines
+    if region != "jp":
+        # Overseas asset buckets carry no mysekai/talk Lua; the expected units
+        # for this category are therefore source-absent, not merely missing.
+        mysekai_talk = sum(
+            1
+            for record in _load_records(store_root, region, "mysekaiCharacterTalks", tables=tables)
+            if record.get("id") is not None
+        )
+        if mysekai_talk:
+            unavailable["text_mysekai_talk"] = mysekai_talk
+    return unavailable
 
 
 def _web_text_key(page: dict[str, Any]) -> Optional[str]:
@@ -526,6 +587,7 @@ def compute_progress(
     overall_text_expected = 0
     overall_text_matched = 0
     overall_excluded_total = 0
+    overall_source_unavailable_total = 0
 
     tables = _RequestTables(store_root, live, fetcher)
     for region in selected:
@@ -537,6 +599,14 @@ def compute_progress(
         excluded = excluded_units(store_root, region, now_ms, tables=tables)
         region_excluded_total = sum(excluded.values())
         overall_excluded_total += region_excluded_total
+        # Confirmed-unavailable units are counted, not subtracted again: the
+        # expected-unit builders above already skip them (see
+        # ``expected_text_units``'s home_line branch), so this number explains
+        # the gap the denominator would otherwise carry rather than changing
+        # the arithmetic a second time.
+        unavailable = source_unavailable_units(store_root, region, tables=tables)
+        region_unavailable_total = sum(unavailable.values())
+        overall_source_unavailable_total += region_unavailable_total
 
         fact_scores = _category_scores(fact_expected, fact_matched)
         text_scores = _category_scores(text_expected, text_matched)
@@ -575,6 +645,8 @@ def compute_progress(
             "text": text_scores,
             "excluded_units": excluded,
             "excluded_units_total": region_excluded_total,
+            "source_unavailable_units": unavailable,
+            "source_unavailable_units_total": region_unavailable_total,
             "overall": {
                 "expected_units": combined_expected,
                 "matched_units": combined_matched,
@@ -616,9 +688,35 @@ def compute_progress(
             "expected_units": combined_expected,
             "matched_units": combined_matched,
             "excluded_units_total": overall_excluded_total,
+            "source_unavailable_units_total": overall_source_unavailable_total,
             "denominator_complete": fact_complete and text_complete,
             "pct": _integer_percent(combined_matched, combined_expected) if fact_complete and text_complete else None,
             "known_subset_pct": _integer_percent(combined_matched, combined_expected),
+        },
+        "source_unavailable": {
+            "total_units": overall_source_unavailable_total,
+            "note": (
+                "Units the publisher is confirmed not to provide, already left out of "
+                "the denominator above: they are neither matched nor expected, so the "
+                "reported percentage measures what is actually obtainable. Reported "
+                "here so the exclusion stays visible and auditable."
+            ),
+            "by_region": {
+                region: row["source_unavailable_units"]
+                for region, row in region_results.items()
+                if row["source_unavailable_units"]
+            },
+            "reasons": {
+                "text_home_line": (
+                    "characterArchiveVoices rows whose displayPhrase is empty — the "
+                    "voice entry exists but the source ships no text (about 53% of the "
+                    "table). See Core.data_gaps: home_line."
+                ),
+                "text_mysekai_talk": (
+                    "Overseas asset buckets carry no mysekai/talk Lua, so only JP "
+                    "publishes MySekai dialogue. See Core.data_gaps: mysekai_overseas."
+                ),
+            },
         },
         "caveat": (
             "JP and overseas servers are roughly one year apart, but collab-style "
