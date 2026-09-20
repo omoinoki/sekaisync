@@ -505,6 +505,33 @@ def _news_body_host_allowed(url: str) -> bool:
     )
 
 
+def _official_body_url(record: dict[str, Any]) -> Optional[str]:
+    """The official announcement-body URL for a record, or ``None``.
+
+    The community index (``userInformations.json`` / baijing) is the
+    *discovery* layer; the announcement **body** lives on the publisher's own
+    host.  For jp/en the index carries only the webview path
+    (``information/index.html?id=info_xxx``) and the body fragment is
+    ``/html/<id>.html`` on the same host; for the ByteDance regions the index
+    already carries the full CDN article URL.
+
+    This is the fallback used when the indexed link itself does not yield a
+    body (and, via :func:`crawl_news_bodies`, to keep cached bodies on the
+    official copy rather than the community mirror).
+    """
+    url = str(record.get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+    parsed = urlparse(url)
+    if parsed.netloc in _SEKAI_WEB_HOSTS and parsed.path.endswith("index.html"):
+        info_id = (parse_qs(parsed.query).get("id") or [None])[0]
+        if info_id:
+            return f"{parsed.scheme}://{parsed.netloc}/html/{info_id}.html"
+    if _news_body_host_allowed(url):
+        return url
+    return None
+
+
 def crawl_news_bodies(
     store_root: Path,
     fetcher: Callable[[str], str] = fetch_http_text,
@@ -512,11 +539,15 @@ def crawl_news_bodies(
 ) -> dict[str, int]:
     """Fetch article bodies for news entries missing them.
 
-    ByteDance region news (cn/tc/kr) point at plain HTML article pages on
-    their CDN; jp/en webview pages are Nuxt shells with no fetchable body
-    and stay link-only. Entries that already have a body are skipped, so
-    repeated crawls are incremental. Only in-game hosts are fetched; social
-    media, questionnaires and official-site links stay link-only.
+    Bodies come from the publisher's own host — the ByteDance regions serve
+    plain HTML article pages on their CDN, and jp/en webview pages resolve to
+    a static ``/html/<id>.html`` fragment (:func:`_official_body_url`); social
+    media, questionnaires and official-site links stay link-only.  Entries
+    that already have a body are skipped, so repeated crawls are incremental.
+
+    Text keeps the article's line structure and marks illustration positions
+    as ``[<url>]`` (see :func:`extract_news_body_text`), so a cached
+    announcement stays readable and self-describing without the binary assets.
     """
     from sekaisync.news import load_news, news_summary, save_news
 
@@ -526,23 +557,14 @@ def crawl_news_bodies(
     for record in records:
         if record.get("body_available"):
             continue
-        url = str(record.get("url") or "")
-        if not url.startswith(("http://", "https://")):
+        body_url = _official_body_url(record)
+        if body_url is None:
+            if str(record.get("url") or "").startswith(("http://", "https://")):
+                skipped += 1
             continue
-        if not _news_body_host_allowed(url):
-            skipped += 1
-            continue
-        pending.append(record)
+        pending.append((record, body_url))
     fetched = 0
-    for record in pending:
-        url = str(record.get("url") or "")
-        # sekai-web information pages are Nuxt shells; the article body is a
-        # separate static fragment at /html/{id}.html on the same host.
-        parsed = urlparse(url)
-        if parsed.netloc in _SEKAI_WEB_HOSTS and parsed.path.endswith("index.html"):
-            info_id = (parse_qs(parsed.query).get("id") or [None])[0]
-            if info_id:
-                url = f"{parsed.scheme}://{parsed.netloc}/html/{info_id}.html"
+    for record, url in pending:
         try:
             html = fetcher(url)
         except Exception:  # noqa: BLE001 - keep link-only form on failure
@@ -553,10 +575,11 @@ def crawl_news_bodies(
             if delay:
                 time.sleep(delay)
             continue
-        text = re.sub(r"\s+", " ", extract_visible_text(html)).strip()
+        text = extract_news_body_text(html)
         if len(text) >= 200:
             record["text"] = text
             record["body_available"] = True
+            record["body_official_url"] = url
             fetched += 1
         if delay:
             time.sleep(delay)
@@ -990,6 +1013,106 @@ def extract_visible_text(html_text: str) -> str:
     parser.feed(html_text)
     lines = [line.strip() for line in "".join(parser.parts).splitlines() if line.strip()]
     return "\n".join(lines).strip()
+
+
+class _NewsBodyExtractor(HTMLParser):
+    """Announcement-body extraction that keeps the article's shape.
+
+    Two things the crawler's general-purpose ``_VisibleTextExtractor`` drops
+    and a cached announcement must not:
+
+    * **line structure** — official pages separate lines with ``<br>`` (the jp
+      gacha body has 109 of them) and paragraphs with block tags.  Collapsing
+      all whitespace flattened the whole announcement into one run-on line.
+    * **image positions** — an illustration sits at a specific point in the
+      text; dropping it silently loses information.  The placeholder is the
+      image URL in square brackets, e.g. ``[https://…/banner.png]``, so the
+      cached body stays self-describing without embedding binary assets.
+
+    Line breaks are emitted only *between* content, so blank/duplicate lines
+    cannot accumulate from adjacent block tags.
+    """
+
+    _SKIP_TAGS = {"script", "style", "noscript", "svg", "nav", "footer", "header"}
+    _BLOCK_TAGS = {
+        "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article", "table", "ul", "ol", "blockquote",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.skip_depth = 0
+        self.parts: list[str] = []
+        self._line_open = False
+
+    def _break_line(self) -> None:
+        """Start a new line, but never emit one before any content."""
+        if self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+        self._line_open = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self.skip_depth += 1
+            return
+        if self.skip_depth:
+            return
+        if tag == "br":
+            self._break_line()
+            return
+        if tag in self._BLOCK_TAGS:
+            self._break_line()
+            return
+        if tag == "img":
+            src = ""
+            for key, value in attrs:
+                if key in ("src", "data-src") and value:
+                    src = value
+                    break
+            if src:
+                self.parts.append(f"[{src}]")
+                self._line_open = True
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # XHTML-style self-closing tags never reach handle_starttag.
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self.skip_depth:
+            self.skip_depth -= 1
+            return
+        if self.skip_depth:
+            return
+        if tag in self._BLOCK_TAGS:
+            self._break_line()
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        value = " ".join(data.split())
+        if value:
+            self.parts.append(value)
+            self._line_open = True
+
+
+def extract_news_body_text(html_text: str) -> str:
+    """Announcement body as text, keeping line breaks and image placeholders.
+
+    Images become ``[<url>]`` at their position in the text; consecutive
+    blank lines collapse and no leading/trailing blank line is emitted.
+    """
+    parser = _NewsBodyExtractor()
+    parser.feed(html_text)
+    lines = [line.strip() for line in "".join(parser.parts).splitlines()]
+    compact: list[str] = []
+    for line in lines:
+        if line:
+            compact.append(line)
+        elif compact and compact[-1] != "":
+            compact.append("")
+    while compact and compact[-1] == "":
+        compact.pop()
+    return "\n".join(compact).strip()
 
 
 def extract_altsource_ms_page(html_text: str, url: str) -> WebPage:

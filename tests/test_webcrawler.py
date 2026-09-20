@@ -1616,5 +1616,161 @@ class InstanceHealthProbeTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+
+class NewsBodyExtractionTest(unittest.TestCase):
+    """Announcement bodies keep line structure and image positions.
+
+    The cached body is what a reader sees, so `<br>` line breaks must survive
+    (the official jp page uses 100+ of them) and an illustration must remain
+    visible as its URL rather than silently disappearing.
+    """
+
+    FIXTURE = (
+        '<div class="body">'
+        '<p class="banner"><img src="/images/information/banner.png" alt=""></p>'
+        '<div class="information-pre">'
+        '第一行です。<br>'
+        '<br>'
+        '第二行です。<br>'
+        '第三行です。'
+        '</div>'
+        '<p><img src="https://cdn.example.com/pic2.png" '
+        'data-src="https://cdn.example.com/ignored.png" alt=""></p>'
+        '<div>末尾の注意事項です。</div>'
+        '<script>var tracker = 1;</script>'
+        '<style>.x{color:red}</style>'
+        '</div>'
+    )
+
+    def test_line_breaks_are_preserved(self):
+        text = crawler_mod.extract_news_body_text(self.FIXTURE)
+        lines = text.splitlines()
+        for expected in ("第一行です。", "第二行です。", "第三行です。"):
+            self.assertIn(expected, lines)
+        self.assertGreaterEqual(
+            len(lines), 6,
+            "block tags and <br> must produce separate lines, not one run-on line",
+        )
+
+    def test_images_become_url_placeholders_in_position(self):
+        text = crawler_mod.extract_news_body_text(self.FIXTURE)
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "[/images/information/banner.png]")
+        self.assertIn("[https://cdn.example.com/pic2.png]", lines)
+        self.assertNotIn("ignored.png", text)
+
+    def test_script_and_style_are_dropped(self):
+        text = crawler_mod.extract_news_body_text(self.FIXTURE)
+        self.assertNotIn("tracker", text)
+        self.assertNotIn("color:red", text)
+
+    def test_blank_lines_do_not_accumulate(self):
+        text = crawler_mod.extract_news_body_text(
+            '<div><p>a</p><p></p><div></div><p>b</p></div>'
+        )
+        self.assertNotIn("\n\n\n", text)
+        self.assertFalse(text.startswith("\n"))
+        self.assertFalse(text.endswith("\n"))
+
+
+class OfficialBodyUrlTest(unittest.TestCase):
+    """The community index discovers announcements; the official host serves
+    their bodies. jp/en index entries carry only a webview path, so the body
+    fragment is derived; ByteDance entries already carry the CDN article."""
+
+    def test_jp_and_en_webview_paths_derive_html_fragment(self):
+        self.assertEqual(
+            crawler_mod._official_body_url({
+                "url": "https://production-web.sekai.colorfulpalette.org/"
+                       "information/index.html?id=info_gacha4006_held"}),
+            "https://production-web.sekai.colorfulpalette.org/html/info_gacha4006_held.html",
+        )
+        self.assertEqual(
+            crawler_mod._official_body_url({
+                "url": "https://n-production-web.sekai-en.com/"
+                       "information/index.html?id=info_event181_held"}),
+            "https://n-production-web.sekai-en.com/html/info_event181_held.html",
+        )
+
+    def test_bytedance_cdn_urls_are_used_as_is(self):
+        url = ("https://lf3-cdn-tos.draftstatic.com/obj/ies-hotsoon-draft/pjsk/"
+               "938d5962-1469-49b2-84dc-df3a654f17f5.html")
+        self.assertEqual(crawler_mod._official_body_url({"url": url}), url)
+
+    def test_social_and_relative_links_have_no_official_body(self):
+        self.assertIsNone(
+            crawler_mod._official_body_url({"url": "https://www.instagram.com/colorful_stage_en/"}))
+        self.assertIsNone(
+            crawler_mod._official_body_url({"url": "information/index.html?id=info_x"}))
+        self.assertIsNone(crawler_mod._official_body_url({}))
+
+
+class NewsBodyBackfillTest(unittest.TestCase):
+    """crawl_news_bodies fetches the official body, stores shaped text, and
+    records which official URL supplied it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="test_news_body_")
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name) / "store"
+        self.store.mkdir(parents=True, exist_ok=True)
+
+    def _record(self, **changes):
+        item = {
+            "source": "altsource_sv", "source_type": "sekai_viewer", "source_id": "7",
+            "language": "ja", "title": "T", "text": "link only",
+            "url": "https://production-web.sekai.colorfulpalette.org/"
+                   "information/index.html?id=info_gacha4006_held",
+            "body_available": False, "published_at": "2026-09-20T00:00:00+00:00",
+        }
+        item.update(changes)
+        return item
+
+    def test_body_is_fetched_from_official_host_with_shaped_text(self):
+        from sekaisync import news as news_mod
+        news_mod.save_news([self._record()], self.store)
+        body_html = (
+            '<div class="body">'
+            '<img src="/images/information/banner.png">'
+            '<div>' + '本文です。<br>' * 40 + '</div>'
+            '</div>'
+        )
+        seen = []
+
+        def fake_fetch(url):
+            seen.append(url)
+            return body_html
+
+        result = crawler_mod.crawl_news_bodies(self.store, fetcher=fake_fetch, delay=0)
+        self.assertEqual(result["fetched"], 1)
+        self.assertEqual(
+            seen, ["https://production-web.sekai.colorfulpalette.org/html/info_gacha4006_held.html"],
+            "the body must come from the official fragment, not the indexed webview path",
+        )
+        stored = news_mod.load_news(self.store)[0]
+        self.assertTrue(stored["body_available"])
+        self.assertIn("[/images/information/banner.png]", stored["text"])
+        self.assertGreater(stored["text"].count("\n"), 5, "line structure must survive caching")
+        self.assertEqual(
+            stored["body_official_url"],
+            "https://production-web.sekai.colorfulpalette.org/html/info_gacha4006_held.html",
+        )
+
+    def test_entries_with_bodies_are_skipped(self):
+        from sekaisync import news as news_mod
+        news_mod.save_news([self._record(body_available=True, text="already")], self.store)
+        result = crawler_mod.crawl_news_bodies(
+            self.store, fetcher=lambda url: self.fail("must not fetch"), delay=0)
+        self.assertEqual(result["fetched"], 0)
+
+    def test_out_of_scope_hosts_are_counted_not_fetched(self):
+        from sekaisync import news as news_mod
+        news_mod.save_news([self._record(url="https://www.instagram.com/x/")], self.store)
+        result = crawler_mod.crawl_news_bodies(
+            self.store, fetcher=lambda url: self.fail("must not fetch"), delay=0)
+        self.assertEqual(result["fetched"], 0)
+        self.assertEqual(result["skipped_out_of_scope"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

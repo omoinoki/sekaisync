@@ -451,6 +451,17 @@ def cmd_news_sync(args: argparse.Namespace) -> int:
         web_status=web_status,
         news_available=True,
     )
+    if getattr(args, "with_bodies", False):
+        # Bodies are fetched from the publisher's own host, not the community
+        # index that discovered the announcement (see crawler._official_body_url).
+        from sekaisync.crawler import crawl_news_bodies
+
+        bodies = crawl_news_bodies(config.store_root)
+        result["bodies"] = {
+            "pending": bodies["pending"],
+            "fetched": bodies["fetched"],
+            "skipped_out_of_scope": bodies["skipped_out_of_scope"],
+        }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -1776,6 +1787,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated instance IDs or backend class IDs; "
             "default: all enabled instances in settings order"
+        ),
+    )
+    p_news_sync.add_argument(
+        "--with-bodies",
+        action="store_true",
+        help=(
+            "Also fetch each announcement's body from its official host "
+            "(jp/en: /html/<id>.html; cn/tc/kr: the CDN article URL the index "
+            "already carries). Cached text keeps line breaks and marks image "
+            "positions as [<url>]."
         ),
     )
     p_news_sync.set_defaults(func=cmd_news_sync)
