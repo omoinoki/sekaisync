@@ -552,9 +552,23 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_progress(args: argparse.Namespace) -> int:
     config = config_from_args(args)
-    core = SekaiSyncCore(config.store_root)
+    # --live is the one mode that performs network work, and networked calls
+    # read their endpoints from the Core's runtime (P14) — the same wiring
+    # serve-http/serve-mcp use.  Plain runs stay runtime-less and local.
+    core = SekaiSyncCore(
+        config.store_root,
+        runtime=build_runtime(config) if args.live else None,
+    )
     regions = region_keys(args.regions.split(",") if args.regions else DEFAULT_REGION_ORDER)
-    result = core.progress(regions=list(regions), live=args.live, master_base=config.viewer.master_base)
+    # master_base used to be passed unconditionally, which sent every run down
+    # Core.progress's live branch — that branch needs a runtime the old code
+    # never built, so `progress` (the command that writes the progress.json
+    # the desktop reads) failed outright instead of producing the file.
+    result = core.progress(
+        regions=list(regions),
+        live=args.live,
+        master_base=config.viewer.master_base if args.live else None,
+    )
     from sekaisync.progress import save_progress
 
     save_progress(config.store_root, result)

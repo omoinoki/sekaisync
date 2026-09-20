@@ -314,5 +314,48 @@ class ProgressTest(unittest.TestCase):
         )
 
 
+class ProgressCommandTest(unittest.TestCase):
+    """The CLI must actually produce progress.json.
+
+    ``cmd_progress`` passed ``master_base`` unconditionally, which sent every
+    run down ``Core.progress``'s live branch — a branch that needs a
+    RuntimeContext the command never built.  The result was a hard failure on
+    plain ``progress``, so the file the desktop reads was never written.
+    """
+
+    def test_plain_progress_writes_a_snapshot(self):
+        import argparse
+        from unittest.mock import patch
+        from sekaisync import cli
+        from sekaisync.config import SekaiSyncConfig
+        from sekaisync.layout import progress_path
+
+        tmp = tempfile.TemporaryDirectory(prefix="test_progress_cli_")
+        self.addCleanup(tmp.cleanup)
+        store = Path(tmp.name) / "store"
+        ProgressTest()._write_store(store)
+
+        # A real configuration carries a master_base (it comes from
+        # settings.json), which is exactly what used to push the command into
+        # the networked branch.  Leaving it empty here would let the bug back in.
+        from sekaisync.config import SiteSettings, ViewerSettings
+        config = SekaiSyncConfig(
+            store_root=store,
+            sites=(SiteSettings(
+                id="altsource_sv", backend="sekai_viewer", name="Sekai Viewer",
+                enabled=True,
+                viewer=ViewerSettings(master_base="https://sekai-world.github.io"),
+            ),),
+        )
+        args = argparse.Namespace(store=str(store), regions=None, live=False, plain=False)
+        with patch.object(cli, "config_from_args", return_value=config):
+            code = cli.cmd_progress(args)
+        self.assertEqual(code, 0)
+        path = progress_path(store)
+        self.assertTrue(path.exists(), "progress.json was not written by the command")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("overall", snapshot)
+
+
 if __name__ == "__main__":
     unittest.main()
