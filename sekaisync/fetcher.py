@@ -1008,7 +1008,10 @@ def _build_freshness(
             master_available=master_available,
         ),
         "versions": _region_versions(config, regions, roots),
-        "sources": build_source_manifest(config.sites),
+        # Pass the whole config: the manifest resolves master-repo URLs from
+        # github_tarball_base as well, so it reports what this install actually
+        # reads rather than a hardcoded deployment's addresses.
+        "sources": build_source_manifest(config=config),
         "web": web_status or {
             "enabled": False,
             "consent": False,

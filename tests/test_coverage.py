@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from sekaisync.coverage import build_coverage, build_source_manifest
 
@@ -32,14 +33,47 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(coverage["story_metadata"]["status"], "missing")
         self.assertEqual(coverage["story_full_text"]["status"], "partial")
 
-    def test_manifest_exposes_fetcher_and_source_urls(self):
-        manifest = build_source_manifest()
+    def test_manifest_exposes_fetcher_and_resolved_source_urls(self):
+        """Master URLs are resolved from config, not hardcoded.
+
+        The manifest may only report addresses the install is configured to
+        read, so an unconfigured profile yields no master URLs at all.
+        """
+        from sekaisync.config import SekaiSyncConfig
+
+        manifest = build_source_manifest(sites=())
         master = next(item for item in manifest if item["key"] == "master_db")
         self.assertEqual(master["fetcher"], "fetch_region")
-        self.assertTrue(any("github.com/Sekai-World" in url for url in master["source_urls"]))
+        self.assertEqual(
+            master["source_urls"], [],
+            "an unconfigured profile must not claim any master address",
+        )
+
+        # With a config, the same row resolves from github_tarball_base + repo_slug.
+        config = SekaiSyncConfig(
+            store_root=Path("."), github_tarball_base="https://github.com", sites=()
+        )
+        configured = next(
+            item for item in build_source_manifest(config=config) if item["key"] == "master_db"
+        )
+        self.assertEqual(
+            configured["source_urls"],
+            [
+                "https://github.com/Sekai-World/sekai-master-db-diff",
+                "https://github.com/Sekai-World/sekai-master-db-en-diff",
+                "https://github.com/Sekai-World/sekai-master-db-tc-diff",
+                "https://github.com/Sekai-World/sekai-master-db-kr-diff",
+                "https://github.com/Sekai-World/sekai-master-db-cn-diff",
+            ],
+        )
+        self.assertNotIn(
+            "sekai-world.github.io",
+            " ".join(configured["source_urls"]),
+            "the catalog must not carry a second hardcoded host",
+        )
 
     def test_manifest_follows_configured_sites(self):
-        from sekaisync.config import MoesekaiSettings, SiteSettings, ViewerSettings
+        from sekaisync.config import MoesekaiSettings, SekaiSyncConfig, SiteSettings, ViewerSettings
 
         sites = [
             SiteSettings(
@@ -66,7 +100,12 @@ class CoverageTest(unittest.TestCase):
                 ),
             ),
         ]
-        manifest = build_source_manifest(sites)
+        config = SekaiSyncConfig(
+            store_root=Path("."),
+            github_tarball_base="https://github.com",
+            sites=tuple(sites),
+        )
+        manifest = build_source_manifest(config=config)
         by_key = {item["key"]: item for item in manifest}
         self.assertEqual(
             by_key["story_full_text"]["source_urls"],
@@ -76,20 +115,21 @@ class CoverageTest(unittest.TestCase):
             "https://mirror.example.com/sitemap.xml",
             by_key["web_text"]["source_urls"],
         )
-        # Official news keeps the static GitHub master userInformations source
-        # and appends the configured news mirror.
+        # News follows the configured instances only: the mirror's news base and
+        # the viewer's master base that serves region userInformations.json.
         self.assertEqual(
             by_key["official_news"]["source_urls"],
-            ["https://sekai-world.github.io", "https://mirror.example.com/news"],
+            ["https://mirror.example.com/news", "https://viewer.local/master"],
         )
-        # The GitHub master fact layer never follows the site profile.
+        # The master fact layer resolves from config too, not from a literal.
         self.assertTrue(
-            any("github.com/Sekai-World" in url for url in by_key["master_db"]["source_urls"])
+            every.startswith("https://github.com/Sekai-World/")
+            for every in by_key["master_db"]["source_urls"]
         )
-        self.assertTrue(
-            all("sekai-world.github.io" in url for url in by_key["story_metadata"]["source_urls"])
+        self.assertEqual(
+            by_key["binary_assets"]["source_urls"],
+            ["https://viewer.local/assets", "https://mirror.example.com/storage"],
         )
-        self.assertEqual(by_key["binary_assets"]["source_urls"], ["https://storage.sekai.best"])
         self.assertEqual(by_key["official_localized_names"]["source_urls"], [])
 
 
