@@ -28,6 +28,21 @@ store/cache/
 work/
 
 settings.json.legacy
+# Local working copy of settings.json, holding real instance endpoints.
+#
+# The tracked `settings.json` is a skeleton: the two backend-class entries keep
+# their full field structure but every endpoint is empty, and the README shows
+# `<placeholder>` values. Real endpoints are a local test/production choice and
+# must not reach the remote — publishing one instance's address would read as
+# an endorsement of that instance, which is not what the project promises
+# (README: "does not imply that SekaiSync endorses or suggests connecting to
+# any particular instance").
+#
+# `settings.json` itself also carries the skip-worktree flag, so a local edit
+# there is neither committed nor clobbered by checkout. This rule covers the
+# extra copies a workspace may keep.
+settings.local.json
+settings.*.local.json
 docs/
 HANDOFF.md
 .tmp-test/
