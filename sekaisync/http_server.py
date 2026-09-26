@@ -582,8 +582,9 @@ def mcp_discovery_document() -> dict:
     """MCP 发现清单（``/.well-known/mcp.json``）。
 
     工具列表**从 tools 注册表实时生成**，不手写——手写副本迟早与本尊漂移
-    （这个项目的文档数字漂移已是一类被记录过的问题）。同生态先例：
-    ``https://pjsk.moe/.well-known/mcp.json``，Agent 可零配置自动发现。
+    （这个项目的文档数字漂移已是一类被记录过的问题）。同生态的社区资料站
+    已有在 ``/.well-known/mcp.json`` 发布 MCP 发现清单的先例，Agent 可零配置
+    自动发现；此处沿用同一约定，不指向任何特定站点。
     """
     return {
         "name": "SekaiSync",

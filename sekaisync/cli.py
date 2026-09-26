@@ -1739,7 +1739,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_progress.add_argument(
         "--live",
         action="store_true",
-        help="Refresh activity schedules from sekai-world.github.io before computing",
+        help=(
+            "Refresh activity schedules from the configured Sekai Viewer "
+            "instance before computing (requires master_base in settings.json)"
+        ),
     )
     p_progress.add_argument(
         "--plain",
