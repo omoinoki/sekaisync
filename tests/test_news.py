@@ -507,3 +507,93 @@ class NewsIdentityTest(unittest.TestCase):
         merged = merge_news([self._record(body_available=False)])
         self.assertEqual(len(merged), 1)
         self.assertFalse(merged[0]["body_available"])
+
+    def test_metadata_refresh_preserves_fetched_body(self):
+        """A metadata refresh must not discard a fetched article body.
+
+        Sync re-fetches metadata for every announcement; those records carry no
+        body and win the merge on fetch recency, so without preservation one
+        routine sync silently wiped every cached body in the real store
+        (2,093 -> 55). The body belongs to the announcement's page.
+        """
+        body = self._record(
+            source_id="10840",
+            url="https://example.com/article.html",
+            text="公告正文全文",
+            body_available=True,
+            body_official_url="https://example.com/html/info_x.html",
+            fetched_at="2026-09-20T00:00:00+00:00",
+        )
+        refresh = self._record(
+            source_id="10840",
+            url="https://example.com/article.html",
+            text="公告A\ngacha\nnormal",
+            body_available=False,
+            fetched_at="2026-09-26T00:00:00+00:00",
+        )
+        merged = merge_news([refresh, body])
+        self.assertTrue(merged[0]["body_available"])
+        self.assertEqual(merged[0]["text"], "公告正文全文")
+        self.assertEqual(
+            merged[0]["body_official_url"], "https://example.com/html/info_x.html"
+        )
+
+    def test_body_is_dropped_when_upstream_revises_the_announcement(self):
+        """A strictly newer upstream revision may have new content: the cached
+        body describes the old revision and must not be served. The next
+        --with-bodies run refetches it."""
+        old_body = self._record(
+            url="https://example.com/article.html",
+            text="旧正文",
+            body_available=True,
+            updated_at="2026-09-01T00:00:00+00:00",
+            fetched_at="2026-09-20T00:00:00+00:00",
+        )
+        revised = self._record(
+            url="https://example.com/article.html",
+            text="元数据",
+            body_available=False,
+            updated_at="2026-09-10T00:00:00+00:00",
+            fetched_at="2026-09-26T00:00:00+00:00",
+        )
+        merged = merge_news([revised, old_body])
+        self.assertFalse(merged[0]["body_available"])
+
+    def test_body_is_dropped_when_the_page_address_moves(self):
+        """The cached body belongs to a concrete page. If the indexed address
+        moved, the text describes a different page and must not be reused."""
+        old_body = self._record(
+            url="https://example.com/article.html",
+            text="旧页正文",
+            body_available=True,
+            fetched_at="2026-09-20T00:00:00+00:00",
+        )
+        moved = self._record(
+            url="https://example.com/other-page.html",
+            text="元数据",
+            body_available=False,
+            fetched_at="2026-09-26T00:00:00+00:00",
+        )
+        merged = merge_news([moved, old_body])
+        self.assertFalse(merged[0]["body_available"])
+
+    def test_records_that_both_carry_a_body_merge_without_loss(self):
+        """A double backfill (or mirror + canonical both fetched) keeps one
+        body-bearing record, chosen by the normal revision rules."""
+        first = self._record(
+            url="https://example.com/article.html",
+            text="正文一",
+            body_available=True,
+            body_official_url="https://example.com/html/a.html",
+            fetched_at="2026-09-20T00:00:00+00:00",
+        )
+        second = self._record(
+            url="https://example.com/article.html",
+            text="正文二",
+            body_available=True,
+            body_official_url="https://example.com/html/a.html",
+            fetched_at="2026-09-26T00:00:00+00:00",
+        )
+        merged = merge_news([second, first])
+        self.assertTrue(merged[0]["body_available"])
+        self.assertIn(merged[0]["text"], {"正文一", "正文二"})

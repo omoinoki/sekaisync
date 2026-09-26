@@ -297,6 +297,62 @@ def fetch_altsource_sv_game_news(
     return records
 
 
+def _has_fetched_body(record: dict[str, Any]) -> bool:
+    """Whether this record carries an article body (not just metadata)."""
+    return bool(record.get("body_available")) and bool(str(record.get("text") or "").strip())
+
+
+def _strictly_newer_revision(new: dict[str, Any], old: dict[str, Any]) -> bool:
+    """Whether ``new`` is a strictly newer upstream revision than ``old``.
+
+    Compares the same evidence :func:`_prefer_record` does — source version,
+    then upstream update instant. Fetch instants are deliberately excluded:
+    they advance on every metadata refresh and say nothing about the content.
+    """
+    for old_v, new_v in (
+        (_source_version(old), _source_version(new)),
+        (_revision_time(old), _revision_time(new)),
+    ):
+        if old_v is not None and new_v is not None and new_v != old_v:
+            return new_v > old_v
+    return False
+
+
+def _with_preserved_body(
+    winner: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Keep a fetched article body across metadata-only refreshes.
+
+    A news sync re-fetches metadata for every announcement; those fresh records
+    carry no body and win the merge on fetch recency, so without this step one
+    metadata sync silently discarded every body ever backfilled (the real store
+    went 2,093 bodies -> 55). A body belongs to the announcement's page, not to
+    the refresh that fetched it, so when the merge winner has none, the body is
+    carried over from a same-identity record — unless the upstream revision
+    moved past it (a re-published announcement gets fresh text on the next
+    ``--with-bodies`` run instead of silently serving the old one).
+    """
+    if _has_fetched_body(winner):
+        return winner
+    winner_url = str(winner.get("url") or "")
+    for candidate in candidates:
+        if candidate is winner or not _has_fetched_body(candidate):
+            continue
+        # The body belongs to a concrete page: if the indexed address moved on,
+        # the cached text describes a different page and must not be reused.
+        if winner_url and str(candidate.get("url") or "") != winner_url:
+            continue
+        if _strictly_newer_revision(winner, candidate):
+            continue
+        preserved = dict(winner)
+        for field in ("text", "body_available", "body_official_url"):
+            if field in candidate:
+                preserved[field] = candidate[field]
+        return preserved
+    return winner
+
+
 def merge_news(
     records: Iterable[dict[str, Any]],
     source_priority: Iterable[str] = DEFAULT_SOURCE_PRIORITY,
@@ -306,21 +362,27 @@ def merge_news(
     Identity comes from :func:`news_identity` (namespace / upstream id /
     language), so two announcements that share a title but have different
     upstream ids are both kept (Astra D17: "同标题不同 ID 均保留").
+
+    A fetched article body survives the merge: metadata refreshes arrive
+    body-less and win on fetch recency, but the body belongs to the
+    announcement's page, so it is carried into the winner unless the upstream
+    revision moved past it (see :func:`_with_preserved_body`).
     """
     priority = tuple(normalize_source_id(item) for item in source_priority)
-    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for record in records:
         if _is_website_announcement(record):
             continue
-        key = news_identity(record)
-        existing = merged.get(key)
-        if existing is None:
-            merged[key] = dict(record)
-            continue
-        if _prefer_record(existing, record, priority):
-            merged[key] = dict(record)
+        grouped.setdefault(news_identity(record), []).append(dict(record))
+    merged: list[dict[str, Any]] = []
+    for candidates in grouped.values():
+        winner = candidates[0]
+        for candidate in candidates[1:]:
+            if _prefer_record(winner, candidate, priority):
+                winner = candidate
+        merged.append(_with_preserved_body(winner, candidates))
     return sorted(
-        merged.values(),
+        merged,
         key=lambda item: (item.get("language", ""), item.get("start_at") or ""),
     )
 
