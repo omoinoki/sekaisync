@@ -47,6 +47,22 @@ docs/
 HANDOFF.md
 .tmp-test/
 
+# Generated analysis artifacts under data/.
+#
+# `data/` holds two very different things. Only term-annotations.json is an
+# input: the maintainer's manual segmentation of Simplified Chinese story text,
+# read at runtime by sekaisync.zhfirst and reproducible by nobody. Everything
+# else there is derived from a local store — noun tables exported from terms,
+# audit reports over those tables, weight tables and the generated baseline
+# block inside BASELINE.md. They are rebuildable by re-running the scripts
+# against a store you built yourself, they run to ~18 MB, and they are exports
+# of game-derived data, which this repository states it does not bundle
+# (data/reports/BASELINE.md: "本仓库不捆绑任何游戏数据").
+#
+# The files stay on disk; the scripts keep working locally.
+data/**
+!data/term-annotations.json
+
 frontends/WinUI3/
 frontends/WinUI3/bin/
 frontends/WinUI3/obj/
