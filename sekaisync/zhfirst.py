@@ -1,6 +1,6 @@
 """zh-first terminology pipeline (人工标准复刻).
 
-以 `docs/term-annotations.json` 的人工标注为黄金标准反推的抽取算法：
+以 `data/term-annotations.json` 的人工标注为黄金标准反推的抽取算法：
 
 1. 候选主位是简中正文（zh_hans），不是日文。
 2. 每行剥离冒号前发言人（说话人不是术语）。
@@ -215,7 +215,7 @@ def load_manual_annotations() -> dict[str, list[str]]:
 def _load_manual_seed() -> set[str]:
     """Seed vocabulary: the union of all annotated terms.
 
-    See `docs/term-annotations.json` for provenance and caveats."""
+    See `data/term-annotations.json` for provenance and caveats."""
     out: set[str] = set()
     for terms in load_manual_annotations().values():
         for term in terms:
@@ -838,7 +838,7 @@ def extract_terms_zhfirst(
                                 min_entropy=1.0, max_chars=3_500_000,
                                 boundary_stop_chars=_ZH_FUNCTION_CHARS)
 
-    # 人工标注种子：把 docs/term-annotations.json 的词并入候选词典，2 字通用词
+    # 人工标注种子：把 data/term-annotations.json 的词并入候选词典，2 字通用词
     # （贝斯/网球/美元）靠人工词表直接命中，不再依赖统计。
     from sekaisync.termindex import group_pages_by_story as _gps  # noqa
     seed = _load_manual_seed()
