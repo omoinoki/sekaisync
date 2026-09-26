@@ -189,8 +189,14 @@ def fetch_altsource_ms_news(
             information_type,
             path,
         ]
+        # The upstream list omits the domain on most entries: ``path`` is
+        # relative to the instance's announcement pages. Complete it here —
+        # storing the bare path leaked into the published generations as
+        # unclickable, unfetchable records (97 ja entries as of 2026-09-26).
+        # A scheme-qualified value (https://, weixin://, alipays:// deep links)
+        # is already absolute and passes through untouched.
         page_url = path
-        if path and not path.startswith(("http://", "https://", "weixin://")):
+        if path and "://" not in path:
             web_base = _NEWS_WEB_BASES.get(region)
             page_url = f"{web_base}/{path.lstrip('/')}" if web_base else path
         records.append(
@@ -202,7 +208,7 @@ def fetch_altsource_ms_news(
                 "language": language,
                 "title": title,
                 "text": "\n".join(part for part in text_parts if part).strip(),
-                "url": path,
+                "url": page_url,
                 "start_at": _iso(start),
                 "end_at": _iso(end),
                 "published_at": _iso(start),
@@ -265,7 +271,7 @@ def fetch_altsource_sv_game_news(
             path,
         ]
         page_url = path
-        if path and not path.startswith(("http://", "https://")):
+        if path and "://" not in path:
             web_base = _NEWS_WEB_BASES.get(region)
             page_url = f"{web_base}/{path.lstrip('/')}" if web_base else path
         records.append(
@@ -875,9 +881,11 @@ def sync_news(
         stored = load_news(store_root)
         # Complete relative URLs on legacy stored entries (fetch functions now
         # emit absolute URLs; older snapshots predate the web-domain mapping).
+        # The "://" check leaves every scheme-qualified value alone — app deep
+        # links (weixin://, alipays://) are identifiers, not pages to prefix.
         for record in stored:
             url = str(record.get("url") or "")
-            if url and not url.startswith(("http://", "https://", "weixin://")):
+            if url and "://" not in url:
                 language = str(record.get("language") or "")
                 region = {"ja": "jp", "en": "en", "ko": "kr", "zh_hant": "tc", "zh_hans": "cn"}.get(language)
                 web_base = _NEWS_WEB_BASES.get(region)

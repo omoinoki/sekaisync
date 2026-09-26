@@ -430,10 +430,6 @@ class NewsTest(unittest.TestCase):
             self.assertEqual({r["source"] for r in records}, {"altsource_sv", "altsource_sv_local"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class NewsIdentityTest(unittest.TestCase):
     """Astra P17/D17: identity is namespace + upstream id + language, not title.
 
@@ -597,3 +593,84 @@ class NewsIdentityTest(unittest.TestCase):
         merged = merge_news([second, first])
         self.assertTrue(merged[0]["body_available"])
         self.assertIn(merged[0]["text"], {"正文一", "正文二"})
+
+
+
+class MsNewsFetcherUrlCompletionTest(unittest.TestCase):
+    """The jp news list omits the domain on most entries: ``path`` is relative
+    to the announcement pages. The fetcher must attach the instance's
+    announcement host, otherwise the record ships unclickable and the body
+    backfill cannot find a page to fetch (97 ja entries as of 2026-09-26).
+    Scheme-qualified values (app deep links) are identifiers and pass through.
+    """
+
+    def _fetch(self, items, region="jp"):
+        import json as _json
+        from sekaisync.config import MoesekaiSettings
+        from sekaisync.news import fetch_altsource_ms_news
+
+        payload = _json.dumps({"informations": items}, ensure_ascii=False)
+        seen = []
+        def fake_fetcher(url):
+            seen.append(url)
+            return payload
+        records = fetch_altsource_ms_news(
+            region,
+            fetcher=fake_fetcher,
+            settings=MoesekaiSettings(news_base="https://mirror.example.com"),
+        )
+        return records, seen
+
+    def test_relative_path_gets_the_announcement_host(self):
+        records, seen = self._fetch([
+            {"id": "6523", "title": "ガチャ開催",
+             "path": "information/index.html?id=info_gacha4012_held",
+             "informationTag": "gacha", "informationType": "normal",
+             "startAt": 1789000000000},
+        ])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            records[0]["url"],
+            "https://production-web.sekai.colorfulpalette.org/"
+            "information/index.html?id=info_gacha4012_held",
+        )
+        self.assertTrue(seen[0].startswith("https://mirror.example.com/jp/information"))
+
+    def test_absolute_and_deep_link_paths_pass_through(self):
+        records, _ = self._fetch([
+            {"id": "1", "title": "CDN 页",
+             "path": "https://cdn.example.com/obj/page.html",
+             "startAt": 1789000000000},
+            {"id": "2", "title": "小程序",
+             "path": "weixin://dl/business/?appid=wxa",
+             "startAt": 1789000000000},
+            {"id": "3", "title": "支付宝",
+             "path": "alipays://platformapi/startapp?appId=1",
+             "startAt": 1789000000000},
+        ])
+        by_id = {r["source_id"]: r["url"] for r in records}
+        self.assertEqual(by_id["1"], "https://cdn.example.com/obj/page.html")
+        self.assertEqual(by_id["2"], "weixin://dl/business/?appid=wxa")
+        self.assertEqual(
+            by_id["3"], "alipays://platformapi/startapp?appId=1",
+            "deep links must never be prefixed into mangled https URLs",
+        )
+
+    def test_body_url_is_derivable_for_backfill(self):
+        from sekaisync.crawler import _official_body_url
+
+        records, _ = self._fetch([
+            {"id": "6523", "title": "ガチャ開催",
+             "path": "information/index.html?id=info_gacha4012_held",
+             "informationTag": "gacha", "informationType": "normal",
+             "startAt": 1789000000000},
+        ])
+        self.assertEqual(
+            _official_body_url(records[0]),
+            "https://production-web.sekai.colorfulpalette.org/"
+            "html/info_gacha4012_held.html",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
