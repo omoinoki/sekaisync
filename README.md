@@ -129,6 +129,7 @@ To use `crawl` (community story text crawling) or custom news sources, configure
       "id": "altsource_sv",
       "backend": "sekai_viewer",
       "enabled": true,
+      "site_base": "<your_site_address>",
       "master_base": "<your_master_endpoint>",
       "asset_base": "<your_asset_endpoint>",
       "asset_buckets": { "jp": "<your_jp_asset_bucket>" },

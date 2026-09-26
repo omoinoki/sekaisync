@@ -287,8 +287,19 @@ class MoesekaiSettings:
 
 @dataclass(frozen=True)
 class ViewerSettings:
-    """Endpoint settings for one sekai_viewer-backend instance (altsource_sv class)."""
+    """Endpoint settings for one sekai_viewer-backend instance (altsource_sv class).
 
+    ``site_base`` is the instance's human-facing website — the address to open
+    when cross-referencing what this instance serves (for the canonical
+    deployment, the project's own front page).  It is deliberately **not** a
+    fetch source: this backend reads master data from ``master_base``, assets
+    from ``asset_base`` and i18n from ``i18n_base``, none of which need to sit
+    on the same host as the site.  The field exists so configuration, the
+    ``sites`` endpoints and agents can state which deployment an instance
+    corresponds to instead of guessing the hostname.
+    """
+
+    site_base: str = ""
     master_base: str = ""
     asset_base: str = ""
     asset_buckets: tuple[tuple[str, str], ...] = (
@@ -321,6 +332,7 @@ class ViewerSettings:
                 if isinstance(item, (list, tuple)) and len(item) == 2:
                     buckets.append((str(item[0]), str(item[1])))
         return cls(
+            site_base=str(data.get("site_base", cls.site_base)),
             master_base=str(data.get("master_base", cls.master_base)),
             asset_base=str(data.get("asset_base", cls.asset_base)),
             asset_buckets=tuple(buckets) if buckets else cls.asset_buckets,
@@ -329,6 +341,7 @@ class ViewerSettings:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "site_base": self.site_base,
             "master_base": self.master_base,
             "asset_base": self.asset_base,
             "asset_buckets": {key: value for key, value in self.asset_buckets},

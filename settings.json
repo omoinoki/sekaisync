@@ -2,6 +2,7 @@
   "version": 2,
   "sites": [
     {
+      "site_base": "",
       "id": "altsource_sv",
       "backend": "sekai_viewer",
       "name": "Self-hosted Sekai Viewer instance (example)",
