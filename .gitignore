@@ -6,9 +6,11 @@
 # web_search_index.db` is ~341 MB, and an unwary `git add` would have committed
 # it. Anything a collaborator also needs ignored belongs here instead.
 #
-# NOTE: `work/` is ignored by these local rules but is deliberately tracked with
-# `git add -f` for the small subset of audit/handoff documents that must travel
-# with the branch (see work/CHECKPOINT.md).
+# NOTE: `work/` is ignored by these local rules. Two things inside it are
+# deliberately tracked with `git add -f`: the release notes and
+# `work/contract_snapshots/`, which the contract tests compare against. The
+# rest — checkpoint ledgers, audit reports, verifier output, performance
+# scratch — is development process, not something a clone needs.
 
 __pycache__/
 *.py[cod]
@@ -63,7 +65,16 @@ HANDOFF.md
 data/**
 !data/term-annotations.json
 
-frontends/WinUI3/
+# One-off repository surgery: carved the desktop front-end out into its own
+# repo. The job is done, the script carries author-machine paths as defaults,
+# and nothing imports the seed tree it copies from. Kept on disk for local
+# reuse; not part of what a clone needs.
+scripts/repo-split/
+
+# The desktop client lives in its own repository (omoinoki/sekaisync-winui3) and
+# is meant to be mounted here as a submodule. Only its build output is ignored:
+# a path-wide rule would make `git submodule add frontends/WinUI3` silently do
+# nothing, because ignore rules are consulted before the submodule is recorded.
 frontends/WinUI3/bin/
 frontends/WinUI3/obj/
 
