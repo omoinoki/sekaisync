@@ -1,0 +1,3 @@
+[submodule "frontends/WinUI3"]
+	path = frontends/WinUI3
+	url = https://github.com/omoinoki/sekaisync-winui3.git
