@@ -41,6 +41,7 @@
         "known_subset_pct": "NoneType",
         "matched_units": "int",
         "pct": "NoneType",
+        "source_unavailable_units_total": "int",
         "text": {
           "denominator_complete": "...",
           "expected_units": "...",
@@ -59,6 +60,8 @@
           "language": "...",
           "live_state": "...",
           "overall": "...",
+          "source_unavailable_units": "...",
+          "source_unavailable_units_total": "...",
           "table_states": "...",
           "text": "..."
         },
@@ -71,6 +74,8 @@
           "language": "...",
           "live_state": "...",
           "overall": "...",
+          "source_unavailable_units": "...",
+          "source_unavailable_units_total": "...",
           "table_states": "...",
           "text": "..."
         },
@@ -83,6 +88,8 @@
           "language": "...",
           "live_state": "...",
           "overall": "...",
+          "source_unavailable_units": "...",
+          "source_unavailable_units_total": "...",
           "table_states": "...",
           "text": "..."
         },
@@ -95,6 +102,8 @@
           "language": "...",
           "live_state": "...",
           "overall": "...",
+          "source_unavailable_units": "...",
+          "source_unavailable_units_total": "...",
           "table_states": "...",
           "text": "..."
         },
@@ -107,11 +116,22 @@
           "language": "...",
           "live_state": "...",
           "overall": "...",
+          "source_unavailable_units": "...",
+          "source_unavailable_units_total": "...",
           "table_states": "...",
           "text": "..."
         }
       },
-      "requested_live": "bool"
+      "requested_live": "bool",
+      "source_unavailable": {
+        "by_region": {},
+        "note": "str",
+        "reasons": {
+          "text_home_line": "...",
+          "text_mysekai_talk": "..."
+        },
+        "total_units": "int"
+      }
     },
     "store": "str",
     "terms": {
