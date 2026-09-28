@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -35,33 +36,92 @@ from sekaisync.tools import (
 # ---------------------------------------------------------------------------
 MAX_BODY_BYTES = 1024 * 1024  # one request body
 BODY_READ_TIMEOUT_SECONDS = 10  # a slow body must not hold a worker forever
-MAX_CONCURRENT_REQUESTS = 16  # concurrency cap for the threaded server
+MAX_CONCURRENT_REQUESTS = 16  # active handlers and accepted connection workers
+HEADER_READ_TIMEOUT_SECONDS = 10  # idle partial headers must release their worker
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
-def is_loopback_host(host: str) -> bool:
-    """True when ``host`` denotes this machine only.
-
-    Wildcard binds (``0.0.0.0``, ``::``, ``*``) are deliberately NOT
-    loopback: they expose the port on every interface, which is exactly the
-    unauthenticated remote deployment P15 refuses.
-    """
-    token = (host or "").strip().strip("[]").lower()
-    if token in LOOPBACK_HOSTS:
-        return True
-    if token in {"0.0.0.0", "::", "*"}:
-        return False
+def _loopback_addresses(host: str) -> list[tuple[int, str]]:
+    """Resolve once, rejecting names with even one non-loopback answer."""
+    token = (host or "").strip().lower()
+    if token.startswith("[") and token.endswith("]"):
+        token = token[1:-1]
+    if not token or token == "*":
+        return []
     try:
-        infos = socket.getaddrinfo(token, None)
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
-    for info in infos:
-        addr = info[4][0]
-        if addr.startswith("127."):
-            return True
-        if addr in {"::1", "0:0:0:0:0:0:0:1"}:
-            return True
-    return False
+        address = ipaddress.ip_address(token)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(token, None, type=socket.SOCK_STREAM)
+        except (socket.gaierror, UnicodeError, OSError):
+            return []
+        result = []
+        for family, _type, _proto, _canon, sockaddr in infos:
+            if family not in (socket.AF_INET, socket.AF_INET6):
+                return []
+            try:
+                address = ipaddress.ip_address(sockaddr[0])
+            except ValueError:
+                return []
+            if not address.is_loopback:
+                return []
+            pair = (family, str(address))
+            if pair not in result:
+                result.append(pair)
+        return result
+    if not address.is_loopback:
+        return []
+    family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+    return [(family, str(address))]
+
+
+def is_loopback_host(host: str) -> bool:
+    """True only for literal loopback or exclusively loopback DNS answers."""
+    return bool(_loopback_addresses(host))
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Reserve capacity before a partial HTTP request can spawn a worker.
+
+    The handler-level semaphore remains the tool execution boundary. This
+    separate connection cap also covers sockets still reading their headers.
+    """
+
+    def __init__(self, server_address, handler, *, address_family=socket.AF_INET):
+        self.address_family = address_family
+        self.connection_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+        super().__init__(server_address, handler)
+
+    def process_request(self, request, client_address):
+        if not self.connection_slots.acquire(blocking=False):
+            body = b'{"error": "Server is busy; retry shortly"}'
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json; charset=utf-8\r\n"
+                b"Connection: close\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
+            )
+            try:
+                # Rejection must not block the accept loop on a slow reader.
+                request.settimeout(0.1)
+                request.sendall(response)
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            request.settimeout(HEADER_READ_TIMEOUT_SECONDS)
+            super().process_request(request, client_address)
+        except BaseException:
+            self.connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_slots.release()
 
 
 # The OpenAPI document is DERIVED from the ToolSpec/Param registry in
@@ -79,6 +139,21 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
     bound_port: int = 0
     allowed_origins: tuple[str, ...] = ()
     request_slots: Optional[threading.BoundedSemaphore] = None
+
+    def handle_one_request(self):
+        # Scope the inactivity limit to request-line and header parsing. A
+        # long response retains the existing unrestricted write behavior.
+        self.connection.settimeout(HEADER_READ_TIMEOUT_SECONDS)
+        super().handle_one_request()
+
+    def parse_request(self):
+        try:
+            return super().parse_request()
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except OSError:
+                pass
 
     def _sites_provider(self):
         return self.sites
@@ -242,10 +317,12 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
         """Read exactly ``length`` bytes under a read timeout."""
         connection = getattr(self, "connection", None)
         previous = None
+        timeout_changed = False
         if connection is not None and hasattr(connection, "settimeout"):
             try:
                 previous = connection.gettimeout()
                 connection.settimeout(BODY_READ_TIMEOUT_SECONDS)
+                timeout_changed = True
             except OSError:
                 previous = None
         try:
@@ -254,7 +331,7 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             self._reject(400, "Timed out while reading the request body")
             return None
         finally:
-            if connection is not None and previous is not None:
+            if connection is not None and timeout_changed:
                 try:
                     connection.settimeout(previous)
                 except OSError:
@@ -498,7 +575,7 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             else:
                 try:
                     body = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                except (UnicodeDecodeError, ValueError, RecursionError):
                     self._send_json(400, {"error": "Invalid JSON body"})
                     return
             if not isinstance(body, dict):
@@ -558,7 +635,7 @@ class SekaiSyncHandler(BaseHTTPRequestHandler):
             return
         try:
             message = json.loads(raw.decode("utf-8")) if raw else None
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             self._send_json(
                 400,
                 {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
@@ -629,7 +706,8 @@ def serve_http(
     # P15: this service has no authentication, so it may only listen on the
     # loopback interface.  Remote exposure is refused with an explanation
     # instead of silently publishing an unauthenticated knowledge base.
-    if not is_loopback_host(host):
+    addresses = _loopback_addresses(host)
+    if not addresses:
         raise SystemExit(
             f"Refusing to bind SekaiSync HTTP to non-loopback address {host!r}.\n"
             "This server has no authentication and must not be reachable from "
@@ -637,6 +715,9 @@ def serve_http(
             "Remote deployment needs a separate authenticated reverse proxy or "
             "an SSH tunnel; run it on 127.0.0.1 and forward the port instead."
         )
+    # Bind the verified numeric address, never re-resolve the original name.
+    # Prefer IPv4 for dual-stack localhost to preserve existing local clients.
+    family, bind_host = min(addresses, key=lambda item: item[0] != socket.AF_INET)
     allowed_origins = tuple(
         origin.strip()
         for origin in os.environ.get("SEKAISYNC_ALLOWED_ORIGINS", "").split(",")
@@ -649,23 +730,26 @@ def serve_http(
         {
             "core": core,
             "sites": profile,
-            "bound_host": host,
+            "bound_host": bind_host,
             "bound_port": port,
             "allowed_origins": allowed_origins,
             "request_slots": slots,
         },
     )
-    server = ThreadingHTTPServer((host, port), handler)
+    server = BoundedThreadingHTTPServer((bind_host, port), handler, address_family=family)
     # When port 0 is requested the OS assigns a dynamic port; report the bound
     # one so consumers (e.g. the dsh plugin spawning --port 0) can discover it.
     actual_port = server.server_address[1]
     handler.bound_port = actual_port
-    print(f"SekaiSync HTTP server listening on http://{host}:{actual_port}")
-    print(f"OpenAPI: http://{host}:{actual_port}/openapi.json")
-    print(f"MCP Streamable HTTP: http://{host}:{actual_port}/mcp")
+    display_host = f"[{bind_host}]" if family == socket.AF_INET6 else bind_host
+    print(f"SekaiSync HTTP server listening on http://{display_host}:{actual_port}")
+    print(f"OpenAPI: http://{display_host}:{actual_port}/openapi.json")
+    print(f"MCP Streamable HTTP: http://{display_host}:{actual_port}/mcp")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        server.shutdown()
+        pass
+    finally:
+        server.server_close()
 
 

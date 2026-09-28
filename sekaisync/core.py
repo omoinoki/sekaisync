@@ -878,6 +878,7 @@ class SekaiSyncCore:
             include_overlay=include_overlay,
             source_priority=source_priority,
             kind=kind,
+            max_text_chars=max_text_chars,
         )
         # P2: token budget — truncate text if max_text_chars > 0
         if max_text_chars > 0:

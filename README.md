@@ -1,18 +1,37 @@
-# SekaiSync 🎵
+<!-- readme-brand:start -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/header-dark.svg">
+  <img src=".github/readme/header-light.svg" alt="" width="1280">
+</picture>
+<!-- readme-brand:end -->
+
+# SekaiSync
+
+English | [中文](README.zh-CN.md)
+
+[![Release](https://img.shields.io/badge/Release-0.4.1--alpha-006F78?style=flat&labelColor=17263B)](pyproject.toml) [![Runtime](https://img.shields.io/badge/Runtime-Python%203.10%2B-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![Platform](https://img.shields.io/badge/Platform-Cross--platform-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![License](https://img.shields.io/badge/License-MIT-AC246D?style=flat&labelColor=17263B)](LICENSE)
+
+<!-- readme-navigation:start -->
+<p>
+  <a href="#readme-overview">Overview</a> ·
+  <a href="#readme-section-02">Quick start</a> ·
+  <a href="#readme-section-08">More information</a>
+</p>
+<!-- readme-navigation:end -->
+
+<a id="readme-overview"></a>
+
+> A local knowledge base and AI Agent context (MCP) service for *Project SEKAI* fandom.
+
+**SekaiSync** is built specifically for Large Language Models (LLMs) and coding Agents (such as Claude, Cursor, and ChatGPT). It syncs official Master Data, multi-region localized terminology, and community story texts for *Project SEKAI* (PJ:SEKAI) into a local `store/`. Exposing retrieval capabilities through **MCP (Model Context Protocol)** or CLI commands, it ensures AI Agents rely on **ground-truth local data** when answering game-related questions—eliminating AI hallucinations at the source.
+
+
 
 <p align="center">
   <img src="sekaisync.png" alt="SekaiSync overview" width="720"/>
 </p>
 
-> A local knowledge base and AI Agent context (MCP) service for *Project SEKAI* fandom.
-
-English | [中文](README.zh-CN.md)
-
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml) [![Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](pyproject.toml) [![Protocol](https://img.shields.io/badge/Protocol-MCP-blue)](agents/README.md) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-**SekaiSync** is built specifically for Large Language Models (LLMs) and coding Agents (such as Claude, Cursor, and ChatGPT). It syncs official Master Data, multi-region localized terminology, and community story texts for *Project SEKAI* (PJ:SEKAI) into a local `store/`. Exposing retrieval capabilities through **MCP (Model Context Protocol)** or CLI commands, it ensures AI Agents rely on **ground-truth local data** when answering game-related questions—eliminating AI hallucinations at the source.
-
----
+<a id="readme-section-01"></a>
 
 ## ✨ Core Features
 
@@ -22,7 +41,7 @@ English | [中文](README.zh-CN.md)
 - 🛡️ **Strict Data Boundaries**: Adheres to a "report unknown when uncovered" principle to prevent AI Agents from hallucinating nonexistent lore.
 - 📰 **Flexible Data Extensions**: Supports official news announcements sync and TOS-compliant community story text crawling.
 
----
+<a id="readme-section-02"></a>
 
 ## 🚀 Quick Start
 
@@ -65,26 +84,26 @@ python -m sekaisync status
 python -m sekaisync kb-status
 ```
 
----
+<a id="readme-section-03"></a>
 
 ## 🤖 Agent / AI Integration (MCP)
 
 SekaiSync provides a standard **Model Context Protocol (MCP)** implementation to easily plug into LLM workflows:
 
-#### Local Agents (Claude Desktop / Cursor)
+### Local Agents (Claude Desktop / Cursor)
 Start the MCP service via standard input/output (stdio):
 ```bash
 python -m sekaisync serve-mcp
 ```
 
-#### Remote / Web Agents (ChatGPT Custom Actions / HTTP)
+### Remote / Web Agents (ChatGPT Custom Actions / HTTP)
 Start the HTTP + MCP Streamable service:
 ```bash
 python -m sekaisync serve-http --host 127.0.0.1 --port 8787
 ```
 > For detailed Agent configuration examples (e.g., `claude_desktop_config.json`), please refer to [`agents/README.md`](agents/README.md).
 
----
+<a id="readme-section-04"></a>
 
 ## 📊 Data Scope & Boundaries
 
@@ -100,20 +119,7 @@ To ensure accurate output from AI Agents, SekaiSync strictly defines its data st
 
 > 📌 **Anti-Hallucination Design**: When queried information is outside the current `store/` coverage, SekaiSync explicitly returns `not covered`, instructing the Agent to honestly respond that the information is unknown rather than inventing facts.
 
----
-
-## 🔬 Experimental: Game-Text Noun Extraction
-
-SekaiSync includes an **experimental** terminology pipeline that cuts proper nouns and content words directly out of story text (JP/CN/EN/TC/KR), then aligns them across the five languages:
-
-- **Zero-dependency tokenizer**: language-block splitting + bidirectional maximum matching (Bi-MM) with unsupervised word discovery (frequency × PMI cohesion × boundary entropy), inspired by CJK segmentation research (arXiv:2407.19400, 1905.01964).
-- **zh-first extraction**: simplified-Chinese-priority pipeline (`sekaisync terms zhfirst`) that filters the 26 playable protagonists, speaker labels and function words, then inherits official five-language names when a term hits the glossary.
-- **Cross-language penetration**: same-position alignment (`sekaisync terms penetrate`) and released/unreleased tag clouds (`sekaisync tag-clouds`).
-- **Honest gating**: statistical alignment is only adopted with ≥2-story evidence (containment ≥ 0.30); low-confidence terms stay language-local instead of producing wrong translations.
-
-> ⚠️ **Status: experimental.** Recall on a 487-word manual gold set was ~81% as measured against the pre-cleanup term index (12,580 entries, measured 2026-08-14); not re-measured since the 2026-08-23 cleanup (9,324 entries). Fragment filtering still relies on LLM judgement (`--llm-config`) for 4-character colloquial fragments that rule-based filters miss. Do not treat extracted terms as an authoritative lexicon yet — verify against the official glossary when accuracy matters.
-
----
+<a id="readme-section-06"></a>
 
 ## ⚙️ Advanced Configuration (`settings.json`)
 
@@ -155,21 +161,7 @@ To use `crawl` (community story text crawling) or custom news sources, configure
 > - Executing the `crawl` command (via the `--accept-tos` flag or interactive prompt) constitutes your explicit agreement to the game's Terms of Service.
 > - Compatibility with the two mainstream public WebDB systems for this game does not imply that SekaiSync endorses or suggests connecting to any particular instance.
 
----
-
-## 🛠️ Developer Guide
-
-Run unit tests:
-```bash
-python -m unittest discover -s tests -t .
-```
-
-Build Wheel package:
-```bash
-python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist
-```
-
----
+<a id="readme-section-08"></a>
 
 ## 📜 License & Disclaimer
 

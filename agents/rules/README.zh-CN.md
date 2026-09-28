@@ -2,11 +2,11 @@
 
 [English](README.md) | 中文
 
-这些文件是「每次会话常驻」的硬规则，与「命中才加载」的 `SKILL.md` 区分开。规则内容不随协议变化；按平台要求的文件名复制到项目里即可。
+本目录包含在每次会话中常驻生效的硬性行为规则，与按需调用的 `SKILL.md` 相互独立。规则语义不随接入协议变化；部署时按对应平台的文件名要求复制到项目中即可。
 
-| 文件 | 平台 | 落地位置 |
+| 规则文件 | 目标平台 | 目标文件路径 |
 | --- | --- | --- |
-| `AGENTS.md` | Codex / Grok Build | 项目根目录（Codex 也读 `.agents/AGENTS.md`） |
+| `AGENTS.md` | Codex / Grok Build | 项目根目录（Codex 亦支持 `.agents/AGENTS.md`） |
 | `CLAUDE.md` | Claude Code / Claude Code Desktop | 项目根目录 |
 | `SekaiSync.mdc` | Cursor | `.cursor/rules/SekaiSync.mdc` |
 | `SekaiSync.prompt.md` | OpenClaw | 作为 persona / prompt 模块引入 |

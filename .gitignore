@@ -6,9 +6,8 @@
 # web_search_index.db` is ~341 MB, and an unwary `git add` would have committed
 # it. Anything a collaborator also needs ignored belongs here instead.
 #
-# NOTE: `work/` is ignored by these local rules. Two things inside it are
-# deliberately tracked with `git add -f`: the release notes and
-# `work/contract_snapshots/`, which the contract tests compare against. The
+# NOTE: `work/` is ignored by these local rules. `work/contract_snapshots/` is
+# deliberately tracked with `git add -f` for contract tests. The
 # rest — checkpoint ledgers, audit reports, verifier output, performance
 # scratch — is development process, not something a clone needs.
 
@@ -91,3 +90,11 @@ Thumbs.db
 .ruff_cache/
 htmlcov/
 *.log
+
+# Maintainer-only documentation and preserved public-document excerpts.
+/.maintainer/
+
+# Local agent state, experimental outputs and design-reference workspace.
+/.workbuddy/
+/experiment/
+/ux-handbook/

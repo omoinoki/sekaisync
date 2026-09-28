@@ -25,6 +25,7 @@ operation: v1→v2 adds term slots and v2→v3 adds per-region entity facts.
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import json
 import sqlite3
@@ -1273,8 +1274,11 @@ def iter_web_search_rows(
     # empty set is meaningfully different from ``None``: empty means "no
     # candidates", ``None`` means "no prefilter".
     #
-    # Candidates are fetched by primary key, one statement per candidate, and
-    # sorted in Python. Measured on the real store (752k rows), the natural SQL
+    # Candidate ordering reads only primary keys and sequence numbers first;
+    # scoring rows (including their body heads) are then streamed in that order.
+    # Holding every body until sorting finishes grows to gigabytes on large
+    # candidate sets. Both passes use point lookups, preserving the old plan.
+    # Candidates are fetched by primary key and sorted in Python. Measured on the real store (752k rows), the natural SQL
     # spellings were ~250x slower: SQLite answered both ``IN (VALUES ...)`` and
     # a temp-table join by scanning ``web_pages`` through ``idx_pages_seq`` and
     # probing per row (~11s for 1k candidates), whereas a primary-key lookup is
@@ -1307,14 +1311,26 @@ def iter_web_search_rows(
     def _iterate(active: sqlite3.Connection) -> Iterator[dict[str, Any]]:
         active.row_factory = sqlite3.Row
         if candidate_rows:
-            fetched: list[tuple[str, int, dict[str, Any]]] = []
-            for source_id, page_id in candidate_rows:
+            ordered: list[tuple[str, int, str]] = []
+            # CROSS JOIN fixes the small VALUES relation as the outer loop;
+            # each inner access uses the existing (source, id) primary key.
+            # Never invite a full page-table scan just to sort candidate keys.
+            for start in range(0, len(candidate_rows), 400):
+                chunk = candidate_rows[start:start + 400]
+                values = ",".join("(?,?)" for _ in chunk)
+                key_sql = (
+                    f"WITH wanted(s, k) AS (VALUES {values}) "
+                    "SELECT source, seq, id FROM wanted CROSS JOIN web_pages "
+                    "WHERE source = wanted.s AND id = wanted.k"
+                )
+                bindings = [value for pair in chunk for value in pair]
+                for row in active.execute(key_sql, bindings):
+                    ordered.append((row["source"], int(row["seq"] or 0), row["id"]))
+            ordered.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+            for source_id, _seq, page_id in ordered:
                 row = active.execute(sql, bound + [source_id, page_id]).fetchone()
                 if row is not None:
-                    fetched.append((row["source"], int(row["seq"] or 0), _row_to_item(row)))
-            fetched.sort(key=lambda entry: (entry[0], entry[1]))
-            for _source, _seq, item in fetched:
-                yield item
+                    yield _row_to_item(row)
             return
         cursor = active.execute(sql, bound)
         while True:
@@ -1335,12 +1351,14 @@ def web_page_texts(
     store_root: Path,
     keys: Sequence[tuple[str, str]],
     conn: Optional[sqlite3.Connection] = None,
+    *,
+    max_chars: int = 0,
 ) -> dict[tuple[str, str], str]:
-    """Full bodies for the named (source, id) pairs only.
+    """Bodies for the named (source, id) pairs, optionally capped in SQLite.
 
-    Used by callers that genuinely need the text (``include_text=True``) after
-    the candidate set has been narrowed, so bodies are read for the rows being
-    returned rather than for every row considered.
+    A positive ``max_chars`` bounds text transferred into Python. Zero keeps
+    the existing full-text behavior. Point lookups avoid SQLite versions whose
+    row-value IN query plan scans the entire page table for a few winners.
     """
     _ensure_initialized(store_root)
     if not keys:
@@ -1348,19 +1366,19 @@ def web_page_texts(
     out: dict[tuple[str, str], str] = {}
 
     def _read(active: sqlite3.Connection) -> None:
-        # Chunked so the placeholder count stays well under SQLite's limit.
-        for start in range(0, len(keys), 400):
-            chunk = keys[start:start + 400]
-            placeholders = ",".join("(?,?)" for _ in chunk)
-            params: list[Any] = []
-            for source_id, page_id in chunk:
-                params.extend([source_id, page_id])
-            for row in active.execute(
-                f"SELECT source, id, text FROM web_pages "
-                f"WHERE (source, id) IN (VALUES {placeholders})",
-                params,
-            ):
-                out[(row[0], row[1])] = str(row[2] or "")
+        # SQLite text substr stops at embedded NUL; Python slicing does not.
+        # A UTF-8 byte prefix of 4*N contains at least N Unicode characters.
+        # Incremental decoding safely holds any partial final code point.
+        projection = "substr(CAST(text AS BLOB), 1, ?)" if max_chars > 0 else "text"
+        prefix = [min(max_chars * 4, 2**63 - 1)] if max_chars > 0 else []
+        sql = f"SELECT source, id, {projection} FROM web_pages WHERE source = ? AND id = ?"
+        for source_id, page_id in dict.fromkeys(keys):
+            row = active.execute(sql, prefix + [source_id, page_id]).fetchone()
+            if row is not None:
+                body = row[2] or (b"" if max_chars > 0 else "")
+                if max_chars > 0:
+                    body = codecs.getincrementaldecoder("utf-8")().decode(body, final=False)[:max_chars]
+                out[(row[0], row[1])] = str(body)
 
     if conn is not None:
         _read(conn)

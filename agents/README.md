@@ -63,7 +63,7 @@ Agent brand: the same protocol works for every Agent that supports it.
 | WorkBuddy (Tencent Cloud Code Assistant) | `mcp-stdio` | `mcp-stdio/workbuddy-mcp.json` |
 | TRAE (ByteDance) | `mcp-stdio` / `mcp-http` | `mcp-stdio/trae.json` (stdio); remote via Streamable HTTP |
 | ZCode | `mcp-stdio` | `mcp-stdio/zcode-config.json` (`.zcode/config.json`) |
-| DeepSeek Harness | plugin | `deepseek-harness/` (Cordis plugin bridging MCP) |
+| DeepSeek Harness | plugin | [SekaiSync Connect for DeepSeek Harness](https://github.com/omoinoki/dsh-sekaisync-connect) |
 | ChatGPT Work / ChatGPT Web | `mcp-http` | `mcp-http/chatgpt-work.md` + `developer-mode.md` |
 | ChatGPT Actions (legacy fallback) | `rest-openapi` | `rest-openapi/openapi.json` |
 

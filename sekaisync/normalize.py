@@ -8,6 +8,7 @@ import unicodedata
 _IGNORED_CHARS = re.compile(r"[\s_\-.,，。！？!?·•×:：;；'\"`~～【】\[\]()（）/\\]+")
 _LATIN_RE = re.compile(r"[a-z0-9]+")
 _LONG_VOWEL = "\u30fc"
+_KANA_TRANSLATION = {code: code - 0x60 for code in range(0x30A1, 0x30F7)}
 
 
 def normalize_name(text: str) -> str:
@@ -33,14 +34,9 @@ def _fold_kana(text: str) -> str:
     small-kana combinations are left alone on purpose, since folding those
     would merge distinct sounds.
     """
-    out = []
-    for ch in text:
-        code = ord(ch)
-        if 0x30A1 <= code <= 0x30F6:
-            out.append(chr(code - 0x60))
-        else:
-            out.append(ch)
-    return "".join(out)
+    # The fixed translation has exactly the same code-point mapping without
+    # allocating one Python string per character of a long scoring window.
+    return text.translate(_KANA_TRANSLATION)
 
 
 def matching_key(text: str) -> str:
@@ -107,8 +103,10 @@ def similarity_score(query: str, name: str) -> int:
     if q in n:
         return 50
     # Loose CJK variants: kana script, long-vowel marks, punctuation.
-    fq = matching_key(query)
-    fn = matching_key(name)
+    # q/n already hold normalize_name output. Reuse it: normalizing a 20k
+    # body twice dominates scans where the early strict tiers do not match.
+    fq = _fold_kana(q).replace(_LONG_VOWEL, "")
+    fn = _fold_kana(n).replace(_LONG_VOWEL, "")
     if fq and fq == fn:
         return 70
     if len(fq) >= 3 and (fn.startswith(fq) or fq.startswith(fn)):

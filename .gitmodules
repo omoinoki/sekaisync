@@ -1,3 +1,6 @@
 [submodule "frontends/WinUI3"]
 	path = frontends/WinUI3
 	url = https://github.com/omoinoki/sekaisync-winui3.git
+[submodule "agents/deepseek-harness"]
+	path = agents/deepseek-harness
+	url = https://github.com/omoinoki/dsh-sekaisync-connect.git

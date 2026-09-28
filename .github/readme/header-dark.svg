@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="160" viewBox="0 0 1280 160" fill="none">
+  <defs>
+    <clipPath id="frame"><rect width="1280" height="160"/></clipPath>
+  </defs>
+  <rect width="1280" height="160" fill="#101824"/>
+  <g clip-path="url(#frame)">
+    <polygon points="1082,174 1266,-22 1316,174" fill="#7FF3ED" opacity="0.065"/>
+    <circle cx="1196" cy="-25" r="68" fill="#F4A5E7" opacity="0.07"/>
+    <polygon points="940,113 959,75 978,113" fill="#7FF3ED" opacity="0.22"/>
+    <circle cx="1058" cy="42" r="23" stroke="#7FF3ED" stroke-width="2" opacity="0.32"/>
+    <rect x="1123" y="90" width="30" height="30" transform="rotate(16 1138 105)" stroke="#F4A5E7" stroke-width="2" opacity="0.32"/>
+    <rect x="1010" y="127" width="12" height="12" transform="rotate(-12 1016 133)" fill="#FBF78B" opacity="0.30"/>
+    <polygon points="1221,109 1263,135 1212,154" stroke="#FBF78B" stroke-width="2" stroke-linejoin="round" opacity="0.32"/>
+  </g>
+  <svg x="32" y="24" width="112" height="112" viewBox="0 0 1254 1254" fill="#EDF4FF">
+      <path d="M915 238C831 170 735 135 633 133C440 125 275 232 194 411C135 542 137 693 194 825Q204 851 230 841L263 825Q288 814 277 789C205 615 234 450 349 333C485 192 692 177 851 299L824 329Q809 349 827 358L956 393Q989 407 986 373L975 235Q974 201 950 214Z"/>
+      <path d="M982 457C1056 632 1019 787 907 883C771 1026 566 1038 412 933L438 907Q453 891 433 878L311 846Q280 836 282 866L287 1005Q288 1038 312 1024L345 998C528 1137 774 1121 947 967C1108 823 1150 683 1070 432Q1061 394 1040 398Q1033 398 1023 403L997 416Q974 427 982 457Z"/>
+      <path fill-rule="evenodd" d="M457 437H807L882 512V742L806 817H460L377 736V514ZM454 608L481 630L453 654C460 677 476 690 496 690C523 690 543 664 543 631C543 599 523 573 497 573C477 573 462 586 454 608ZM719 608L746 630L717 654C725 677 740 690 761 690C788 690 808 664 808 631C808 599 788 573 762 573C742 573 727 586 719 608Z"/>
+  </svg>
+</svg>

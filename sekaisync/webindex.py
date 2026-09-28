@@ -723,6 +723,7 @@ def web_search(
     include_overlay: bool = False,
     source_priority: Optional[Iterable[str]] = None,
     kind: Optional[str] = None,
+    max_text_chars: int = 0,
 ) -> list[dict[str, Any]]:
     """Search page titles/bodies, best match first within source priority.
 
@@ -742,6 +743,8 @@ def web_search(
     Filtering after the heap would let unrelated kinds consume the result
     limit and hide matching pages. SQL iteration remains streamed.
     """
+    if limit <= 0:
+        return []
     priority = tuple(source_priority or DEFAULT_SOURCE_PRIORITY)
     wanted_source = normalize_source_id(source) if source else None
 
@@ -852,10 +855,12 @@ def web_search(
         items.append(item)
 
     if include_text and items:
-        # Bodies only for the returned rows, after the candidate set is fixed.
+        # Read one character past the budget so Core can preserve its existing
+        # truncation marker without loading full long documents into Python.
         bodies = dbstore.web_page_texts(
             store_root,
             [(item.get("source", ""), item.get("id", "")) for item in items],
+            max_chars=max_text_chars + 1 if max_text_chars > 0 else 0,
         )
         for item in items:
             item["text"] = bodies.get(

@@ -65,14 +65,16 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from sekaisync import dbstore
 from sekaisync.layout import cache_dir
-from sekaisync.normalize import latin_words, matching_key
+from sekaisync.normalize import latin_words, matching_key, normalize_name
 
 #: Bumped when the indexed representation or the candidate rules change, so an
 #: index written by an older build is never used with newer logic.
@@ -193,14 +195,18 @@ def build(store_root: Path, *, batch_size: int = 2048, progress=None) -> dict[st
     """
     target = index_path(store_root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.with_suffix(".building")
-    if staging.exists():
-        staging.unlink()
-
-    out = sqlite3.connect(str(staging))
+    # Each builder owns its staging file. Failed/concurrent builds must never
+    # remove another builder's work or the last successfully published index.
+    fd, staging_name = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".building", dir=str(target.parent)
+    )
+    os.close(fd)
+    staging = Path(staging_name)
+    out = None
     written = 0
     skipped = 0
     try:
+        out = sqlite3.connect(str(staging))
         out.execute("PRAGMA journal_mode=OFF")
         out.execute("PRAGMA synchronous=OFF")
         out.execute(
@@ -222,6 +228,10 @@ def build(store_root: Path, *, batch_size: int = 2048, progress=None) -> dict[st
         )
 
         with dbstore.connect(store_root) as conn:
+            # Pin the revision, fingerprint and indexed rows to one snapshot.
+            # A request-bound connection already owns its read transaction.
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
             revision = dbstore.current_revision(conn)
             fingerprint = _page_fingerprint(conn)
             cursor = conn.execute(
@@ -265,13 +275,17 @@ def build(store_root: Path, *, batch_size: int = 2048, progress=None) -> dict[st
         out.commit()
         out.execute("PRAGMA optimize")
         out.commit()
-    finally:
         out.close()
+        out = None
+        # One atomic replacement, with no absent-target interval. On Windows a
+        # busy target may refuse replacement; the previous index stays intact.
+        os.replace(staging, target)
+    finally:
+        if out is not None:
+            out.close()
+        with contextlib.suppress(OSError):
+            staging.unlink()
 
-    # Atomic swap: readers never observe a half-built index.
-    if target.exists():
-        target.unlink()
-    staging.replace(target)
     return {
         "path": str(target),
         "rows": written,
@@ -293,81 +307,104 @@ def _open(store_root: Path):
     path = index_path(store_root)
     if not path.exists():
         raise IndexUnavailable("no index built yet")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
+        # The header and postings must be from this same index snapshot, even
+        # if a rebuild publishes another file while the request is running.
+        conn.execute("BEGIN")
         yield conn
     finally:
         conn.close()
 
 
+def _check_current(
+    store_root: Path, meta: dict[str, str], *, deep: bool
+) -> tuple[bool, str]:
+    """Validate the header from the exact index connection a reader uses."""
+    if meta.get("index_format") != str(INDEX_FORMAT):
+        return False, f"index_format={meta.get('index_format')} != {INDEX_FORMAT}"
+    try:
+        indexed = int(meta.get("rows", ""))
+        skipped = int(meta.get("skipped_empty_keys", "0"))
+    except (TypeError, ValueError):
+        return False, "index has an unreadable page count"
+    if indexed < 0 or skipped < 0:
+        return False, "index has an invalid page count"
+    with dbstore.connect(store_root) as store:
+        if not store.in_transaction:
+            store.execute("BEGIN")
+        if meta.get("revision") != str(dbstore.current_revision(store)):
+            return False, "store revision moved since the index was built"
+        actual = store.execute("SELECT COUNT(*) FROM web_pages").fetchone()[0]
+        # Empty folded keys are intentionally omitted from postings but are
+        # still authoritative rows. Format 1 already records this count.
+        if indexed + skipped != actual:
+            return False, f"page count {actual} != indexed {indexed} + skipped {skipped}"
+        if not deep:
+            return True, ""
+        fingerprint = _page_fingerprint(store)
+    try:
+        expected = json.loads(meta.get("fingerprint") or "null")
+    except ValueError:
+        return False, "index fingerprint is unreadable"
+    if not isinstance(expected, dict):
+        return False, "index has no usable fingerprint"
+    for field in ("rows", "title_chars", "text_chars", "per_source"):
+        if expected.get(field) != fingerprint.get(field):
+            return False, f"page fingerprint moved ({field})"
+    return True, ""
+
+
 def is_current(store_root: Path, *, deep: bool = True) -> tuple[bool, str]:
     """Whether the on-disk index matches the store, and why not when it does not.
 
-    ``deep=False`` checks only the store revision and row count. That is the
-    check a query can afford: the revision is a single ``meta`` read, while the
-    fingerprint has to sum lengths over 618M characters of body text (~2s on
-    the real store) — fine for a diagnostic, far too slow to run per search.
-
-    A write that respects the contract (every authoritative web write bumps the
-    revision) cannot slip past the cheap check. ``deep=True`` additionally
-    catches out-of-contract edits that moved content without moving the
-    revision, which is what ``stats()`` and the tests use.
+    ``deep=False`` checks the store revision and row count. The deep fingerprint
+    also sums body lengths, which is appropriate for diagnostics but too costly
+    per search. Every authoritative write advances the committed revision.
     """
     try:
         with _open(store_root) as conn:
-            meta = _load_meta(conn)
-            if meta.get("index_format") != str(INDEX_FORMAT):
-                return False, f"index_format={meta.get('index_format')} != {INDEX_FORMAT}"
-            with dbstore.connect(store_root) as store:
-                if meta.get("revision") != str(dbstore.current_revision(store)):
-                    return False, "store revision moved since the index was built"
-                indexed = meta.get("rows")
-                actual = store.execute("SELECT COUNT(*) FROM web_pages").fetchone()[0]
-                if indexed != str(actual):
-                    # Rows were added or removed; the fingerprint check below is
-                    # stricter, but this one is free.
-                    return False, f"page count {actual} != indexed {indexed}"
-                if not deep:
-                    return True, ""
-                fingerprint = _page_fingerprint(store)
-            try:
-                expected = json.loads(meta.get("fingerprint") or "null")
-            except ValueError:
-                return False, "index fingerprint is unreadable"
-            if not isinstance(expected, dict):
-                return False, "index has no usable fingerprint"
-            for field in ("rows", "title_chars", "text_chars", "per_source"):
-                if expected.get(field) != fingerprint.get(field):
-                    return False, f"page fingerprint moved ({field})"
-        return True, ""
+            return _check_current(store_root, _load_meta(conn), deep=deep)
     except IndexUnavailable as exc:
         return False, str(exc)
     except sqlite3.Error as exc:
         return False, f"index unreadable: {exc}"
 
 
-def _candidate_rowids(conn: sqlite3.Connection, key: str) -> set[int]:
-    """Rowids that could match ``key``: trigrams unioned with the length window."""
+def _candidate_rowids(
+    conn: sqlite3.Connection, key: str, *, max_candidates: Optional[int] = None
+) -> Optional[set[int]]:
+    """Complete trigram/length-window union, or ``None`` when it exceeds a cap.
+
+    A broad query declines as soon as cap + 1 distinct rows are known. Never
+    return a truncated candidate set: the caller must scan to preserve recall.
+    """
     rowids: set[int] = set()
+    limit_sql = " LIMIT ?" if max_candidates is not None else ""
+    limit_params = [max(0, max_candidates) + 1] if max_candidates is not None else []
+
+    def collect(sql: str, params: list[Any]) -> bool:
+        cursor = conn.execute(sql + limit_sql, params + limit_params)
+        try:
+            for row in cursor:
+                rowids.add(row[0])
+                if max_candidates is not None and len(rowids) > max_candidates:
+                    return False
+        finally:
+            cursor.close()
+        return True
+
     found = trigrams(key)
     if found:
-        # OR of single-trigram phrases. Each is a 3-character query, which is
-        # the shortest a trigram index can answer; a *phrase* spanning several
-        # trigrams would need detail=full and buys nothing here, because the
-        # scorer is what decides adjacency.
+        # Single-trigram OR phrases require no positional FTS details.
         expr = " OR ".join('"%s"' % t.replace('"', '""') for t in found)
-        rowids |= {
-            row[0] for row in conn.execute("SELECT rowid FROM keys WHERE keys MATCH ?", (expr,))
-        }
-    # Tier 55 and the short-prefix half of tier 80: a row key short enough to
-    # be inside the edit-distance window regardless of shared trigrams. This is
-    # what makes the ruleset a superset rather than merely a good filter.
-    rowids |= {
-        row[0]
-        for row in conn.execute(
-            "SELECT rowid FROM pages WHERE key_len <= ?", (len(key) + LENGTH_WINDOW,)
-        )
-    }
+        if not collect("SELECT rowid FROM keys WHERE keys MATCH ?", [expr]):
+            return None
+    # The length window is mandatory for edit-distance and short-prefix tiers.
+    if not collect(
+        "SELECT rowid FROM pages WHERE key_len <= ?", [len(key) + LENGTH_WINDOW]
+    ):
+        return None
     return rowids
 
 
@@ -400,21 +437,25 @@ def candidates(
     try:
         with _open(store_root) as conn:
             meta = _load_meta(conn)
-            if meta.get("index_format") != str(INDEX_FORMAT):
-                return None
-            # Cheap validation only: this runs on every search, so it may not
-            # pay for the deep fingerprint (see ``is_current``).
-            current, _why = is_current(store_root, deep=False)
+            # Validate this handle's header, not a second connection that
+            # could open a newly published index and bless stale postings.
+            current, _why = _check_current(store_root, meta, deep=False)
             if not current:
                 return None
-            rowids = _candidate_rowids(conn, key)
+            # A folded-empty row can still match the strict prefix tier when
+            # its entire name consists of long-vowel marks. Format 1 omitted
+            # those rows, so preserve their recall through a narrow fallback.
+            if int(meta.get("skipped_empty_keys", "0")) and normalize_name(query).startswith("ー"):
+                return None
+            rowids = _candidate_rowids(conn, key, max_candidates=max_candidates)
+            if rowids is None:
+                return None
             if not rowids:
                 return set()
-            if len(rowids) > max_candidates:
-                return None
             out: set[tuple[str, str]] = set()
-            for chunk_start in range(0, len(rowids), 900):
-                chunk = sorted(rowids)[chunk_start:chunk_start + 900]
+            ordered_rowids = sorted(rowids)
+            for chunk_start in range(0, len(ordered_rowids), 900):
+                chunk = ordered_rowids[chunk_start:chunk_start + 900]
                 placeholders = ",".join("?" * len(chunk))
                 sql = (
                     f"SELECT rowid, source, page_id FROM pages WHERE rowid IN ({placeholders})"

@@ -2,47 +2,47 @@
 
 [English](README.md) | 中文
 
-SekaiSync 对 Agent 只暴露三种协议。接入前，Agent 先读本文件，按「能怎么连」选择其中一种，再到对应目录取配置模板。不要按具体 Agent 品牌建立接口：同一种协议对所有支持该协议的 Agent 都成立。
+SekaiSync 面向智能体（Agent）仅提供三种标准化协议。接入前，请根据宿主环境支持的连接方式选择对应协议，并前往相应目录获取配置模板。接入文档按协议组织，同一种协议适用于支持该协议的各类智能体。
 
 ## 三种协议
 
-| 协议 | 传输 | 入口 | 适用场景 |
+| 协议标识 | 传输通道 | 入口命令 / 路径 | 适用场景 |
 | --- | --- | --- | --- |
-| `mcp-stdio` | stdio（本地进程） | `python -m sekaisync serve-mcp` | 能拉起本地子进程的桌面 App / CLI / IDE |
-| `mcp-http` | Streamable HTTP | `serve-http` 的 `/mcp` | 只能通过公网 HTTPS URL 接入的 Web / 云端 Agent |
-| `rest-openapi` | HTTP JSON | `serve-http` 的 `/api/v1/*` 与 `/openapi.json` | 只支持 OpenAPI Actions 或裸 REST 的 Agent（旧回退） |
+| `mcp-stdio` | stdio（本地进程） | `python -m sekaisync serve-mcp` | 支持拉起本地子进程的桌面应用、CLI 或 IDE |
+| `mcp-http` | Streamable HTTP | `serve-http` 服务的 `/mcp` 端点 | 仅支持通过公网 HTTPS URL 接入的 Web 或云端智能体 |
+| `rest-openapi` | HTTP JSON | `serve-http` 的 `/api/v1/*` 与 `/openapi.json` | 仅支持 OpenAPI Actions 或基础 REST API 的智能体（回退方案） |
 
 ## 选择规则（机读）
 
-1. 能 spawn 本地进程 → 用 `mcp-stdio`，取 `mcp-stdio/` 下与平台对应的配置。
-2. 只能填一个 HTTPS URL → 用 `mcp-http`，见 `mcp-http/`。
-3. 只有 OpenAPI/REST 可用 → 用 `rest-openapi/`（能力最少，不推荐作为主路径）。
+1. 支持拉起本地子进程 → 采用 `mcp-stdio`，获取 `mcp-stdio/` 目录下对应平台的配置。
+2. 仅支持配置 HTTPS URL → 采用 `mcp-http`，参考 `mcp-http/`。
+3. 仅支持 OpenAPI/REST 接口 → 采用 `rest-openapi/`（功能受限，不推荐作为首选路径）。
 
 ## Agent → 协议映射（机读）
 
-| agent | protocol | 配置/说明 |
+| 智能体 / 宿主 | 协议标识 | 配置参考与说明 |
 | --- | --- | --- |
-| Codex CLI / ChatGPT 桌面 App / IDE 扩展 | `mcp-stdio` | `mcp-stdio/codex.config.toml` |
+| Codex CLI / ChatGPT 桌面应用 / IDE 插件 | `mcp-stdio` | `mcp-stdio/codex.config.toml` |
 | Claude Code / Claude Desktop | `mcp-stdio` | `mcp-stdio/claude-code.mcp.json` + `claude-desktop.json` |
 | Cursor | `mcp-stdio` | `mcp-stdio/cursor.mcp.json` |
 | Grok Build | `mcp-stdio` | `mcp-stdio/grok.config.toml` + `grok.mcp.json` |
 | Hermes Agent | `mcp-stdio` | `mcp-stdio/hermes.yaml` |
 | OpenClaw | `mcp-stdio` | `mcp-stdio/openclaw.json` |
 | AstrBot | `mcp-stdio` | `mcp-stdio/astrbot.json` |
-| OpenCode | `mcp-stdio` / `mcp-http` | `mcp-stdio/opencode.json`（local）；远程见 `mcp-http/README.zh-CN.md` |
+| OpenCode | `mcp-stdio` / `mcp-http` | 本地优先 `mcp-stdio/opencode.json`；远程参考 `mcp-http/README.zh-CN.md` |
 | WorkBuddy（腾讯云代码助手） | `mcp-stdio` | `mcp-stdio/workbuddy-mcp.json` |
-| TRAE（字节跳动） | `mcp-stdio` / `mcp-http` | `mcp-stdio/trae.json`（stdio）；远程走 Streamable HTTP |
+| TRAE（字节跳动） | `mcp-stdio` / `mcp-http` | 本地采用 `mcp-stdio/trae.json`；远程采用 Streamable HTTP |
 | ZCode | `mcp-stdio` | `mcp-stdio/zcode-config.json`（`.zcode/config.json`） |
-| DeepSeek Harness | 插件 | `deepseek-harness/`（Cordis 插件桥接 MCP） |
+| DeepSeek Harness | 插件 | [SekaiSync Connect for DeepSeek Harness](https://github.com/omoinoki/dsh-sekaisync-connect) |
 | ChatGPT Work / ChatGPT Web | `mcp-http` | `mcp-http/chatgpt-work.md` + `developer-mode.md` |
-| ChatGPT Actions（旧回退） | `rest-openapi` | `rest-openapi/openapi.json` |
+| ChatGPT Actions（历史回退路径） | `rest-openapi` | `rest-openapi/openapi.json` |
 
 ## 行为层（与协议无关）
 
-接入成功后的「怎么用」不随协议变化，集中在两处：
+完成连接后，智能体的业务规范与调用流程与底层协议无关，统一定义于以下两处：
 
-- `SKILL.md`：命中 Project Sekai 问题才加载的技能（工作流 + 输出契约）。
-- `rules/`：常驻硬规则，按平台要求的文件名复制到项目里：
+- `SKILL.md`：仅在对话涉及 Project SEKAI 领域问题时加载的专用技能定义（包含工作流与输出契约）。
+- `rules/`：常驻硬性规则，按各平台规范命名并放置在项目中：
   `AGENTS.md`（Codex / Grok）、`CLAUDE.md`（Claude Code）、`SekaiSync.mdc`（Cursor）、
   `SekaiSync.prompt.md`（OpenClaw）。
 
@@ -58,4 +58,4 @@ agents/
   rules/               常驻行为规则（按平台文件名）
 ```
 
-所有示例路径（`C:\path\to\python.exe`、`C:\path\to\sekaisync`）都是占位符，接入时替换成实际路径。
+示例配置中的路径占位符（如 `C:\path\to\python.exe`、`C:\path\to\sekaisync`）在实际接入时均须替换为本机实际路径。
