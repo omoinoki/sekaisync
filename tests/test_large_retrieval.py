@@ -63,7 +63,7 @@ class LargeRetrievalTests(unittest.TestCase):
         original = "A\0🙂日本語é" * 80
         self.save("altsource_ms", [{"id": "page", "text": original}])
         key = ("altsource_ms", "page")
-        for budget in (1, 2, 3, 8, 79, len(original), len(original) + 1, 10**30):
+        for budget in (1, 2, 3, 8, 79, len(original), len(original) + 1, 2**29 - 1, 2**29, 2**31 - 1, 2**31, 10**30):
             with self.subTest(budget=budget):
                 self.assertEqual(original[:budget], dbstore.web_page_texts(self.store, [key], max_chars=budget)[key])
         self.assertEqual(original, dbstore.web_page_texts(self.store, [key])[key])

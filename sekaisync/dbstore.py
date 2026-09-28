@@ -1370,7 +1370,9 @@ def web_page_texts(
         # A UTF-8 byte prefix of 4*N contains at least N Unicode characters.
         # Incremental decoding safely holds any partial final code point.
         projection = "substr(CAST(text AS BLOB), 1, ?)" if max_chars > 0 else "text"
-        prefix = [min(max_chars * 4, 2**63 - 1)] if max_chars > 0 else []
+        # Older SQLite versions narrow substr lengths to signed 32-bit values.
+        # No SQLite value can exceed that bound, so saturation preserves full text.
+        prefix = [min(max_chars * 4, 2**31 - 1)] if max_chars > 0 else []
         sql = f"SELECT source, id, {projection} FROM web_pages WHERE source = ? AND id = ?"
         for source_id, page_id in dict.fromkeys(keys):
             row = active.execute(sql, prefix + [source_id, page_id]).fetchone()
