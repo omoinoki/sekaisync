@@ -1,0 +1,15 @@
+{
+  "schema": "work/checkpoint261002-baseline-failure@1",
+  "stage": "original benchmark runner baseline",
+  "exit_code": 1,
+  "error": "FileExistsError at code.mkdir(): benchmark/released-baseline already exists",
+  "released_algorithm_started": false,
+  "pages_or_queries_written": false,
+  "partial_stage": "work/scraper-261002/benchmark/baseline",
+  "partial_stage_retained": true,
+  "original_runner_or_stage_repaired": false,
+  "original_trial_complete_baseline_gate": false,
+  "target_obligations_remain": 200,
+  "continuation_scope": "normal target acquisition and incomplete semantic diagnostics only; never full protocol acceptance",
+  "complete_baseline_comparison_required_on_fresh_second_trial": true
+}

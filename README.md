@@ -25,6 +25,14 @@ English | [中文](README.zh-CN.md)
 
 **SekaiSync** is built specifically for Large Language Models (LLMs) and coding Agents (such as Claude, Cursor, and ChatGPT). It syncs official Master Data, multi-region localized terminology, and community story texts for *Project SEKAI* (PJ:SEKAI) into a local `store/`. Exposing retrieval capabilities through **MCP (Model Context Protocol)** or CLI commands, it ensures AI Agents rely on **ground-truth local data** when answering game-related questions—eliminating AI hallucinations at the source.
 
+### Current Development Goal
+
+The [261002 checkpoint goal](docs/PROJECT_GOALS_261002.md) timeboxes the next scraper quality leap to **2026-10-02 20:00, Asia/Singapore**. On new five-language material, the targets are at least 90% exact source-expression recall, at least 90% correct end-to-end coverage across 200 fixed cross-language obligations, and at least a 20-percentage-point improvement over the released baseline. Public interfaces and usage remain unchanged. Results and remaining gaps must be reported before the checkpoint is merged into `main`; these are acceptance targets, not achieved scores.
+
+Exhaustive, sense-correct, zero-error correspondence across all jointly released content remains the long-term vision, not a conclusion established by a finite benchmark. See the [scraper evolution roadmap](docs/TERM_SCRAPER_EVOLUTION_ROADMAP_2026-09-29.md).
+
+This sprint is closed and recurring work is paused. Engineering checks passed; full quality acceptance did not. See the [261002 checkpoint](docs/SCRAPER_CHECKPOINT_261002.md) for the separate frozen measurements and unexecuted work.
+
 
 
 <p align="center">

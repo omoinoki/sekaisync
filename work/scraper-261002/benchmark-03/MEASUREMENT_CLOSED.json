@@ -1,0 +1,172 @@
+{
+  "schema": "work/checkpoint261002-trial03-measurement-closed@1",
+  "status": "INCOMPLETE",
+  "closed_at": "2026-10-02T19:53:35+08:00",
+  "candidate_validation_report_sha256": "3544b62947fc08733488b5f28becc15d73395e7dbca42c9fd4e88e31e8acd36e",
+  "languages": [
+    {
+      "language": "en",
+      "reference_units": 293,
+      "matched": 282,
+      "acquired_vectors": 490,
+      "reference_external_vectors_not_precision_audited": 208,
+      "pending_source_tasks": 0,
+      "normal_submissions": 3,
+      "normal_source_flow_complete": true,
+      "strict_recall_percent": 96.24573378839591,
+      "receipt_reports": [
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/en/0001/report.json",
+          "sha256": "5fdc1612264ff68baaae73d590630b8c7fd02812e0bf2baa30df3b0a64c6edbd",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/en/0002/report.json",
+          "sha256": "cd05804f835dc2a95daf140092895cd9131a483051aaae7dc25abbaf5f06a6b0",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/en/0003/report.json",
+          "sha256": "93fd267e8d2b75184add3d8e37b893ea87f5ccb90033eb6c17180118f52c337d",
+          "status": "PASS",
+          "inert_replay": true
+        }
+      ]
+    },
+    {
+      "language": "ja",
+      "reference_units": 185,
+      "matched": 176,
+      "acquired_vectors": 439,
+      "reference_external_vectors_not_precision_audited": 263,
+      "pending_source_tasks": 0,
+      "normal_submissions": 2,
+      "normal_source_flow_complete": true,
+      "strict_recall_percent": 95.13513513513513,
+      "receipt_reports": [
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/ja/0001/report.json",
+          "sha256": "aec59b3e746c34c219237d9da7644f63aad5bf95b9fadb61dcf29a81fd6da3a5",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/ja/0002/report.json",
+          "sha256": "e8febee880ef3d11d815559bd46f653f0c90f86f6062bfdb6105b534d549aaf6",
+          "status": "PASS",
+          "inert_replay": true
+        }
+      ]
+    },
+    {
+      "language": "ko",
+      "reference_units": 229,
+      "matched": 218,
+      "acquired_vectors": 452,
+      "reference_external_vectors_not_precision_audited": 234,
+      "pending_source_tasks": 0,
+      "normal_submissions": 3,
+      "normal_source_flow_complete": true,
+      "strict_recall_percent": 95.19650655021834,
+      "receipt_reports": [
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/ko/0001/report.json",
+          "sha256": "9b97389c043d3479f57b0526f4474ba6b60b2803a23650b8f08b34b59f6bd6e7",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/ko/0002/report.json",
+          "sha256": "a60d994dae97986ecc8b0eb5f9a958991a7765ed702575c598dfbed127fa5185",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/ko/0003/report.json",
+          "sha256": "06c7ee9e28c02165d77ea7506b80abea1bd511003115c6d80334d0360a3cebf9",
+          "status": "PASS",
+          "inert_replay": true
+        }
+      ]
+    },
+    {
+      "language": "zh_hans",
+      "reference_units": 297,
+      "matched": 290,
+      "acquired_vectors": 442,
+      "reference_external_vectors_not_precision_audited": 152,
+      "pending_source_tasks": 0,
+      "normal_submissions": 2,
+      "normal_source_flow_complete": true,
+      "strict_recall_percent": 97.64309764309765,
+      "receipt_reports": [
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/zh_hans/0001/report.json",
+          "sha256": "bc0ddcd366717a9bc8ec6e7c47dd0f112d6755055cdb918c447fbf5e03fe5c6b",
+          "status": "PASS",
+          "inert_replay": true
+        },
+        {
+          "path": "work/scraper-261002/benchmark-03/submissions/zh_hans/0002/report.json",
+          "sha256": "99d9b31358f15aea61018960a90411eb07d28096b326d777db4ed0fa291dff49",
+          "status": "PASS",
+          "inert_replay": true
+        }
+      ]
+    },
+    {
+      "language": "zh_tw",
+      "reference_units": 277,
+      "matched": 0,
+      "acquired_vectors": 0,
+      "reference_external_vectors_not_precision_audited": 0,
+      "pending_source_tasks": 2,
+      "normal_submissions": 0,
+      "normal_source_flow_complete": false,
+      "strict_recall_percent": 0,
+      "receipt_reports": []
+    }
+  ],
+  "frozen_source_rows": 80,
+  "reference_units": 1281,
+  "matched": 966,
+  "acquired_vectors": 1823,
+  "fixed_source_units": 50,
+  "fixed_directed_obligations": 200,
+  "source_reference_seal_sha256": "744b9bec65d236caca97583837a2d3da0d984a4a24016ed8f0b5adf81bf62062",
+  "fixed_target_units_sha256": "494c36cdc3f8b3564d7b6727c80616bc84c08243e18fde0e0e34cc72d6d6a519",
+  "reference_original_sha256": {
+    "en": "1d4c75157c6646c0b841da5e4aed2f445a2f6d2c8ca76e6bbea9740fbf5ed89a",
+    "ja": "8ba20acab0998db6028c1c685570b35c07de068747c30d6daf654b90de90ccce",
+    "ko": "2d9e61a8dd2792cc84371d4c21fb816b981b37696b26088d856ced6f603e364d",
+    "zh_hans": "f1bc2d3b5549f5c46995813c6ae534459db198c5949247ced4efe74536592015",
+    "zh_tw": "9ce7d649e284cccf9a14dd6b3db259b769009a95da61a3d3774ab426aced79c4"
+  },
+  "target_stage_created": false,
+  "host_senses_frozen": false,
+  "baseline_created": false,
+  "score_stage_created": false,
+  "stop_exists": false,
+  "completed_source_languages": 4,
+  "completed_source_reference_units": 1004,
+  "completed_source_matched": 966,
+  "completed_source_recall_percent": 96.21513944223108,
+  "all_five_fixed_denominator_lower_bound_percent": 75.40983606557377,
+  "all_five_source_gate_evaluated": false,
+  "target_strict_score": null,
+  "baseline_score": null,
+  "lexical_uplift_pp": null,
+  "all_quality_gates_passed": false,
+  "reference_is_human_gold": false,
+  "reference_external_vectors_precision_audited": false,
+  "semantic_certificate": false,
+  "production_writes": 0,
+  "reader_cutoff_status": "NOT_CERTIFIED",
+  "reader_cutoff_note": "Slot/tool delays prevented zh_tw host dispatch. Root observed elapsed cutoff at19:17:30 and did not dispatch another reader. Exact last zh_hans dispatch time was not independently sealed; perfect cutoff compliance is not claimed.",
+  "source_reference_pre_freeze_correction_note": "zh_hans own bounded check stopped at one header/body coordinate; only the known geometry was repaired before Root normal reference freeze validated all originals. Do not claim first-pass own-check success.",
+  "comparison_note": "New content and independent reference scope differ from benchmark01. Do not infer equal-sample morphology causality or combine these source results with old target scores.",
+  "unexecuted_note": "All277 zh_tw source reference units and all200 target obligations remain in the fixed scope. No host-sense, target-reference, target-host, baseline or full-score stage ran.",
+  "debt_from_closed_prior_measurement": 13
+}

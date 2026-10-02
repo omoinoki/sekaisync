@@ -11,9 +11,11 @@ from sekaisync.term_proposals import (
 import json
 import math
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -22,6 +24,10 @@ from sekaisync import term_slots as _term_slots
 from sekaisync.glossary import load_glossary
 from sekaisync.layout import glossary_path, web_index_path
 from sekaisync.llm_client import LLMClient
+from sekaisync.line_alignment import (
+    align_lines, contains_term, dialogue_spans, find_term_span, select_translation,
+    source_term_occurrences, strip_speaker_label,
+)
 from sekaisync.normalize import best_match, normalize_name
 from sekaisync.trust import trust_for_source, trust_rank
 from sekaisync.webindex import is_auxiliary_page, load_web_pages, text_matches_language
@@ -87,6 +93,10 @@ TERM_STORY_KINDS = {
     "home_line",
     "character_voice",
     "mysekai",
+    "self_intro",
+    "mysekai_tweet",
+    "mysekai_talk",
+    "wordings",
 }
 
 _LOCAL_QUOTE_RE = re.compile(r"[「『“‘\"]([^」』”’\"\n]{2,80})[」』”’\"]")
@@ -181,6 +191,8 @@ _LOCAL_LATIN_STOPWORDS = {
     "your",
     "i", "we", "he", "she", "it", "they", "them", "me", "him", "her",
     "my", "our", "their", "his", "its", "here",
+    "thank", "thanks", "please", "sorry", "okay", "ok", "wow", "yeah",
+    "yes", "hey", "hi", "hello",
     "was", "were", "been", "being", "am", "is", "are",
     "do", "does", "did", "have", "has", "had",
 }
@@ -950,6 +962,12 @@ def page_story_key(page: dict) -> Optional[str]:
     languages — 58k story pages looked monolingual when the corpus actually
     carries all five versions.
     """
+    from sekaisync.wording_identity import _metadata
+    metadata = _metadata(page)
+    if metadata:
+        return metadata["family"]
+    if page.get("kind") == "wordings":
+        return None
     url = str(page.get("url", ""))
     page_id = str(page.get("id", ""))
     kind = str(page.get("kind", ""))
@@ -987,8 +1005,53 @@ def load_pages(
         pages = [page for page in pages if not is_auxiliary_page(page)]
     return pages
 
+class _StoryGroups(dict):
+    """Mapping-compatible carrier for private wording conflict diagnostics."""
+    def __init__(self):
+        super().__init__()
+        self.wording_debts = []
+        self.wording_contributors = []
+
+
 def group_pages_by_story(pages: Iterable[dict]) -> dict[str, dict[str, dict]]:
-    grouped: dict[str, dict[str, dict]] = {}
+    pages = list(pages)
+    wording_versions = defaultdict(list)
+    for page in pages:
+        if page.get("kind") != "wordings":
+            continue
+        key = page_story_key(page)
+        if not key:
+            continue
+        version = (key, _term_language(str(page.get("language", ""))))
+        wording_versions[version].append(page)
+    grouped = _StoryGroups() if wording_versions else {}
+    representatives = {}
+    from sekaisync.wording_identity import _metadata
+    from sekaisync.sources import source_rank
+    for (family, language), versions in sorted(wording_versions.items()):
+        contributors = sorted([dict(page_source=page["source"], page_id=page["id"],
+                                    page_sha256=hashlib.sha256(str(page.get("text") or "").encode()).hexdigest(),
+                                    value_version_sha256=_metadata(page)["value_version_sha256"],
+                                    record_sha256=_metadata(page)["record_sha256"])
+                               for page in versions], key=lambda value: (value["page_source"], value["page_id"],
+                                                                         value["record_sha256"]))
+        if len({(page.get("text"), _metadata(page)["value_version_sha256"]) for page in versions}) > 1:
+            grouped.wording_debts.append(dict(reason="conflicting_wording_value_versions", story_key=family,
+                                              language=language, contributors=contributors))
+            representatives[(family, language)] = None
+            continue
+        chosen = min(versions, key=lambda page: (not _page_usable(page, language),
+                     is_auxiliary_page(page), bool(page.get("overlay")), -trust_rank(str(page.get("trust") or "")),
+                     source_rank(str(page.get("source") or "")), str(page.get("source") or ""),
+                     str(page.get("id") or ""), _metadata(page)["record_sha256"]))
+        representatives[(family, language)] = chosen
+        chosen_metadata = _metadata(chosen)
+        if chosen_metadata["no_expression"]:
+            grouped.wording_debts.append(dict(reason="wording_no_expression", story_key=family, language=language,
+                no_expression_reason=chosen_metadata["no_expression_reason"], contributors=contributors))
+        if len(versions) > 1:
+            grouped.wording_contributors.append(dict(story_key=family, language=language,
+                selected_page_source=chosen["source"], selected_page_id=chosen["id"], contributors=contributors))
     for page in pages:
         key = page_story_key(page)
         if not key:
@@ -997,6 +1060,8 @@ def group_pages_by_story(pages: Iterable[dict]) -> dict[str, dict[str, dict]]:
             continue
         language = _term_language(str(page.get("language", "")))
         if not language:
+            continue
+        if page.get("kind") == "wordings" and representatives.get((key, language)) is not page:
             continue
 
         def page_usable(candidate: dict) -> bool:
@@ -1327,7 +1392,8 @@ def extract_terms(
 
 def _is_proper_latin(term: str) -> bool:
     term = term.strip(" .,!?。！？")
-    if len(term) < 3 or term.lower() in _LOCAL_LATIN_STOPWORDS:
+    if (len(term) < 2 or (len(term) < 3 and not term.isupper())
+            or term.lower() in _LOCAL_LATIN_STOPWORDS):
         return False
     if "/" in term or "×" in term or "·" in term:
         return True
@@ -1337,20 +1403,63 @@ def _is_proper_latin(term: str) -> bool:
 
 
 def _local_latin_candidates(segment: str) -> list[str]:
+    """Extract complete proper-name runs, including internal title words.
+
+    Repeating a two-token regex consumed ``MORE MORE`` and ``JUMP`` in
+    different matches and swallowed adjacent prose. Token spans let us keep
+    all words in ``Star of Dawn`` while stopping before a lower-case predicate.
+    This proposes a surface; it does not establish a translation by itself.
+    """
+    connectors = {"of", "the", "and", "for", "in", "on", "at", "to", "a", "an"}
+    glue = re.compile(r"[\s/&＆×·・＊*+\-]+")
+    tokens = list(_LOCAL_LATIN_TOKEN_RE.finditer(segment))
     candidates: list[str] = []
-    compound_spans: list[tuple[int, int]] = []
-    for match in _LOCAL_LATIN_COMPOUND_RE.finditer(segment):
-        term = match.group(0).strip(" .,!?。！？")
-        if _is_proper_latin(term):
-            candidates.append(term)
-            compound_spans.append((match.start(), match.end()))
-    for match in _LOCAL_LATIN_TOKEN_RE.finditer(segment):
-        if any(match.start() >= start and match.end() <= end for start, end in compound_spans):
+    i = 0
+    while i < len(tokens):
+        first = tokens[i]
+        # All-caps names can contain ordinary words, including repeated ones.
+        # Do not discard their leading words one by one before seeing the run.
+        upper_end = i
+        if first.group().isupper():
+            while upper_end + 1 < len(tokens):
+                left, right = tokens[upper_end], tokens[upper_end + 1]
+                gap = segment[left.end():right.start()]
+                if (not right.group().isupper() or not gap
+                        or not glue.fullmatch(gap)):
+                    break
+                upper_end += 1
+            if upper_end > i and any(_is_proper_latin(token.group())
+                                     for token in tokens[i:upper_end + 1]):
+                candidates.append(segment[first.start():tokens[upper_end].end()])
+                i = upper_end + 1
+                continue
+        if not _is_proper_latin(first.group()):
+            i += 1
             continue
-        term = match.group(0)
-        if _is_proper_latin(term):
-            candidates.append(term)
-    return candidates
+        end, last = first.end(), i
+        j = i + 1
+        while j < len(tokens):
+            previous, current = tokens[j - 1], tokens[j]
+            gap = segment[previous.end():current.start()]
+            if not gap or not glue.fullmatch(gap):
+                break
+            value = current.group()
+            explicit_glue = any(not char.isspace() for char in gap)
+            if _is_proper_latin(value) or (explicit_glue and value.lower() not in _LOCAL_LATIN_STOPWORDS):
+                end, last = current.end(), j
+                j += 1
+                continue
+            if value.lower() in connectors and j + 1 < len(tokens):
+                following = tokens[j + 1]
+                next_gap = segment[current.end():following.start()]
+                if next_gap.isspace() and _is_proper_latin(following.group()):
+                    end, last = following.end(), j + 1
+                    j += 2
+                    continue
+            break
+        candidates.append(segment[first.start():end])
+        i = last + 1
+    return list(dict.fromkeys(candidates))
 
 
 def build_protagonist_blocklist(glossary: Iterable[Any]) -> set[str]:
@@ -1442,6 +1551,12 @@ def tokenize_ja(text: str, lexicon: dict[str, dict]) -> list[dict]:
             key = normalize_name(sub)
             entry = lexicon.get(key)
             if entry is not None and entry["surface"] == sub:
+                if (sub[0].isascii() and sub[0].isalnum() and i
+                        and text[i - 1].isascii() and text[i - 1].isalnum()):
+                    continue
+                if (sub[-1].isascii() and sub[-1].isalnum() and i + length < n
+                        and text[i + length].isascii() and text[i + length].isalnum()):
+                    continue
                 tokens.append({
                     "start": i,
                     "end": i + length,
@@ -1469,6 +1584,8 @@ def _local_candidates(segment: str, source_language: str) -> list[tuple[str, str
         seen.add(key)
         candidates.append((term, kind, quoted))
 
+    # Speaker labels carry conversation structure, not a newly discovered term.
+    segment = re.sub(r"^[^：:]{1,30}[：:]\s*", "", segment)
     for match in _LOCAL_QUOTE_RE.finditer(segment):
         add(match.group(1), "coined_term", quoted=True)
     if source_language == "ja":
@@ -1670,12 +1787,22 @@ def _source_candidate_acceptable(term: str, source_language: str) -> bool:
             return False
         if term in _JA_KATAKANA_STOPWORDS:
             return False
-        if re.search(r"[ぁ-んァ-ヶー][をにへでとはがのよりもからまで]|[をにへでとはがのよりもからまで][ぁ-んァ-ヶ]", term):
-            return False
-        if re.search(r"(の|と|を|に|へ|は|が|も|で|から|まで|より|には|では|とは)", term):
+        # Internal particles can connect a proper name (森の劇団). Reject
+        # dangling grammatical endings instead of any matching character.
+        if re.search(r"(?:の|と|を|に|へ|は|が|も|で|から|まで|より|には|では|とは)$", term):
             return False
     if source_language in ("zh_hans", "zh_tw", "zh_hant", "zh_cn"):
-        if any(ch in term for ch in _ZH_FUNCTION_CHARS):
+        # Individual characters are not Chinese words: 来 in 未来, 下 in 地下
+        # and 之 in a name do not make the whole surface a grammar fragment.
+        if term in _ZH_FUNCTION_WORDS:
+            return False
+        if re.match(r"^(?:我们|你们|他们|她们|这个|那个|这些|那些|因为|所以|为了|关于|对于)", term):
+            return False
+        if re.match(r"^(?:我|你|他|她|它|这|那)(?:就|真|才)?(?:要|会|想|能|去|来|在|是|有)", term):
+            return False
+        if re.match(r"^(?:今天|明天|昨天|现在|刚才)(?:上午|下午|晚上|早上)?(?:要|会|想|能|去|来|在|是|有)", term):
+            return False
+        if re.search(r"[的了着吧吗呢啊呀]$", term):
             return False
     if source_language == "ko":
         if _strip_ko_suffix(term) != term:
@@ -1691,10 +1818,13 @@ def _translation_candidate_acceptable(term: str, target_language: str) -> bool:
         words = re.findall(r"[A-Za-z][A-Za-z0-9'’\-]*", term)
         if " ".join(words) in _GENERIC_LATIN_TRANSLATIONS:
             return False
-        # Any stopword ANYWHERE disqualifies a multi-word candidate
-        # ("Even Shiraishi's", "A VIRTUAL") — real names don't contain
-        # function words. Possessives are speaker-label artifacts.
-        if any(w.lower() in _LOCAL_LATIN_STOPWORDS for w in words):
+        # Leading/trailing function words are phrasing. Internal title
+        # connectors can be part of a name (Star of Dawn); possessives remain
+        # unsupported because these candidates are not syntactically parsed.
+        connectors = {"of", "the", "and", "for", "in", "on", "at", "to", "a", "an"}
+        if any(w.lower() in _LOCAL_LATIN_STOPWORDS
+               and not (0 < i < len(words) - 1 and w.lower() in connectors)
+               for i, w in enumerate(words)):
             return False
         if any(w.endswith(("'s", "’s")) for w in words):
             return False
@@ -1920,7 +2050,7 @@ def _term_stories(
         eligible: Optional[set[str]] = None
         for sk, by in groups.items():
             spg = _group_page(by, source_language)
-            if spg is None or source_term not in str(spg.get("text", "")):
+            if spg is None or not contains_term(str(spg.get("text", "")), source_term):
                 continue
             if any(_group_page(by, language) is None for language in targets):
                 continue
@@ -1939,17 +2069,23 @@ def _term_stories(
     out: set[str] = set()
     for sk in eligible:
         spg = _group_page(groups.get(sk, {}), source_language)
-        if spg is not None and source_term in str(spg.get("text", "")):
+        if spg is not None and contains_term(str(spg.get("text", "")), source_term):
             out.add(sk)
     return out
 
 
 def _page_usable(page: dict, language: str) -> bool:
     text = page.get("text")
-    return (not any(page.get(flag) for flag in
-                    ("asset_mismatch", "content_language_mismatch", "untranslated"))
-            and isinstance(text, str) and bool(text.strip())
-            and text_matches_language(_term_language(language), text))
+    if (any(page.get(flag) for flag in ("asset_mismatch", "content_language_mismatch", "untranslated"))
+            or not isinstance(text, str) or not text.strip()):
+        return False
+    language = _term_language(language)
+    if text_matches_language(language, text):
+        return True
+    if page.get("kind") == "wordings":
+        from sekaisync.wording_identity import _allows_native_ja_han_ui
+        return _allows_native_ja_han_ui(page, language)
+    return False
 
 
 def _group_page(by_language: dict, lang: str) -> Optional[dict]:
@@ -2067,8 +2203,8 @@ def build_alignment_vocab(
     (wordseg: frequency × PMI cohesion × boundary entropy). Discovered words
     replace naive sub-window enumeration, which flooded the aligner with
     fragments (爱莉/笑梦/弧光). Korean goes through whitespace tokenisation
-    instead (see ``_discover_ko_words``). English keeps its latin tokenizer
-    unfiltered.
+    instead (see ``_discover_ko_words``). English materializes proper-name
+    candidates from its tokenizer, alongside the official glossary seeds.
 
     Every entry is stored as a ``normalize_name()`` key, because that is what
     the filter sites compare against::
@@ -2082,7 +2218,7 @@ def build_alignment_vocab(
     Character/person names are EXCLUDED on purpose: they are speaker labels in
     dialogue, never translations of non-person terms, and their ubiquity inside
     a unit's stories would otherwise outscore the true translation."""
-    from sekaisync.wordseg import discover_words
+    from sekaisync.wordseg import discover_words, _discover_content_words
 
     targets = [t for t in targets if t]
     vocab: dict[str, set[str]] = {}
@@ -2135,7 +2271,8 @@ def build_alignment_vocab(
         official_zh = glossary_by_lang["zh_hans"] | glossary_by_lang["zh_tw"]
         for language in zh_languages:
             words: set[str] = set(official_zh)
-            texts = _texts(language)
+            texts = ["\n".join(strip_speaker_label(line) for line in text.splitlines())
+                     for text in _texts(language)]
             if texts:
                 # boundary_stop_chars: a word may not begin or end on a
                 # Chinese function character. Without it the discovery pass
@@ -2147,10 +2284,22 @@ def build_alignment_vocab(
                     max_chars=2_000_000,
                     boundary_stop_chars=_ZH_FUNCTION_CHARS,
                 )
+                # Target vocabulary must have the same ordinary-content-word
+                # recall as the source extractor. High-PMI discovery alone
+                # rejects common constituents even with clear word evidence.
+                from sekaisync.zhfirst import _PRONOUNS_ZH, _ZH_FUNCTION_2
+                found |= _discover_content_words(texts, min_freq=2, max_chars=2_000_000)
                 words |= {
                     normalize_name(w) for w in found
-                    if not _is_char_fragment(normalize_name(w))
+                    if 2 <= len(w) <= 24 and w not in _ZH_FUNCTION_2 and w not in _PRONOUNS_ZH
+                    and not re.search(r"[的了吗呢吧呀啊]$", w)
+                    and not _is_char_fragment(normalize_name(w))
                 }
+                for text in texts:
+                    for line in _alignment_lines(text):
+                        words.update(normalize_name(w) for w in _alignment_candidates(
+                            line, language, False) if re.search(r"[A-Za-z]", w)
+                            and not _is_char_fragment(normalize_name(w)))
             _assign(language, words)
 
     if any(_term_language(t) == "ko" for t in targets):
@@ -2174,9 +2323,17 @@ def build_alignment_vocab(
         _assign("ja", words)
 
     if any(_term_language(t) == "en" for t in targets):
-        # English keeps its latin tokenizer unfiltered (documented above), but
-        # official glossary names remain an authoritative seed.
-        _assign("en", set(glossary_by_lang["en"]))
+        # Empty vocabularies consistently mean no candidates. The former
+        # English empty-set sentinel meant "unfiltered" and silenced IDF once
+        # all callers shared the stricter candidate matcher. Materialize the
+        # actual corpus vocabulary, retaining official names as seeds.
+        words = set(glossary_by_lang["en"])
+        for text in _texts("en"):
+            for line in _alignment_lines(text):
+                words.update(normalize_name(candidate) for candidate in
+                             _alignment_candidates(line, "en", False)
+                             if normalize_name(candidate) not in char_names)
+        _assign("en", words)
 
     return vocab
 
@@ -2186,101 +2343,64 @@ def build_translation_memory(
     source_language: str,
     target_languages: Iterable[str],
 ) -> dict[tuple[str, str], str]:
-    targets = [language for language in target_languages if language]
+    """Learn only independently repeated, aligned phrase correspondences.
+
+    A five-line window used to contribute five observations of the same source
+    occurrence, so one story could "prove" a neighbouring phrase by itself.
+    Counts below are per story, with target document frequency counted once.
+    """
+    targets = list(dict.fromkeys(language for language in target_languages if language))
     groups = group_pages_by_story(pages)
     co: dict[tuple[str, str], Counter] = defaultdict(Counter)
     glob: dict[str, Counter] = defaultdict(Counter)
-    total: dict[tuple[str, str], int] = defaultdict(int)
-
-    for _story_key, by_language in groups.items():
+    total: Counter = Counter()
+    for by_language in groups.values():
         source_page = _group_page(by_language, source_language)
         if source_page is None:
             continue
-        # ja-only stories have no counterpart: skip them wholesale so the TM
-        # never learns from unreleased (日服独占) text.
-        if all(_group_page(by_language, language) is None for language in targets):
-            continue
-        source_lines = [
-            line.strip()
-            for line in str(source_page.get("text", "")).splitlines()
-            if line.strip()
-        ]
-        if not source_lines:
+        source_lines = _alignment_lines(str(source_page.get("text", "")))
+        source_terms = [set(term for term, _kind, _quoted in
+                            _local_candidates(strip_speaker_label(line), source_language)
+                            if _source_candidate_acceptable(term, source_language))
+                        for line in source_lines]
+        all_source_terms = set().union(*source_terms) if source_terms else set()
+        if not all_source_terms:
             continue
         for target_language in targets:
             target_page = _group_page(by_language, target_language)
             if target_page is None:
                 continue
-            target_lines = [
-                line.strip()
-                for line in str(target_page.get("text", "")).splitlines()
-                if line.strip()
-            ]
-            if not target_lines:
-                continue
-            n_source = len(source_lines)
-            n_target = len(target_lines)
-            for source_index, source_line in enumerate(source_lines):
-                source_terms = [
-                    term
-                    for term, _kind, _quoted in _local_candidates(source_line, source_language)
-                    if _source_candidate_acceptable(term, source_language)
-                ]
-                if not source_terms:
+            target_lines = _alignment_lines(str(target_page.get("text", "")))
+            aligned = align_lines(source_lines, target_lines, source_language, target_language)
+            line_candidates = [_alignment_candidates(line, target_language, True)
+                               for line in target_lines]
+            glob[target_language].update(set().union(*line_candidates) if line_candidates else ())
+            for term in all_source_terms:
+                total[(term, target_language)] += 1
+            in_story: dict[str, set[str]] = defaultdict(set)
+            for si, terms in enumerate(source_terms):
+                indices = aligned.target_indices(si)
+                if not indices:
                     continue
-                predicted = (
-                    round(source_index * (n_target - 1) / max(1, n_source - 1))
-                    if n_source > 1
-                    else 0
-                )
-                for target_index in range(
-                    max(0, predicted - 2),
-                    min(n_target, predicted + 3),
-                ):
-                    target_candidates = [
-                        candidate
-                        for candidate in _local_translation_candidates(
-                            target_lines[target_index],
-                            target_language,
-                        )
-                        if _translation_candidate_acceptable(candidate, target_language)
-                    ]
-                    if not target_candidates:
-                        continue
-                    for term in source_terms:
-                        key = (term, target_language)
-                        total[key] += 1
-                        for candidate in target_candidates:
-                            co[key][candidate] += 1
-                            glob[target_language][candidate] += 1
-
+                candidates = set().union(*(line_candidates[ti] for ti in indices))
+                if len(indices) > 1:
+                    candidates.update(_alignment_candidates(
+                        " ".join(target_lines[ti] for ti in indices), target_language, True))
+                for term in terms:
+                    in_story[term].update(candidates)
+            for term, candidates in in_story.items():
+                co[(term, target_language)].update(candidates)
     memory: dict[tuple[str, str], str] = {}
     for key, counts in co.items():
-        occurrence_total = total[key]
-        if occurrence_total < 2:
-            continue
-        best_score = 0.0
-        best_candidate = ""
+        scored = []
         for candidate, count in counts.items():
-            if count < 2:
+            frequency = max(count, glob[key[1]][candidate])
+            if count < 2 or count / total[key] < 0.30 or count / frequency < 0.30:
                 continue
-            global_count = glob[key[1]].get(candidate, 1)
-            top_for_key = max(counts.values()) if counts else 1
-            if count / max(1, top_for_key) < 0.3:
-                continue
-            score = (count * count) / max(1, global_count)
-            if any(char.isupper() for char in candidate[1:]):
-                score += 0.5
-            if re.search(r"[/×· ]", candidate):
-                score += 0.25
-            if score > best_score or (best_candidate and score == best_score and len(candidate) > len(best_candidate)):
-                best_score = score
-                best_candidate = candidate
-        # Higher bar for high-occurrence terms to avoid noisy co-occurrence,
-        # but low bar for the 2-occurrence fixture used in unit tests.
-        threshold = 0.30 if occurrence_total >= 3 else 0.05
-        if best_candidate and best_score >= threshold:
-            memory[key] = best_candidate
+            scored.append((candidate, count * count / (frequency * total[key])))
+        selected = select_translation(scored)
+        if selected:
+            memory[key] = selected
     return memory
 
 
@@ -2303,9 +2423,10 @@ def compute_lang_idf(
     discovered words), so fragment enumeration cannot dominate."""
     if total_stories is None:
         total_stories = max(1, len(groups))
+    targets = tuple(dict.fromkeys(target_languages))
     df: dict[tuple[str, str], int] = defaultdict(int)
     for sk, by in groups.items():
-        for lang in target_languages:
+        for lang in targets:
             pg = _group_page(by, lang)
             if pg is None:
                 continue
@@ -2315,19 +2436,90 @@ def compute_lang_idf(
                 # Sub-window enumeration is only worth it when there is no
                 # vocabulary to filter against; with one, the aligner keeps
                 # only exact discovered words anyway.
-                cands = _local_translation_candidates(
-                    seg.strip(), lang, enumerate_zh_windows=not allowed,
-                )
-                if allowed:
-                    cands = [c for c in cands if normalize_name(c) in allowed]
+                cands = _aligned_span_candidates(seg.strip(), lang, allowed)
                 for cand in cands:
-                    if _translation_candidate_acceptable(cand, lang) and cand not in seen:
+                    if cand not in seen:
                         seen.add(cand)
                         df[(lang, cand)] += 1
     return {
         key: math.log(total_stories / max(1, df[key]))
         for key in df
     }
+
+
+@lru_cache(maxsize=1024)
+def _alignment_lines(text: str) -> tuple[str, ...]:
+    return tuple(line.strip() for line in text.splitlines() if line.strip())
+
+
+@lru_cache(maxsize=32768)
+def _alignment_candidates(line: str, language: str, enumerate_windows: bool) -> tuple[str, ...]:
+    # Cache raw candidates only: vocabularies may be replaced between builds.
+    # Filtering a cached result by a stale vocabulary would preserve old bugs.
+    return tuple(dict.fromkeys(candidate for candidate in _local_translation_candidates(
+        line, language, enumerate_zh_windows=enumerate_windows)
+        if _translation_candidate_acceptable(candidate, language)))
+
+
+@lru_cache(maxsize=8192)
+def _vocabulary_offsets(line: str) -> tuple[str, str, tuple[int, ...], tuple[int, ...]]:
+    """Normalized text paired with exact source character offsets.
+
+    Names are at most 40 characters. Scanning these local spans costs O(line
+    length * 40), independent of vocabulary size, and cannot retain a stale
+    vocabulary. Keep source offsets through case/NFKC expansion and ignore
+    speaker labels; returned values are never normalized storage keys.
+    """
+    text = re.sub(r"^[^：:]{1,30}[：:]\s*", "", line)
+    folded: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    i = 0
+    while i < len(text):
+        end = i + 1
+        while end < len(text) and (unicodedata.combining(text[end]) or text[end] in "ﾞﾟ"):
+            end += 1
+        chunk = normalize_name(text[i:end])
+        folded.extend(chunk)
+        starts.extend([i] * len(chunk))
+        ends.extend([end] * len(chunk))
+        i = end
+    return text, "".join(folded), tuple(starts), tuple(ends)
+
+
+def _aligned_span_candidates(line: str, language: str,
+                             allowed: Optional[set[str]]) -> tuple[str, ...]:
+    if allowed is None:
+        return _alignment_candidates(line, language, True)
+    if not allowed:
+        return ()
+    # The vocabulary already supplies lexical evidence. Do not run its full
+    # nouns through a function-character splitter again. Check membership
+    # before allocating display spans and never cache an entire n-gram table.
+    text, normalized, starts, ends = _vocabulary_offsets(line)
+    out: list[str] = []
+    for start in range(len(normalized)):
+        if start and starts[start] == starts[start - 1]:
+            continue
+        for stop in range(start + 2, min(len(normalized), start + 40) + 1):
+            if stop < len(normalized) and ends[stop - 1] == ends[stop]:
+                continue
+            if normalized[start:stop] not in allowed:
+                continue
+            surface = text[starts[start]:ends[stop - 1]]
+            if len(surface) > 40 or re.search(r"[。！？!?…;；\n]", surface):
+                break
+            # Boundaries apply to the whole original line, not a sliced value.
+            left = text[starts[start] - 1] if starts[start] else ""
+            right = text[ends[stop - 1]] if ends[stop - 1] < len(text) else ""
+            if (surface[0].isascii() and surface[0].isalnum() and left
+                    and left.isascii() and (left.isalnum() or left == "_")):
+                continue
+            if (surface[-1].isascii() and surface[-1].isalnum() and right
+                    and right.isascii() and (right.isalnum() or right == "_")):
+                continue
+            out.append(surface)
+    return tuple(dict.fromkeys(out))
 
 
 def align_term_by_frequency(
@@ -2340,10 +2532,12 @@ def align_term_by_frequency(
     max_candidates: int = 8,
     src_stories: Optional[set[str]] = None,
 ) -> str:
-    """Distribution alignment: collect candidate translations across the stories
-    where the term appears, score by doc-level co-occurrence × IDF, return the
-    best. ``src_stories`` is the caller-provided inverted index entry; when
-    omitted it is derived by a (slow) full scan."""
+    """Vote across aligned dialogue spans in independent paired stories.
+
+    Only source occurrence lines contribute; target neighbours and whole-story
+    co-occurrence are never substitutes for a correspondence. ``src_stories``
+    retains its public inverted-index contract and avoids a corpus scan.
+    """
     # Source-side gate: the aligner used to accept anything the caller passed
     # in, so interjections and sentence fragments (いえーい/えー/お～/お前……)
     # were aligned against whatever line the position predictor landed on and
@@ -2364,41 +2558,34 @@ def align_term_by_frequency(
     if len(src_stories) < 2:
         return ""
     allowed = vocab.get(target_language) if vocab else None
-    # LINE-LOCAL collection with cross-story voting: candidates come ONLY from
-    # the predicted counterpart line of a line containing the term — never from
-    # the whole story. Whole-story collection degenerates for single-story
-    # terms (containment 1/1=1.0 lets any rare word win: ミュージカル→Dorothy).
+    if vocab and allowed is None:
+        allowed = next((values for lang, values in vocab.items()
+                        if _term_language(lang) == _term_language(target_language)), None)
     co_docs: dict[str, int] = defaultdict(int)
-    for sk in src_stories:
+    eligible_stories = 0
+    for sk in sorted(src_stories):
         by = groups.get(sk, {})
         spg = _group_page(by, source_language)
         tpg = _group_page(by, target_language)
         if spg is None or tpg is None:
             continue
-        src_lines = [ln.strip() for ln in str(spg.get("text", "")).splitlines() if ln.strip()]
-        tgt_lines = [ln.strip() for ln in str(tpg.get("text", "")).splitlines() if ln.strip()]
+        src_lines = _alignment_lines(str(spg.get("text", "")))
+        tgt_lines = _alignment_lines(str(tpg.get("text", "")))
         if not src_lines or not tgt_lines:
             continue
-        hit_idx = [i for i, ln in enumerate(src_lines) if source_term in ln]
+        hit_idx = source_term_occurrences(src_lines, source_term)
         if not hit_idx:
             continue
+        eligible_stories += 1
+        aligned = align_lines(src_lines, tgt_lines, source_language, target_language)
         seen_in_story: set[str] = set()
         for si in hit_idx:
-            pred = round(si * (len(tgt_lines) - 1) / max(1, len(src_lines) - 1)) if len(src_lines) > 1 else 0
-            # ±0 primary; ±1 as fallback window when the strict line is empty.
-            for ti in (pred, pred - 1, pred + 1):
-                if ti < 0 or ti >= len(tgt_lines):
-                    continue
-                cands = _local_translation_candidates(
-                    tgt_lines[ti], target_language, enumerate_zh_windows=not allowed,
-                )
-                if allowed:
-                    cands = [c for c in cands if normalize_name(c) in allowed]
-                for cand in cands:
-                    if _translation_candidate_acceptable(cand, target_language):
-                        seen_in_story.add(cand)
-            if seen_in_story:
-                break  # first productive line is the best positional evidence
+            indices = aligned.target_indices(si)
+            spans = [tgt_lines[ti] for ti in indices]
+            if len(indices) > 1:
+                spans.append(" ".join(tgt_lines[ti] for ti in indices))
+            for span in spans:
+                seen_in_story.update(_aligned_span_candidates(span, target_language, allowed))
         for cand in seen_in_story:
             co_docs[cand] += 1
     if not co_docs:
@@ -2411,11 +2598,15 @@ def align_term_by_frequency(
     n_total_stories = max(1, len(groups))
     min_containment = 0.30
     filtered: dict[str, int] = {}
-    n_src = len(src_stories)
+    n_src = eligible_stories
     for cand, co in co_docs.items():
         idf_val = idf.get((target_language, cand))
         if idf_val is None:
+            idf_val = idf.get((_term_language(target_language), cand))
+        if idf_val is None:
             continue  # candidate unseen in global stats: no evidence at all
+        if not math.isfinite(idf_val) or idf_val < 0:
+            continue
         # Cross-story support: the candidate must recur in at least two source
         # stories AND in a real share of them. Single-story hits are position
         # noise (the predictor lands on an unrelated line often enough).
@@ -2426,27 +2617,19 @@ def align_term_by_frequency(
         # still dropping single-line position noise.
         if co / n_src < 0.25:
             continue
-        df_global = max(1, round(n_total_stories / math.exp(idf_val)))
+        df_global = max(1, round(n_total_stories * math.exp(-idf_val)))
         if co / df_global >= min_containment or co >= df_global:
             filtered[cand] = co
     if not filtered:
         return ""
-    ranked = sorted(
-        ((cand, co * idf.get((target_language, cand), 0.1)) for cand, co in filtered.items()),
-        key=lambda kv: (kv[1], kv[0]),
-        reverse=True,
-    )
-    if not ranked or ranked[0][1] <= 0.0:
-        return ""
-    # Near-top tiebreak: prefer the LONGEST candidate within 75% of the best
-    # score — 菲尼克斯奇幻乐园 should beat its own substring 菲尼克斯, and
-    # Phoenix Wonderland beat Phoenix.
-    best_score = ranked[0][1]
-    best_cand = max(
-        (c for c, s in ranked if s >= best_score * 0.75),
-        key=len,
-    )
-    return best_cand
+    ranked = [(cand, co * max(0.05, idf.get((target_language, cand),
+                  idf.get((_term_language(target_language), cand), 0.0))))
+              for cand, co in filtered.items()]
+    # A zero-IDF word in a tiny corpus is not automatically false. It can win
+    # only when the aligned span supplies no similarly supported competitor.
+    # Preserve max_candidates as a public parameter, without hiding a tie
+    # beyond an arbitrary top-k cutoff.
+    return select_translation(ranked)
 
 
 def build_alignment_resources(
@@ -2455,54 +2638,99 @@ def build_alignment_resources(
     glossary: Optional[Iterable[Any]],
     cache_dir: Optional[Path] = None,
 ) -> tuple[dict[str, set[str]], dict[tuple[str, str], float]]:
-    """Vocab + IDF with a disk cache keyed by the target-language corpus size.
+    """Build vocab + IDF, reusing only a matching content-versioned cache.
 
-    Building both from scratch costs ~6 minutes on the full store; the cache
-    makes repeated `terms extract` runs instant until the corpus changes."""
-    targets = [t for t in targets if t]
-    # The signature must be sensitive to every corpus the vocab is built from.
-    # `by.get(lang)` used to miss the traditional-Chinese corpus completely
-    # (the corpus spells it zh_hant, this loop asked for zh_tw), so that half
-    # of the store could change without ever invalidating the cached vocab.
-    sig_parts = []
-    for lang in ("zh_hans", "zh_tw", "en", "ko"):
-        chars = sum(
-            len(str((_group_page(by, lang) or {}).get("text", "")))
-            for by in groups.values()
-        )
-        sig_parts.append(f"{lang}:{chars}")
-    signature = "|".join(sig_parts)
+    Character counts cannot identify a corpus: equal-length corrections,
+    Japanese updates, new target languages and glossary changes all used to
+    keep obsolete resources alive. Hash all builder inputs, including their
+    order (discovery has a character budget), and invalidate pre-repair caches.
+    """
+    targets = list(dict.fromkeys(t for t in targets if t))
+    glossary = tuple(glossary or ())
+    cache_version = 4  # Bump when vocabulary/IDF semantics change.
+    signature = ""
+    if cache_dir is not None:
+        digest = hashlib.sha256()
+
+        def add(value):
+            payload = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                 separators=(",", ":")).encode("utf-8")
+            digest.update(len(payload).to_bytes(8, "big"))
+            digest.update(payload)
+
+        add([cache_version, targets])
+        for key, by_language in groups.items():
+            add(str(key))
+            # Chinese discovery reads both scripts, and ja can be a target
+            # for zhfirst. Hash the same alias-resolved usable pages as the
+            # builders, rather than guessing inputs from requested targets.
+            for lang in sorted(TERM_LANGUAGES | set(targets)):
+                page = _group_page(by_language, lang)
+                add([lang, None if page is None else str(page.get("text", ""))])
+        for entry in glossary:
+            add([str(getattr(entry, "kind", "")),
+                 list((getattr(entry, "names", {}) or {}).items())])
+        signature = digest.hexdigest()
 
     if cache_dir is not None:
         try:
             cache_path = Path(cache_dir) / "alignment_resources.json"
             if cache_path.exists():
                 data = json.loads(cache_path.read_text(encoding="utf-8"))
-                if data.get("signature") == signature:
-                    vocab = {k: set(v) for k, v in data["vocab"].items()}
-                    idf = {
-                        tuple(k.split("\x00")): v
-                        for k, v in data["idf"].items()
-                    }
+                if data.get("version") == cache_version and data.get("signature") == signature:
+                    raw_vocab, raw_idf = data["vocab"], data["idf"]
+                    if not isinstance(raw_vocab, dict) or set(raw_vocab) != set(targets):
+                        raise ValueError("incomplete cached vocabulary")
+                    if any(not isinstance(words, list) or
+                           any(not isinstance(word, str) for word in words)
+                           for words in raw_vocab.values()):
+                        raise ValueError("invalid cached vocabulary")
+                    if not isinstance(raw_idf, dict):
+                        raise ValueError("invalid cached IDF")
+                    idf = {}
+                    for key, value in raw_idf.items():
+                        parts = key.split("\x00")
+                        if (len(parts) != 2 or parts[0] not in targets or
+                                not isinstance(value, (int, float)) or
+                                isinstance(value, bool) or not math.isfinite(value) or value < 0):
+                            raise ValueError("invalid cached IDF entry")
+                        idf[tuple(parts)] = value
+                    vocab = {k: set(v) for k, v in raw_vocab.items()}
                     return vocab, idf
-        except (OSError, json.JSONDecodeError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass  # fall through to rebuild
 
     vocab = build_alignment_vocab(groups, targets, glossary)
     idf = compute_lang_idf(groups, targets, vocab=vocab)
 
     if cache_dir is not None:
+        import os
+        import tempfile
+
+        temporary_path = None
         try:
             cache_dir = Path(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_path = cache_dir / "alignment_resources.json"
-            cache_path.write_text(json.dumps({
+            payload = json.dumps({
+                "version": cache_version,
                 "signature": signature,
                 "vocab": {k: sorted(v) for k, v in vocab.items()},
                 "idf": {"\x00".join(k): v for k, v in idf.items()},
-            }, ensure_ascii=False), encoding="utf-8")
+            }, ensure_ascii=False)
+            # Concurrent extractions must see a complete old or new file.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                             dir=cache_dir, prefix=".alignment-",
+                                             suffix=".tmp", delete=False) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(payload)
+            os.replace(temporary_path, cache_path)
         except OSError:
             pass
+        finally:
+            if temporary_path is not None:
+                with contextlib.suppress(OSError):
+                    temporary_path.unlink(missing_ok=True)
     return vocab, idf
 
 
@@ -2826,20 +3054,100 @@ def term_status(terms: Iterable[TermRecord]) -> dict:
 
 # ── Cross-language penetrate ──────────────────────────────────────
 
+def _span_has_body_term(lines: tuple[str, ...], indices: tuple[int, ...], name: str) -> bool:
+    wanted = set(indices)
+    for group, _body in dialogue_spans(lines):
+        selected = [i for i in group if i in wanted]
+        if selected and contains_term("\n".join(strip_speaker_label(lines[i])
+                                                for i in selected), name):
+            return True
+    return False
+
+
+def _term_excerpt(text: str, term: str, limit: int = 300) -> str:
+    """Keep the located name in the bounded public sentence projection."""
+    if not text:
+        return ""
+    first_line = text.splitlines(keepends=True)[0]
+    body_start = len(first_line) - len(strip_speaker_label(first_line))
+    hit = find_term_span(text[body_start:], term)
+    if hit is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    begin, end = hit[0] + body_start, hit[1] + body_start
+    budget = max(1, limit - 2)
+    if end - begin > budget:
+        # Extreme whitespace wrapping is layout, not part of the name.
+        return term[:limit] if len(term) <= limit else ""
+    start = max(0, begin - 80, end - budget)
+    stop = min(len(text), start + budget)
+    return ("…" if start else "") + text[start:stop] + ("…" if stop < len(text) else "")
+
+
+def _aligned_term_sentences(term: TermRecord, by_lang: dict,
+                            languages: Iterable[str]) -> dict[str, str]:
+    """Return counterparts of one source occurrence, using accepted names.
+
+    Independently taking each language's first name occurrence mixes dialogue
+    turns. Stored positions can also outlive text or slot decisions; rebuild
+    the projection from current pages instead of certifying stale sentences.
+    """
+    names = _canon_names(_slot_projection(term.slots)["names"]
+                        if term.slots is not None else term.names)
+    source_language = _term_language(term.source_language)
+    source_page = _group_page(by_lang, source_language)
+    if source_page is None:
+        return {}
+    source_lines = _alignment_lines(str(source_page.get("text", "")))
+    source_name = names.get(source_language) or term.canonical
+    hits = source_term_occurrences(source_lines, source_name)
+    if not hits:
+        return {}
+    target_data = {}
+    for language in dict.fromkeys(_term_language(lang) for lang in languages):
+        if language == source_language:
+            continue
+        page = _group_page(by_lang, language)
+        name = names.get(language, "")
+        if page is None or not name:
+            continue
+        lines = _alignment_lines(str(page.get("text", "")))
+        target_data[language] = (lines, name, align_lines(
+            source_lines, lines, source_language, language))
+    best: dict[str, str] = {}
+    # Prefer the occurrence with the most supported language counterparts.
+    for si in hits:
+        sentences = {source_language: hits[si]}
+        for language, (lines, name, alignment) in target_data.items():
+            indices = alignment.target_indices(si)
+            if indices and _span_has_body_term(lines, indices, name):
+                sentences[language] = "\n".join(lines[ti] for ti in indices)
+        if len(sentences) > len(best):
+            best = sentences
+        if len(best) == len(target_data) + 1:
+            break
+    return best
+
+
 def _build_positions_for_term(
     term: TermRecord,
     pages_by_story: dict[str, dict[str, dict]],
 ) -> list[dict]:
     out: list[dict] = []
+    names = _canon_names(_slot_projection(term.slots)["names"]
+                        if term.slots is not None else term.names)
+    seen_stories: set[str] = set()
     for ev in term.evidence:
         story_key = str(ev.get("story_key") or "")
-        if not story_key:
+        if not story_key or story_key in seen_stories:
             continue
+        seen_stories.add(story_key)
         by_lang = pages_by_story.get(story_key)
         if not by_lang:
             continue
+        sentences = _aligned_term_sentences(term, by_lang, by_lang)
         for lang, page in by_lang.items():
-            text = str(page.get("text", ""))
             # The corpus keys pages by its own spelling (zh_hant) while
             # term.names uses TERM_LANGUAGES spelling (zh_tw). Resolve before
             # the lookup, and emit the canonical spelling too, so a position
@@ -2847,16 +3155,15 @@ def _build_positions_for_term(
             # language. Without this, positions for every traditional-Chinese
             # line carried an empty sentence and a mismatched language key.
             canon = _term_language(lang)
-            seg = find_segment(text, term.canonical) if canon == term.source_language else ""
-            # For non-source languages try to find the translated name in text
-            trans_name = term.names.get(canon, "")
-            if canon != term.source_language and trans_name:
-                seg = find_segment(text, trans_name) or seg
+            seg = sentences.get(canon, "")
+            trans_name = names.get(canon, "")
+            if canon == _term_language(term.source_language):
+                trans_name = trans_name or term.canonical
             out.append({
                 "story_key": story_key,
                 "language": canon,
-                "sentence": seg[:300] if seg else "",
-                "term": trans_name if trans_name else term.canonical,
+                "sentence": _term_excerpt(seg, trans_name),
+                "term": trans_name,
                 "trust": str(page.get("trust", "")),
                 "auxiliary": bool(page.get("auxiliary", False)),
             })
@@ -2945,6 +3252,182 @@ def build_tag_clouds(
     }
 
 
+def _occurrence_lookup(relations, query, source_language=None, languages=None, tag=None, pages=None):
+    """Return separate contextual hits in the existing terminology shape."""
+    from sekaisync.occurrence_store import _identity
+
+    if tag and str(tag).strip().lower() != "other":
+        return []
+    groups = defaultdict(list)
+    for row in relations:
+        if source_language and row["source"]["language"] != _term_language(source_language):
+            continue
+        groups[(row["source"]["id"], row["sense"]["id"])].append(row)
+    results = []
+    for (source_id, sense_id), rows in sorted(groups.items()):
+        _, projection = _occurrence_penetrate(rows, query, languages=languages, pages=pages)
+        if projection is None:
+            continue
+        result = projection["term"]
+        result["id"] = _identity("occurrence:", [source_id, sense_id])
+        result["positions"] = [dict(story_key=projection["story_key"], language=language, **position)
+                               for language, position in projection["per_language"].items()]
+        result["score"] = 100 + (10 if source_language else 0) + min(
+            2 * sum(not position.get("missing") for position in projection["per_language"].values()), 10)
+        results.append(result)
+    return results
+
+
+def _occurrence_lexical_scalar(anchor, page_map):
+    """Keep a raw soft-wrapped expression, never erase a non-whitespace gap."""
+    page = page_map.get((anchor["page_source"], anchor["page_id"]))
+    if page is None:
+        return ""
+    raw, parts = str(page.get("text") or ""), anchor["segments"]
+    if (hashlib.sha256(raw.encode("utf-8")).hexdigest() != anchor["page_sha256"]
+            or any(raw[part["start"]:part["end"]] != part["exact"] for part in parts)
+            or any(raw[left["end"]:right["start"]].strip() for left, right in zip(parts, parts[1:]))):
+        return ""
+    from sekaisync import span_subjects
+    from sekaisync.wording_identity import _full_view
+    try:
+        span_subjects._utterance(_full_view(page), parts)
+    except ValueError:
+        return ""
+    return raw[parts[0]["start"]:parts[-1]["end"]]
+
+
+def _occurrence_penetrate(relations, query, story_key=None, languages=None, pages=None):
+    """Project a single contextual lexical judgment, never a global name.
+
+    The handled flag distinguishes absence of evidence from known ambiguity;
+    ambiguity must not fall through to a flattened legacy record.
+    """
+    rows = [row for row in relations if row.get("structural_grounding")
+            and row.get("grounding", {}).get("term") in {query, query.strip()}
+            and (not story_key or row["story_key"] == story_key)]
+    if not rows:
+        return False, None
+    identities = {(row["source"]["language"], row["sense"]["id"]) for row in rows}
+    if len(identities) > 1:
+        # Shared spellings across languages are equivalent only when explicit
+        # reciprocal judgments select the very same two contextual anchors.
+        if len({identity[0] for identity in identities}) != len(identities):
+            return True, None
+        equivalent_stories = []
+        for key in {row["story_key"] for row in rows}:
+            groups = {identity: [row for row in rows if row["story_key"] == key
+                                and (row["source"]["language"], row["sense"]["id"]) == identity]
+                      for identity in identities}
+            equivalent = True
+            for left in identities:
+                for right in identities:
+                    if left == right:
+                        continue
+                    if not any(
+                        a["kind"] == b["kind"] == "lexical"
+                        and all(len(anchor["segments"]) == 1 for anchor in (a["source"], a["target"], b["source"], b["target"]))
+                        and a["source"]["id"] == b["target"]["id"]
+                        and a["target"]["id"] == b["source"]["id"]
+                        for a in groups[left] for b in groups[right]):
+                        equivalent = False
+            if equivalent:
+                equivalent_stories.append(key)
+        if not equivalent_stories:
+            return True, None
+        rows = [row for row in rows if row["story_key"] in equivalent_stories]
+    page_map = {(page.get("source"), page.get("id")): page for page in (pages or [])}
+    target_langs = [str(lang).strip() for lang in (languages or []) if str(lang).strip()]
+    wanted = {_term_language(lang) for lang in (target_langs or TERM_LANGUAGES)}
+    by_source = defaultdict(list)
+    for row in rows:
+        by_source[row["source"]["id"]].append(row)
+    selected = max(by_source.values(), key=lambda group: (
+        len({row["target_language"] for row in group if row["kind"] == "lexical"} & wanted),
+        len({row["target_language"] for row in group} & wanted),
+        group[0]["story_key"], group[0]["source"]["id"]))
+    source = selected[0]["source"]
+    sk, source_lang = source["story_key"], source["language"]
+    subject = selected[0]["grounding"]["context"].get("subject")
+    segmented_source = bool(subject and subject["kind"] == "segmented")
+    source_display = subject["canonical"] if subject else query.strip()
+    by_target = defaultdict(list)
+    for row in selected:
+        by_target[row["target_language"]].append(row)
+
+    def target_identity(row):
+        anchor = row["target"]
+        scalar = _occurrence_lexical_scalar(anchor, page_map) if row["kind"] == "lexical" else ""
+        if scalar:
+            return (row["kind"], anchor["page_source"], anchor["page_id"], anchor["page_sha256"],
+                    anchor["segments"][0]["start"], anchor["segments"][-1]["end"], scalar)
+        return row["kind"], anchor["id"]
+
+    if any(len({target_identity(row) for row in group}) > 1
+           for group in by_target.values()):
+        return True, None
+
+    def anchor_sentence(anchor):
+        page = page_map.get((anchor["page_source"], anchor["page_id"]))
+        if page is None:
+            return ""
+        text = str(page.get("text") or "")
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != anchor["page_sha256"]:
+            return ""
+        parts = anchor["segments"]
+        if any(text[part["start"]:part["end"]] != part["exact"] for part in parts):
+            return ""
+        from sekaisync.wording_identity import _metadata
+        if _metadata(page):
+            return text
+        start = text.rfind("\n", 0, parts[0]["start"]) + 1
+        end = text.find("\n", parts[-1]["end"])
+        return text[start:end if end >= 0 else len(text)].strip()
+
+    source_sentence = anchor_sentence(source)
+    if not source_sentence:
+        return True, None
+    grouped = group_pages_by_story(pages or [])
+    released = is_released_story_key(sk, grouped)
+    source_page = page_map[(source["page_source"], source["page_id"])]
+    evidence = [dict(story_key=sk, language=source_lang, page_source=source["page_source"],
+                     page_id=source["page_id"], start=source["segments"][0]["start"],
+                     end=source["segments"][-1]["end"], context=source_sentence)]
+    term = TermRecord(id=selected[0]["sense"]["id"], canonical=source_display,
+                      source_language=source_lang, names={} if segmented_source else {source_lang: source_display},
+                      evidence=evidence, source="host-agent-occurrence", confidence=0.0,
+                      trust=str(source_page.get("trust", "")))
+    per_lang = {}
+    for language in (target_langs or sorted(TERM_LANGUAGES)):
+        canon = _term_language(language)
+        row = next(iter(by_target.get(canon, [])), None)
+        anchor = source if canon == source_lang else row["target"] if row else None
+        page = page_map.get((anchor["page_source"], anchor["page_id"])) if anchor else None
+        sentence = anchor_sentence(anchor) if anchor else ""
+        name = source_display if canon == source_lang and not segmented_source else ""
+        if row and row["kind"] == "lexical":
+            name = _occurrence_lexical_scalar(row["target"], page_map)
+        entry = dict(term=name, sentence=sentence, trust=str(page.get("trust", "")) if page else "",
+                     auxiliary=bool(page.get("auxiliary", False)) if page else False,
+                     released=released, cloud_rank=None)
+        if not name or not sentence:
+            entry["missing"] = True
+        if canon != source_lang:
+            entry["note"] = ("occurrence-scoped lexical correspondence" if name else
+                             "occurrence relation: " + row["kind"] + "; no scalar lexical counterpart"
+                             if row else "no reviewed counterpart for this occurrence")
+        elif segmented_source:
+            entry["note"] = "occurrence subject: segmented; display text is not a scalar lexical expression"
+        if sentence and not name and anchor and (
+                canon == source_lang and segmented_source
+                or row and row["kind"] in {"lexical", "paraphrase", "reference"}):
+            entry["note"] += "; raw selected fragments (Unicode code points, end-exclusive): " + json.dumps(
+                anchor["segments"], ensure_ascii=False, separators=(",", ":"))
+        per_lang[language] = entry
+    return True, dict(query=query, term=term_to_dict(term, truncate_context=True), story_key=sk,
+                      released=released, per_language=per_lang, cloud_rank=None)
+
+
 def term_penetrate(
     terms: Iterable[TermRecord],
     query: str,
@@ -2957,6 +3440,7 @@ def term_penetrate(
     target_langs = [str(l).strip() for l in (languages or []) if str(l).strip()]
     best: Optional[TermRecord] = None
     best_score = -1
+    best_terms: list[TermRecord] = []
     for term in term_list:
         active_names = _slot_projection(term.slots)["names"] if term.slots is not None else term.names
         names = list(active_names.values())
@@ -2969,28 +3453,59 @@ def term_penetrate(
         if score > best_score:
             best_score = score
             best = term
+            best_terms = [term]
+        elif score == best_score:
+            best_terms.append(term)
     if best is None:
         return None
+    if len(best_terms) > 1:
+        if story_key:
+            scoped = [term for term in best_terms if any(
+                str(ev.get("story_key", "")) == story_key for ev in term.evidence)]
+            if scoped:
+                best_terms = scoped
+        variants: dict[str, set[str]] = defaultdict(set)
+        names_by_record = []
+        for term in best_terms:
+            active = _canon_names(_slot_projection(term.slots)["names"]
+                                 if term.slots is not None else term.names)
+            active.setdefault(_term_language(term.source_language), term.canonical)
+            names_by_record.append(active)
+            for language, name in active.items():
+                if name:
+                    variants[language].add(normalize_name(name))
+        if any(len(values) > 1 for values in variants.values()):
+            # Input order must not decide which of two conflicting identities
+            # a homonymous query denotes. Explicit story evidence can narrow
+            # it above; otherwise retain the existing Optional return shape.
+            return None
+        best = max(zip(best_terms, names_by_record), key=lambda pair: len(pair[1]))[0]
+    grouped = grouped if grouped is not None else (
+        group_pages_by_story(pages) if pages is not None else {})
+    active_names = _canon_names(_slot_projection(best.slots)["names"]
+                               if best.slots is not None else best.names)
     sk = story_key
     if not sk:
         if best.evidence:
             # Prefer a released (multi-language) story so penetration yields
             # actual counterpart lines; fall back to the most frequent ja-only
             # story only when none exists.
-            grouped_here = grouped if grouped is not None else (
-                group_pages_by_story(pages) if pages is not None else {}
-            )
             keys = [str(e.get("story_key", "")) for e in best.evidence if e.get("story_key")]
-            released_keys = [k for k in keys if len(grouped_here.get(k, {})) > 1]
-            if released_keys:
-                counter = Counter(released_keys)
-                sk = counter.most_common(1)[0][0]
+            requested = {_term_language(lang) for lang in (target_langs or TERM_LANGUAGES)}
+            availability = {key: {language for language in requested
+                                  if _group_page(grouped.get(key, {}), language) is not None}
+                            for key in set(keys)}
+            complete = [key for key in keys if requested <= availability[key]]
+            if complete:
+                sk = Counter(complete).most_common(1)[0][0]
+            elif keys:
+                # If none is complete, retain the most requested languages;
+                # evidence frequency only breaks equivalent coverage choices.
+                counts = Counter(keys)
+                sk = max(counts, key=lambda key: (len(availability[key]),
+                                                  len(grouped.get(key, {})) > 1, counts[key]))
             else:
-                counter = Counter(keys)
-                if counter:
-                    sk = counter.most_common(1)[0][0]
-                else:
-                    sk = ""
+                sk = ""
         if not sk:
             sk = str(best.evidence[0].get("story_key", "")) if best.evidence else ""
     if not sk:
@@ -3001,7 +3516,6 @@ def term_penetrate(
             "per_language": {},
             "note": "no story_key available for this term",
         }
-    grouped = grouped if grouped is not None else (group_pages_by_story(pages) if pages is not None else {})
     is_released = is_released_story_key(sk, grouped) if grouped else True
     # Build cloud rank map for released terms as auxiliary signal
     cloud_rank: dict[str, int] = {}
@@ -3014,45 +3528,27 @@ def term_penetrate(
             pass
     by_lang = grouped.get(sk, {})
     per_lang: dict[str, dict] = {}
-    pos_map: dict[str, dict] = {}
-    for p in best.positions:
-        if str(p.get("story_key", "")) == sk:
-            # Positions now emit the canonical spelling, but rows written
-            # before that fix still say zh_hant. Normalise defensively so a
-            # zh_tw lookup finds either vintage.
-            pos_map[_term_language(str(p.get("language", "")))] = p
     langs_to_check = target_langs if target_langs else list(TERM_LANGUAGES)
+    sentences = _aligned_term_sentences(best, by_lang, langs_to_check)
     for lang in langs_to_check:
         canon = _term_language(lang)
-        cached = pos_map.get(canon)
-        if cached:
-            per_lang[lang] = {
-                "term": str(cached.get("term", "")),
-                "sentence": str(cached.get("sentence", ""))[:300],
-                "trust": str(cached.get("trust", "")),
-                "auxiliary": bool(cached.get("auxiliary", False)),
-                "cloud_rank": cloud_rank.get(best.canonical),
-                "released": is_released,
-            }
-            continue
+        name = active_names.get(canon, "")
+        if canon == _term_language(best.source_language):
+            name = name or best.canonical
         page = _group_page(by_lang, lang)
         if page is None:
-            per_lang[lang] = {"term": best.names.get(canon, ""), "sentence": "", "trust": "", "auxiliary": False, "missing": True, "released": is_released, "cloud_rank": cloud_rank.get(best.canonical)}
+            per_lang[lang] = {"term": name, "sentence": "", "trust": "", "auxiliary": False, "missing": True, "released": is_released, "cloud_rank": cloud_rank.get(best.canonical)}
             continue
-        text = str(page.get("text", ""))
-        name = best.names.get(canon, "")
-        seg = find_segment(text, name) if name else ""
-        if not seg and name:
-            seg = ""
+        seg = sentences.get(canon, "")
         entry: dict = {
             "term": name,
-            "sentence": seg[:300],
+            "sentence": _term_excerpt(seg, name),
             "trust": str(page.get("trust", "")),
             "auxiliary": bool(page.get("auxiliary", False)),
             "released": is_released,
             "cloud_rank": cloud_rank.get(best.canonical),
         }
-        if not name:
+        if not name or not entry["sentence"]:
             entry["missing"] = True
         if not is_released:
             entry["note"] = "unreleased story — translation pending global launch"

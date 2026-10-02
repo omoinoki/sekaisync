@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Self-audit 500 nouns using the model's own translation ability (no external key needed).
+"""Legacy heuristic audit of 500 nouns; no LLM is executed by this script.
 
-For each canonical (ja), we re-translate with language knowledge and compare
-against the algorithm's zh_hans/en/zh_tw/ko.  We simulate the LLM's judgment
-by applying strict bilingual equivalence checks that mirror what a translator
-would do: exact meaning, no person/role leakage, no truncation, no × contamination.
+The historical filename/output filenames are retained for compatibility.
+An 'ok' result means only that these hand-written checks found no issue;
+it is not a model evaluation or a measurement of semantic translation accuracy.
+For host-agent packet evaluation use scripts/evaluate_agent_review.py.
 """
 
 import json, re

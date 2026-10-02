@@ -135,11 +135,29 @@ class DiscoveredTest(unittest.TestCase):
         # 形态专名（专名后缀）优先级高于统计发现，不该被降级成 L2。
         self.assertIs(classify("神山高校", discovered={"神山高校"}), Tier.PROPER)
 
-    def test_discovered_does_not_rescue_generics(self):
-        # 关键：语言适配的拒绝规则必须早于 discovered 命中，
-        # 否则统计层会把通用词重新捞回来，前置过滤就白做了。
+    def test_discovered_does_not_rescue_function_words(self):
+        # A repeated pronoun is noise; an ordinary content word still has a
+        # translation and may enter alignment with explicit lexical evidence.
         self.assertIs(classify("大家", language="zh_hans", discovered={"大家"}), Tier.REJECT)
-        self.assertIs(classify("テスト", discovered={"テスト"}), Tier.REJECT)
+        self.assertIs(classify("テスト", discovered={"テスト"}), Tier.STATISTICAL)
+
+    def test_common_content_words_with_evidence_are_not_rejected_as_grammar(self):
+        for language, terms in (("zh_hans", ("咖啡", "红茶", "音乐", "学校")),
+                                ("ja", ("ギター", "ライブ", "ひかり")),
+                                ("ko", ("음악", "학교")), ("en", ("coffee", "music"))):
+            for term in terms:
+                with self.subTest(language=language, term=term):
+                    self.assertIs(classify(term, language=language, discovered={term}), Tier.STATISTICAL)
+
+    def test_repeated_short_grammar_is_still_rejected(self):
+        for language, term in (("zh_hans", "我们"), ("ja", "そうだった"),
+                                ("ko", "그거"), ("en", "Thank")):
+            self.assertIs(classify(term, language=language, discovered={term}), Tier.REJECT)
+
+    def test_title_connector_is_internal_and_suffix_is_an_ending(self):
+        self.assertIs(classify("Star of Dawn", language="en"), Tier.PROPER)
+        self.assertIs(classify("The world is here", language="en"), Tier.REJECT)
+        self.assertIs(classify("月虹公园里的", language="zh_hans"), Tier.REJECT)
 
     def test_official_beats_everything(self):
         self.assertIs(

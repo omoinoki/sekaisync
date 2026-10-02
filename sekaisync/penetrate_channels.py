@@ -1,31 +1,11 @@
-"""术语穿透的分层通道（术语刮削管线重构的集成层）。
+"""Stable layered entry point for cross-language terminology proposals.
 
-上游模块已分别就位，本模块只负责**把它们串成一条可用的管线**，不重新实现
-任何判定逻辑：
-
-* ``candidate_tiers``（第 0 层）：候选分层 —— 通用词在这里被拦下。
-* ``romaji``（通道 C 的门控）：片假名→罗马音相似度硬门控。
-* ``termindex``（通道 A）：既有分布对齐（Rapp/Fung & Yee），原样保留。
-* ``zhfirst`` / ``pilot.english_proper_candidates``（通道 B）：拉丁形态直取。
-
-设计依据（``experiment/zh-en-tw/COMPARISON.md`` 三组对照实验）：
-
-1. 三组的噪声同源 —— 通用词（大家/咖啡/テスト/クラス）没有专属译名，行位
-   预测只能把它们落到任意感叹词/人名上，产出 ``大家→Thank`` 这类垃圾。
-   修法不是改对齐算法，而是**对齐前先分层过滤**（第 0 层）。
-2. 三组是互补信号而非互斥替代：组 1 精度高但漏（78 对），组 2 能抓人名对
-   （朝比奈→Asahina），组 3 能抓缩写对（ニーゴ→N25）且覆盖率最高。
-   因此第 1 层三通道并行、互不污染，第 2 层再裁决。
-3. 繁中验证机制设计错误：组 2 用"简中词在繁中出现"做验证，简繁同形使信号
-   几乎恒真。正确做法是**译名层面的同点位闭环**（见 ``verify_triangle``）。
-
-硬约束：零第三方依赖（只用标准库）；不修改任何既有文件；Python 3.10+。
-
-性能设计（全量 13,428 故事规模可跑完）：所有候选→故事的定位走**一次语料
-扫描**建索引（``_build_term_line_index``：按首字分组的 C 级 ``startswith``
-定位），每个 (候选, 故事) 只做常数次 ``startswith``，避免
-``O(词数 × 故事数 × 全文扫描)`` 的退化——这正是 ``build_pair_story_index``
-在 termindex 里解决的同一类问题。
+All channels locate source occurrences once and use the shared dialogue/line
+alignment engine. Neighbouring sentences and same-story co-occurrence do not
+count as translated occurrences. Auxiliary verification closes the same source
+occurrence; unconfirmed or conflicting values keep the existing pending shape.
+Official names retain authority, and the public signatures stay unchanged.
+This module requires only the standard library and does not publish store data.
 """
 
 from __future__ import annotations
@@ -38,6 +18,10 @@ from typing import Any, Iterable
 from sekaisync import termindex
 from sekaisync.candidate_tiers import Tier, classify, tier_summary, normalize_candidate_key
 from sekaisync.normalize import normalize_name
+from sekaisync.line_alignment import (
+    align_lines, alignment_session, contains_term, dialogue_spans,
+    select_translation, source_term_occurrences, strip_speaker_label,
+)
 from sekaisync.romaji import (
     is_generic_katakana,
     is_plausible_translation,
@@ -133,6 +117,8 @@ _EN_SENTENCE_INITIAL_AMBIGUOUS = frozenset(
     .split()
 )
 
+_EN_DIRECTIVE_PREFIXES = frozenset({"please", "visit", "meet", "ask", "tell", "watch", "see"})
+
 
 def extract_latin_candidates(line: str) -> list[str]:
     """从一行文本提取拉丁专名形态候选。
@@ -151,7 +137,7 @@ def extract_latin_candidates(line: str) -> list[str]:
     """
     if not line:
         return []
-    text = strip_speaker(line)
+    text = strip_speaker(line) if ':' in line or '：' in line else line
     if not text.strip():
         return []
     out: list[str] = []
@@ -159,6 +145,11 @@ def extract_latin_candidates(line: str) -> list[str]:
     for m in _EN_PROPER.finditer(text):
         w = m.group(0).strip()
         words = w.split()
+        head = text[:m.start()].rstrip()
+        if not head or head[-1] in ".!?…—":
+            while len(words) > 1 and words[0].casefold() in _EN_DIRECTIVE_PREFIXES:
+                words.pop(0)
+            w = " ".join(words)
         if len(w) < 3 or len(words) > 6:
             continue
         # 缩写（I'm / You're / Don't）与所有格：撇号是句法标记，不是名字。
@@ -198,6 +189,41 @@ def _latin_candidates_for_line(line: str) -> list[str]:
 _LATIN_LINE_CACHE: dict[str, list[str]] = {}
 
 
+def _transliteration_candidates_for_line(line: str, source_term: str) -> list[str]:
+    """Recover sentence-initial names using source-specific phonetic evidence.
+
+    Generic Latin extraction correctly excludes ordinary title-case sentence
+    openings. An exact Kaito / Iori transliteration is additional evidence,
+    so it need not be discarded merely because it starts a sentence.
+    """
+    out = list(_latin_candidates_for_line(line))
+    text = strip_speaker(line) if ':' in line or '：' in line else line
+    matches = [match.group(0).strip() for match in _EN_PROPER.finditer(text)]
+    matches.extend(match.group(0) for match in re.finditer(r"\b[A-Za-z][A-Za-z0-9'’-]*\b", text))
+    exact: set[str] = set()
+    for value in matches:
+        if (value not in out and "'" not in value and "’" not in value
+                and is_plausible_translation(source_term, value, 0.85)):
+            out.append(value)
+        if similarity(source_term, value) >= 0.99:
+            exact.add(value)
+    # Do not let a surrounding adjective/directive turn an exact SEKAI match
+    # into "Big SEKAI" or "Song of SEKAI". The exact source form supplies the
+    # missing lexical boundary; unrelated alternatives remain for arbitration.
+    return [value for value in out if not any(
+        value != precise and contains_term(value, precise)
+        and similarity(source_term, value) < 0.99 for precise in exact
+    )]
+
+
+def _aligned_target_spans(lines: list[str], indices: Iterable[int]) -> list[str]:
+    """Keep individual target bodies and their complete aligned turn."""
+    parts = [strip_speaker_label(lines[i]) for i in indices]
+    if len(parts) > 1:
+        parts.append(" ".join(parts))
+    return list(dict.fromkeys(parts))
+
+
 # ── 语料索引（一次扫描，供三通道复用）──────────────────────────────
 
 class _TermStoryIndex:
@@ -233,9 +259,10 @@ def _build_term_line_index(
     # 前两字符分桶：只有前缀相同的候选才参与逐位置 startswith 比较。
     # 单字符分桶在候选上万时（30k 片假名串 / 40 个首字 ≈ 750 条同桶）
     # 会让每个正文位置白跑几百次比较；两字符把桶压到 O(1) 量级。
-    by_prefix: dict[str, list[str]] = defaultdict(list)
+    by_prefix: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for term in wanted:
-        by_prefix[term[:2]].append(term)
+        key = unicodedata.normalize("NFKC", term).casefold()
+        by_prefix[key[:2]].append((term, key))
         index.hits.setdefault(term, {})
 
     for story_key in stories:
@@ -251,21 +278,21 @@ def _build_term_line_index(
         if not lines:
             continue
         hits: dict[str, set[int]] = {}
-        # 逐行扫描：行内逐位置比对。行是最小检索单位，行号直接可得。
-        for line_no, line in enumerate(lines):
-            if len(line) < 2:
-                continue
-            for pos in range(len(line) - 1):
-                bucket = by_prefix.get(line[pos:pos + 2])
-                if not bucket:
-                    continue
-                for term in bucket:
-                    if line.startswith(term, pos):
-                        bucket_hits = hits.get(term)
-                        if bucket_hits is None:
-                            hits[term] = {line_no}
-                        else:
-                            bucket_hits.add(line_no)
+        # Scan body spans once. Speaker labels are metadata, while a subtitle
+        # wrap inside the same turn is not a lexical boundary.
+        for indices, body in dialogue_spans(tuple(lines)):
+            folded = unicodedata.normalize("NFKC", body).casefold()
+            probes = {re.sub(r"\s+", " ", folded),
+                      re.sub(r"[ \t]*\r?\n[ \t]*", "", folded)}
+            found: set[str] = set()
+            for probe in probes:
+                for pos in range(max(0, len(probe) - 1)):
+                    for term, key in by_prefix.get(probe[pos:pos + 2], ()):
+                        if term in found or not probe.startswith(key, pos) or not contains_term(body, term):
+                            continue
+                        found.add(term)
+                        physical = [i for i in indices if contains_term(strip_speaker_label(lines[i]), term)]
+                        hits.setdefault(term, set()).update(physical or (indices[0],))
         for term, line_nos in hits.items():
             index.hits[term][story_key] = line_nos
     return index
@@ -346,9 +373,9 @@ def _locate_term_lines(
             continue
         text = str(page.get("text", ""))
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if not text or term not in text:
+        if not text:
             continue
-        hit = {i for i, ln in enumerate(lines) if term in ln}
+        hit = set(source_term_occurrences(lines, term))
         if hit:
             out[sk] = hit
             if max_stories is not None and len(out) >= max_stories:
@@ -371,7 +398,7 @@ def channel_c_katakana_to_english(
 ) -> dict[str, str]:
     """通道 C：片假名→英语穿透（外来语音译优先）。
 
-    对每个片假名术语：在其出现的每个故事里，用行位预测取英语候选，
+    对每个片假名术语：在其出现的每个故事里，从可信对齐行取英语候选，
     跨故事投票（≥min_stories 且覆盖 ≥min_ratio），
     最后用 ``romaji.is_plausible_translation`` 硬门控（sim>=threshold）过滤。
     返回 {katakana_term: english}，只含通过门控的高置信对。
@@ -381,7 +408,7 @@ def channel_c_katakana_to_english(
     バタバタ→Thank）≤0.33，而通用词已在第 0 层被拦掉，所以这里可以放严。
 
     实现要点（避免 O(词×故事×全文)）：``_build_term_line_index`` 一次扫描
-    建索引；英语侧只取"该术语出现行的预测对应行 ±1"并缓存行级候选。
+    建索引；英语侧只取该术语出现行的可信对齐跨度，并缓存行级候选。
     """
     source_language = source_language or "ja"
     target_language = target_language or "en"
@@ -423,18 +450,17 @@ def channel_c_katakana_to_english(
             jl = src_index.lines.get(sk) or []
             if not jl:
                 continue
-            for si in sorted(line_nos)[:3]:  # 同一术语每故事最多取 3 行，防长尾拖慢
-                pred = _predict_line(si, len(jl), len(el))
-                for ti in (pred, pred - 1, pred + 1):
-                    if 0 <= ti < len(el):
-                        for cand in _latin_candidates_for_line(el[ti]):
-                            votes[cand].add(sk)
+            alignment = align_lines(jl, el, source_language, target_language)
+            for si in sorted(line_nos):
+                for span in _aligned_target_spans(el, alignment.target_indices(si)):
+                    for cand in _transliteration_candidates_for_line(span, term):
+                        votes[cand].add(sk)
         if not votes:
             continue
         # 先按 (投票故事数, 候选长度, sim) 排序，再逐个过门控：这样能选到
         # 票数最高且通过门控的候选，而不是"先门控再选票数"（后者会让
         # 高票噪声与低票真值之间的比较失真）。
-        best: tuple[float, int, int, str] | None = None
+        ranked: list[tuple[str, float]] = []
         for cand, sk_set in votes.items():
             n = len(sk_set)
             if n < min_stories:
@@ -444,11 +470,10 @@ def channel_c_katakana_to_english(
             if not is_plausible_translation(term, cand, sim_threshold):
                 continue
             sim = similarity(term, cand)
-            key = (sim, n, len(cand), cand)
-            if best is None or key > best:
-                best = key
-        if best is not None:
-            out[term] = best[3]
+            ranked.append((cand, sim + 0.1 * n / n_stories))
+        winner = select_translation(ranked)
+        if winner:
+            out[term] = winner
     return out
 
 
@@ -530,17 +555,7 @@ def _aux_name_for(term: str, aux_language: str) -> tuple[str, str]:
 
 
 def _contains_candidate(text: str, candidate: str) -> bool:
-    # Case/width normalization without erasing Latin word boundaries.
-    text = unicodedata.normalize("NFKC", text).casefold()
-    candidate = unicodedata.normalize("NFKC", candidate).casefold().strip()
-    if not candidate:
-        return False
-    pattern = re.escape(candidate)
-    if candidate[0].isascii() and candidate[0].isalnum():
-        pattern = r"(?<![a-z0-9])" + pattern
-    if candidate[-1].isascii() and candidate[-1].isalnum():
-        pattern += r"(?![a-z0-9])"
-    return re.search(pattern, text) is not None
+    return contains_term(text, candidate)
 
 
 def _same_position_hits(
@@ -551,15 +566,16 @@ def _same_position_hits(
     target_language: str,
     term_lines: dict[str, set[int]],
 ) -> dict[str, Any]:
-    """term 出现行的预测对应行（±1）里是否出现 ``needle``。
+    """term 出现行的可信对齐行里是否出现 ``needle``。
 
     ``term_lines`` 是 ``_locate_term_lines`` 的结果（源语言侧命中行）。
     目标语言的正文明细按需取用；命中故事列表与行数为返回值。
     """
     if not needle or not term_lines:
-        return {"stories": [], "lines": 0}
+        return {"stories": [], "lines": 0, "source_lines": {}}
     stories_hit: list[str] = []
     lines_hit = 0
+    source_hits: dict[str, set[int]] = {}
     for sk, line_nos in term_lines.items():
         page = _page_for(groups, sk, target_language)
         if page is None:
@@ -571,17 +587,22 @@ def _same_position_hits(
         if not tgt_lines:
             continue
         source_page = _page_for(groups, sk, source_language) or {}
-        src_lines = sum(bool(ln.strip()) for ln in str(source_page.get("text", "")).splitlines())
-        found = False
-        for si in sorted(line_nos)[:3]:
-            pred = _predict_line(si, src_lines or len(line_nos) or 1, len(tgt_lines))
-            for ti in (pred, pred - 1, pred + 1):
-                if 0 <= ti < len(tgt_lines) and _contains_candidate(tgt_lines[ti], needle):
-                    lines_hit += 1
-                    found = True
-        if found:
+        src_lines = [ln.strip() for ln in str(source_page.get("text", "")).splitlines() if ln.strip()]
+        source_occurrences = source_term_occurrences(src_lines, term)
+        alignment = align_lines(src_lines, tgt_lines, source_language, target_language)
+        target_hits: set[int] = set()
+        for si in sorted(line_nos):
+            if si not in source_occurrences:
+                continue
+            target_indices = alignment.target_indices(si)
+            body = "\n".join(strip_speaker_label(tgt_lines[ti]) for ti in target_indices)
+            if _contains_candidate(body, needle):
+                target_hits.update(target_indices)
+                source_hits.setdefault(sk, set()).add(si)
+        if target_hits:
+            lines_hit += len(target_hits)
             stories_hit.append(sk)
-    return {"stories": stories_hit, "lines": lines_hit}
+    return {"stories": stories_hit, "lines": lines_hit, "source_lines": source_hits}
 
 
 def verify_triangle(
@@ -599,7 +620,7 @@ def verify_triangle(
     实验里用"简中词在繁中出现"做验证是无效的（简繁同形使信号恒真）。正确
     做法：候选译名本身应在**其他语言的同点位**上也有对应译名命中。即
     ``源语言 term`` → ``目标语言 candidate`` → ``aux 语言译名`` 三段都必须
-    落在同一处行位预测窗口内（±1 行），构成闭环。
+    落在同一源词出现处的可信对齐跨度内，构成闭环。
 
     aux 译名的来源按优先级：
     1. ``register_known_names`` / ``penetrate_layered`` 从 glossary 登记的
@@ -651,12 +672,21 @@ def verify_triangle(
             ),
         }
 
+    if max_aux_required <= 0:
+        return {
+            "verified": True, "aux_hits": {},
+            "reason": (f"目标语言同点位锚定成功（{len(anchor['stories'])} 故事）；"
+                       "max_aux_required<=0，跳过 aux 闭环"),
+        }
+
     aux_hits: dict[str, Any] = {}
     n_verified = 0
-    anchor_lines = {sk: term_lines[sk] for sk in anchor["stories"]}
+    # Auxiliary evidence must close the same occurrence, not a different
+    # occurrence of the source term elsewhere in the same story.
+    anchor_lines = anchor["source_lines"]
     seen_languages = {termindex._term_language(source_language),
                       termindex._term_language(target_language)}
-    support_counts: dict[str, int] = defaultdict(int)
+    support_counts: dict[tuple[str, int], int] = defaultdict(int)
     for aux_language in (aux_languages or ()):
         canonical_language = termindex._term_language(aux_language)
         if canonical_language in seen_languages:
@@ -681,16 +711,11 @@ def verify_triangle(
         }
         if hit["stories"]:
             n_verified += 1
-            for sk in hit["stories"]:
-                support_counts[sk] += 1
+            for sk, indices in hit["source_lines"].items():
+                for si in indices:
+                    support_counts[(sk, si)] += 1
 
-    if max_aux_required <= 0:
-        verified = True
-        reason = (
-            f"目标语言同点位锚定成功（{len(anchor['stories'])} 故事）；"
-            "max_aux_required<=0，跳过 aux 闭环"
-        )
-    elif any(n >= max_aux_required for n in support_counts.values()):
+    if any(n >= max_aux_required for n in support_counts.values()):
         verified = True
         names = ", ".join(
             f"{lang}={info['name']}({info['method']})"
@@ -856,25 +881,24 @@ def _channel_b_latin(
             jl = src_idx.lines.get(sk) or []
             if not el or not jl:
                 continue
-            for si in sorted(line_nos)[:3]:
-                pred = _predict_line(si, len(jl), len(el))
-                for ti in (pred, pred - 1, pred + 1):
-                    if 0 <= ti < len(el):
-                        for cand in _latin_candidates_for_line(el[ti]):
-                            votes[cand].add(sk)
-        best: tuple[int, int, str] | None = None
+            alignment = align_lines(jl, el, source_language, target_language)
+            for si in sorted(line_nos):
+                for span in _aligned_target_spans(el, alignment.target_indices(si)):
+                    for cand in _latin_candidates_for_line(span):
+                        votes[cand].add(sk)
+        ranked: list[tuple[str, float]] = []
         for cand, sk_set in votes.items():
             n = len(sk_set)
             if n < min_stories or n / n_stories < min_ratio:
                 continue
-            key = (n, len(cand), cand)
-            if best is None or key > best:
-                best = key
-        if best is not None:
-            out[term] = best[2]
+            ranked.append((cand, float(n)))
+        winner = select_translation(ranked)
+        if winner:
+            out[term] = winner
     return out
 
 
+@alignment_session()
 def penetrate_layered(
     groups: dict,
     stories: list[str],
@@ -1039,12 +1063,14 @@ def penetrate_layered(
     register_alignment_context(groups, source_language, idf, vocab)
     triangle_stats = {"checked": 0, "verified": 0}
     staged: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
+    alternatives: dict[tuple[str, str], dict[str, list[str]]] = defaultdict(dict)
     for term, lang_map in official_pairs.items():
         for lang, name in lang_map.items():
             staged[term][lang] = {"text": name, "source": "L0"}
     for source_name, table in (("C", channel_c), ("A", channel_a), ("B", channel_b)):
         for term, lang_map in table.items():
             for lang, name in lang_map.items():
+                alternatives[(term, lang)].setdefault(name, []).append(source_name)
                 entry = staged[term].get(lang)
                 if entry is None or _CHANNEL_PRIORITY[source_name] < _CHANNEL_PRIORITY.get(
                     entry["source"], 9
@@ -1063,6 +1089,13 @@ def penetrate_layered(
             entry = lang_entries[lang]
             name = entry["text"]
             if entry["source"] != "L0":
+                slot_alternatives = alternatives[(term, lang)]
+                if len({normalize_name(value) for value in slot_alternatives}) > 1:
+                    for value, origins in sorted(slot_alternatives.items()):
+                        pending.append({"term": term, "language": lang, "candidate": value,
+                                        "source": "+".join(origins),
+                                        "reason": "非官方通道译名不一致；同一语料的通道优先级不能裁定实体同一性"})
+                    continue
                 # Every non-official target needs verification, not just English.
                 triangle_stats["checked"] += 1
                 tri = verify_triangle(

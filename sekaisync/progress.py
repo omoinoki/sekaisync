@@ -278,19 +278,11 @@ def expected_text_units(
             if episode_no is not None:
                 expected["event_story"].add(f"event_story:{language}:{event_id}:{episode_no}")
 
-    unit_counts: dict[str, int] = {}
     for unit in _load_records(store_root, region, "unitStories", tables=tables):
-        unit_key = unit.get("unit")
         for chapter in unit.get("chapters") or []:
             for episode in chapter.get("episodes") or []:
                 scenario_id = episode.get("scenarioId")
                 if not scenario_id:
-                    continue
-                label = str(episode.get("episodeNoLabel") or "")
-                if episode.get("episodeNo") == 1 or label in {"序章", "オープニング"}:
-                    continue
-                unit_counts[unit_key] = unit_counts.get(unit_key, 0) + 1
-                if unit_counts[unit_key] > 20:
                     continue
                 expected["unit_story"].add(f"unit_story:{language}:{scenario_id}")
 

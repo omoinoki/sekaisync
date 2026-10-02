@@ -1,0 +1,21 @@
+{
+  "schema": "work/checkpoint261002-code-dependencies@1",
+  "code_only": true,
+  "semantic_reference_labels_or_bodies_included": false,
+  "source_sha256": {
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\acquire_trial.py": "93e6da29c5637372c2dc77a053d719669e28c1bf7c0391b4c9206ffa90094f72",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\register_trial.py": "4b4cdf3dc96405d712027af3928f7b9f21b535864d1027215a5cf3ceb3b5be91",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\source-sense-trial-01\\prepare_trial.py": "0421bf78d491018c14e2cb03a93280a0396607634a0f8b18b60c9841252db850",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\register_trial.py": "f8168f3b3d61d9c038a6f7f99c62bd235dc7beb9557f29939eb629e10cc1febd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\register_trial.py": "cb4446140eef38cef69efae56d88a2ba0878fed923bc48febac5169222d75396"
+  },
+  "copied_sha256": {
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\dependency-code\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\acquire_trial.py": "93e6da29c5637372c2dc77a053d719669e28c1bf7c0391b4c9206ffa90094f72",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\dependency-code\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\register_trial.py": "4b4cdf3dc96405d712027af3928f7b9f21b535864d1027215a5cf3ceb3b5be91",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\dependency-code\\work\\p0-exhaustive-20261001\\source-sense-trial-01\\prepare_trial.py": "0421bf78d491018c14e2cb03a93280a0396607634a0f8b18b60c9841252db850",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\dependency-code\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\register_trial.py": "f8168f3b3d61d9c038a6f7f99c62bd235dc7beb9557f29939eb629e10cc1febd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\dependency-code\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\register_trial.py": "cb4446140eef38cef69efae56d88a2ba0878fed923bc48febac5169222d75396"
+  },
+  "exact_product_archive": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\validation-02\\exact-product.zip",
+  "exact_product_archive_sha256": "68106af213cfa2e54b9cd03071d559828e4a6276aaf37f53faffd2a89ade28e1"
+}

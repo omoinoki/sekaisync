@@ -1,0 +1,5 @@
+{
+  "status": "FAIL",
+  "stage": "register",
+  "error": "selected family prior use or unreadable usage scope; do not rerank: C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests\\test_registry.py\nC:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-repair-20260929\\baseline\\tests\\test_registry.py\n"
+}

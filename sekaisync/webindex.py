@@ -5,6 +5,8 @@ import heapq
 import itertools
 import json
 import re
+import unicodedata
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -191,13 +193,31 @@ def text_matches_language(language: str, text: str) -> bool:
             return True
         return s_ideo > 0 and s_hira + s_kata <= int(s_ideo * 0.05)
     if language == "en":
-        return ideo == 0 or latin >= max(5, int(ideo * 0.3))
+        from sekaisync.line_alignment import strip_speaker_label
+        body = unicodedata.normalize("NFKC", "\n".join(strip_speaker_label(line) for line in sample.splitlines()))
+        foreign = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30fa\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff]", body))
+        body_latin = len(re.findall(r"[A-Za-z]", body))
+        return foreign == 0 or body_latin >= max(5, int(foreign * 0.3))
     if language == "ko":
-        return ideo == 0 or hangul >= max(5, int(ideo * 0.3))
+        from sekaisync.line_alignment import strip_speaker_label
+        body = unicodedata.normalize("NFKC", "\n".join(strip_speaker_label(line) for line in sample.splitlines()))
+        body_hangul = len(re.findall(r"[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff]", body))
+        foreign = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30fa]", body))
+        if foreign:
+            return body_hangul >= max(1, int(foreign * 0.3))
+        if body_hangul:
+            return True
+        # Short borrowed names and calls can be entirely Latin; prose is not
+        # established Korean merely because it contains no Han characters.
+        return len(re.findall(r"[A-Za-z]+(?:['\u2019-][A-Za-z]+)*", body)) <= 4
     return True
 
 
 def canonical_key_for_page(page: dict[str, Any]) -> str:
+    from sekaisync import wording_identity
+    wording = wording_identity._metadata(page)
+    if wording is not None:
+        return wording["family"]
     if is_auxiliary_page(page):
         return ""
     kind = str(page.get("kind", "")).lower()
@@ -269,6 +289,8 @@ def canonical_key_for_page(page: dict[str, Any]) -> str:
 
 
 def web_page_to_dict(page: WebPage) -> dict[str, Any]:
+    from sekaisync import wording_identity
+    wording = wording_identity._metadata(vars(page))
     text = str(page.text or "")
     base = {
         "source": page.source,
@@ -279,7 +301,7 @@ def web_page_to_dict(page: WebPage) -> dict[str, Any]:
         "auxiliary": page.auxiliary,
         "overlay": page.overlay,
     }
-    return {
+    result = {
         "id": page.id,
         "source": page.source,
         "url": page.url,
@@ -287,7 +309,7 @@ def web_page_to_dict(page: WebPage) -> dict[str, Any]:
         "language": page.language,
         "kind": page.kind,
         "text": page.text,
-        "canonical_key": canonical_key_for_page(base),
+        "canonical_key": wording["family"] if wording is not None else canonical_key_for_page(base),
         "source_hash": page.source_hash,
         "text_hash": page.text_hash or sha256_hex(text),
         "untranslated": page.untranslated,
@@ -322,11 +344,17 @@ def web_page_to_dict(page: WebPage) -> dict[str, Any]:
         "source_type": page.source_type,
         "instance": page.instance,
     }
+    if wording is not None:
+        result["wording_identity"] = deepcopy(page.wording_identity)
+        result["wording_provenance"] = deepcopy(page.wording_provenance)
+    return result
 
 
 def web_page_from_dict(data: dict[str, Any]) -> WebPage:
+    from sekaisync import wording_identity
+    wording = wording_identity._metadata(data)
     normalize_mismatch_flags(data)
-    return WebPage(
+    page = WebPage(
         id=str(data["id"]),
         source=str(data.get("source", "")),
         url=str(data.get("url", "")),
@@ -360,6 +388,10 @@ def web_page_from_dict(data: dict[str, Any]) -> WebPage:
         source_type=str(data.get("source_type", "")),
         instance=str(data.get("instance", "")),
     )
+    if wording is not None:
+        page.wording_identity = deepcopy(data["wording_identity"])
+        page.wording_provenance = deepcopy(data["wording_provenance"])
+    return page
 
 
 def page_backend(page: dict[str, Any]) -> str:

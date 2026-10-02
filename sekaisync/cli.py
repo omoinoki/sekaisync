@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -878,6 +879,9 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
             idf=idf,
             pair_index=pair_index,
         )
+        from sekaisync.agent_packets import _retain_reviewed_scrub_slots
+        preserved_agent_slots = _retain_reviewed_scrub_slots(
+            config.store_root, result, args.source_language)
         # 方法论只作用于**待裁决项**（pending / conflicts / gate_failed）——
         # accepted 是刮削已确认的结果，对它套用没有意义。做法是：
         #   1) 把待裁决项整理成 proposals，用方法论结算能确定的；
@@ -894,19 +898,18 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         applied = agent_review.apply_methodology_batch(config.store_root, proposals)
         settled = applied.get("settled") or {}
         accepted = result.get("accepted") or {}
+        # Previous judgments are suggestions, not a reason to drop every
+        # language of this term or claim a slot was committed. Recheck them
+        # against the current source/target context.
         for term, langs in settled.items():
-            record = accepted.setdefault(term, {"names": {}, "confidence": 0.9,
-                                                "channels": ["methodology"],
-                                                "agreement": 1})
-            names = record.setdefault("names", {})
-            for lang, value in (langs or {}).items():
-                if value and not names.get(lang):
-                    names[lang] = value
-        # 已结算的术语不再入队
-        review_items = [
-            item for item in _review_items_from_trinity(result)
-            if item.term not in settled]
-        queued = agent_review.enqueue(config.store_root, review_items)
+            for lang, value in langs.items():
+                if value:
+                    result.setdefault("pending", []).append(
+                        {"term": term, "names": {lang: value}, "reason": "prior agent suggestion"})
+        from sekaisync.agent_packets import _prepare_scrub_review
+        review_items, agent_work = _prepare_scrub_review(
+            config.store_root, groups, sorted(keys), candidate_pool, result,
+            args.source_language, target_languages)
         # ── 落库：把管线**已经做出的裁决**写进槽库（Astra P08/P11）────────
         # 这一段以前不存在：分支只写了 methodology.json / review_queue.json 两个
         # 旁路文件就 return 0，`term_slots` 一行没动，`slot_decisions` 也整个
@@ -929,6 +932,7 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                 **apply_scrub_result(
                     config.store_root, result, _Corpus(groups, sorted(keys)),
                     expected_revision=scrub_revision,
+                    source_language=args.source_language,
                 ),
             )
         else:
@@ -942,6 +946,11 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                     "dry_run=False, backup_path=...)）才能让 --layered 落库"
                 ),
             }
+        queued = agent_review.enqueue(config.store_root, review_items)
+        if schema_version in {"2", "3"}:
+            slot_commit["slot_revision"] = slot_commit["revision"]
+            with dbstore.connect(config.store_root) as conn:
+                slot_commit["revision"] = dbstore.current_revision(conn)
         print(
             json.dumps(
                 {
@@ -958,13 +967,15 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                     "channel_stats": result.get("stats", {}),
                     "slot_commit": slot_commit,
                     "review_next": "sekaisync terms review export --out queue.txt",
+                    "agent_work": agent_work,
+                    "preserved_agent_slots": preserved_agent_slots,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
-    if args.local:
+    if args.local or not (args.llm_config or os.environ.get("SEKAISYNC_LLM_CONFIG")):
         memory = {}
         if len(pages) > 1:
             memory = build_translation_memory(pages, args.source_language, target_languages)
@@ -992,6 +1003,8 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
         )
         llm_model = llm.config.model
     records = merge_terms(records)
+    from sekaisync.agent_packets import _retain_reviewed_records
+    preserved_agent_slots = _retain_reviewed_records(config.store_root, records)
     # Astra P01: an extraction pass is a partial upsert, not a snapshot —
     # terms the pass did not touch must stay exactly as they are, and each
     # touched term's evidence is replaced with what this pass saw (records
@@ -1031,6 +1044,15 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                 for rec in records
             },
         )
+    from sekaisync import agent_review
+    from sekaisync.agent_packets import _prepare_scrub_review
+    review_records = [rec for rec in records if rec.source_language == args.source_language]
+    review_items, agent_work = _prepare_scrub_review(
+        config.store_root, group_pages_by_story(selected), sorted(keys),
+        [rec.canonical for rec in review_records],
+        {"pending": [{"term": rec.canonical, "names": rec.names} for rec in review_records]},
+        args.source_language, [] if args.no_translate else target_languages)
+    queued = agent_review.enqueue(config.store_root, review_items)
     print(
         json.dumps(
             {
@@ -1042,6 +1064,10 @@ def cmd_terms_extract(args: argparse.Namespace) -> int:
                 "target_languages": target_languages,
                 "terms": len(records),
                 "llm_model": llm_model,
+                "agent_work": agent_work,
+                "preserved_agent_slots": preserved_agent_slots,
+                "queued_for_agent": queued,
+                "review_next": "sekaisync terms review export --out queue.txt",
             },
             ensure_ascii=False,
             indent=2,
@@ -1423,7 +1449,16 @@ def cmd_terms_zhfirst(args: argparse.Namespace) -> int:
     )
     limit = args.limit or len(result)
     out = [t.to_dict() for t in result[:limit]]
-    print(json.dumps({"count": len(result), "cached": str(cache_file), "terms": out}, ensure_ascii=False, indent=2))
+    from sekaisync import agent_review
+    from sekaisync.agent_packets import _prepare_scrub_review
+    groups = group_pages_by_story(pages)
+    review_items, agent_work = _prepare_scrub_review(
+        config.store_root, groups, sorted(groups), [t.canonical for t in result],
+        {}, "zh_hans", targets)
+    queued = agent_review.enqueue(config.store_root, review_items)
+    print(json.dumps({"count": len(result), "cached": str(cache_file), "terms": out,
+                      "agent_work": agent_work, "queued_for_agent": queued,
+                      "review_next": "sekaisync terms review export --out queue.txt"}, ensure_ascii=False, indent=2))
     return 0
 
 

@@ -10,11 +10,12 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -29,6 +30,7 @@ from sekaisync.config import (
     require_endpoint,
 )
 from sekaisync import fetcher as fetcher_transport
+from sekaisync import wording_identity
 from sekaisync.fetcher import (
     BUDGET_HTML_BYTES,
     BUDGET_JSON_BYTES,
@@ -79,6 +81,9 @@ _cv_ms_instance: "contextvars.ContextVar[str]" = contextvars.ContextVar(
 )
 _cv_sv_instance: "contextvars.ContextVar[str]" = contextvars.ContextVar(
     "altsource_sv_instance", default=SOURCE_SV
+)
+_wording_resume_ids: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "wording_resume_ids", default=None
 )
 
 ALTSOURCE_SV_I18N_LANGUAGES = ("ja", "zh-CN", "zh-TW", "en", "ko")
@@ -295,6 +300,38 @@ def _source_sha256(value: Any) -> str:
 
 def _page_known(page_id: str, known_ids: Optional[set[str]]) -> bool:
     return bool(known_ids and page_id in known_ids)
+
+
+def _home_line_text(record: dict, text_key: str) -> str:
+    keys = ("displayPhrase", "displayPhrase2") if text_key == "displayPhrase" else (text_key,)
+    parts = [(key, text) for key in keys if (text := str(record.get(key) or "").strip())]
+    if text_key == "displayPhrase":
+        # Field labels are structural boundaries, not invented character names.
+        # They also keep a body's own colon from being read as speaker metadata.
+        return "\n".join(key + ": " + text for key, text in parts)
+    return "\n".join(text for _, text in parts)
+
+
+def _inline_text_version_key(page_id: str, text: str) -> str:
+    return page_id + ":text-sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _home_line_version_key(page_id: str, text: str) -> str:
+    return _inline_text_version_key(page_id, text)
+
+
+def _known_inline_text_versions(existing_pages: dict, known_ids: set[str]) -> set[str]:
+    return {_inline_text_version_key(page_id, str(page.get("text") or ""))
+            for page_id, page in existing_pages.items()
+            if page_id in known_ids and page.get("kind") in {"home_line", "mysekai_tweet"}} | {
+                wording_identity._version_key(page) for page_id, page in existing_pages.items()
+                if page_id in known_ids and page.get("kind") == "wordings" and wording_identity._metadata(page) is not None}
+
+
+def _known_home_line_versions(existing_pages: dict, known_ids: set[str]) -> set[str]:
+    return {_home_line_version_key(page_id, str(page.get("text") or ""))
+            for page_id, page in existing_pages.items()
+            if page_id in known_ids and page.get("kind") == "home_line"}
 
 
 
@@ -705,6 +742,7 @@ def altsource_ms_language_from_url(url: str) -> str:
 
 
 def altsource_sv_master_json_url(region: str, table: str) -> str:
+    table = table.removesuffix(".json")
     repo = REGIONS[region].repo_slug
     repo_name = repo.rsplit("/", 1)[-1] if repo else region
     return f"{_EP().ALTSOURCE_SV_MASTER_BASE}/{repo_name}/{table}.json"
@@ -800,6 +838,8 @@ def fetch_altsource_sv_master(
                     and cached.get("metadata") == _sv_master_cache_metadata(url)
                     and isinstance(cached.get("records"), list)
                     and all(isinstance(item, dict) for item in cached["records"])):
+                if table == "wordings":
+                    wording_identity._validate_records(cached["records"], region)
                 return cached["records"]
         except (OSError, json.JSONDecodeError):
             pass
@@ -820,6 +860,8 @@ def fetch_altsource_sv_master(
         )
         return []
     if isinstance(data, list):
+        if table == "wordings":
+            wording_identity._validate_records(data, region)
         records = [item for item in data if isinstance(item, dict)]
         if cache_path is not None:
             try:
@@ -1202,7 +1244,7 @@ def altsource_sv_record_page(record: dict[str, Any], table: str, region: str) ->
     text = json.dumps(record, ensure_ascii=False, indent=2)
     record_id = record.get("id", record.get("seq", _sha1(text)))
     now = datetime.now(timezone.utc).isoformat()
-    return WebPage(
+    page = WebPage(
         id=f"web:{_current_sv_instance()}:{region}:{table}:{record_id}",
         source=_current_sv_instance(), source_type=BACKEND_SEKAI_VIEWER,
         url=url,
@@ -1216,6 +1258,11 @@ def altsource_sv_record_page(record: dict[str, Any], table: str, region: str) ->
         trust="B",
         source_hash=_source_sha256(record),
     )
+    if table == "wordings":
+        wording_identity._validate_records([record], region)
+        resume_ids = _wording_resume_ids.get() or {}
+        return wording_identity._adapt(page, record, region, resume_ids.get((region, record.get("wordingKey"))))
+    return page
 
 
 def _altsource_ms_detail_sitemaps(sitemap_xml: str, locales: Iterable[str]) -> list[str]:
@@ -1783,6 +1830,8 @@ def mysekai_lua_to_text(lua_content: str) -> str:
             if not match:
                 continue
             body = match.group(1).replace("\\n", "\n").replace('\\"', '"')
+            if not body.strip():
+                continue
             parts.append(f"{speaker}：{body}" if speaker else body)
     return "\n".join(part for part in parts if part).strip()
 
@@ -2109,7 +2158,6 @@ def _crawl_altsource_ms_unit_stories(
     profiles = fetch_altsource_ms_master(server, "unitProfiles.json", fetcher)
     unit_seq = {profile.get("unit"): profile.get("seq") for profile in profiles}
     stories = fetch_altsource_ms_master(server, "unitStories.json", fetcher)
-    per_unit_count: dict[str, int] = {}
     for story in stories:
         unit_key = story.get("unit")
         seq = unit_seq.get(unit_key) or story.get("seq")
@@ -2122,12 +2170,6 @@ def _crawl_altsource_ms_unit_stories(
                     continue
                 scenario_id = episode.get("scenarioId")
                 if not scenario_id:
-                    continue
-                episode_label = str(episode.get("episodeNoLabel") or "")
-                if episode_label == "序章" or episode.get("episodeNo") == 1:
-                    continue
-                per_unit_count[unit_key] = per_unit_count.get(unit_key, 0) + 1
-                if per_unit_count[unit_key] > 20:
                     continue
                 assetbundle_name = chapter_asset or episode.get("assetbundleName")
                 if not assetbundle_name:
@@ -2390,13 +2432,14 @@ def _crawl_altsource_ms_home_lines(
         ("systemLive2ds.json", "serif"),
     ):
         for record in fetch_altsource_ms_master(server, table, fetcher):
-            text = str(record.get(text_key) or "").strip()
+            text = _home_line_text(record, text_key)
             if not text:
                 continue
             record_id = record.get("id", _sha1(text))
             kind = "home_line" if table == "characterArchiveVoices.json" else table.split(".")[0]
             page_id = altsource_ms_page_id(locale, kind, record_id)
-            if _page_known(page_id, known_ids):
+            if _page_known(page_id, known_ids) and (
+                    kind != "home_line" or _home_line_version_key(page_id, text) in known_ids):
                 continue
             page = WebPage(
                 id=page_id,
@@ -2546,6 +2589,137 @@ ALTSOURCE_MS_ALL_TEXT_TABLES = [
 ]
 
 
+def _crawl_altsource_ms_moly(
+    server: str,
+    locale: str,
+    fetcher: Callable[[str], str],
+    pages: list[WebPage],
+    remaining: Optional[int],
+    delay: float,
+    known_ids: Optional[set[str]],
+    existing_pages: dict[str, dict[str, Any]],
+    workers: int,
+    checkpoint: Optional[Callable[[], None]],
+    run_cache: dict[str, Any],
+) -> Optional[int]:
+    from sekaisync import mysekai_moly
+
+    if remaining is not None and remaining <= 0:
+        return remaining
+    base = _EP().ALTSOURCE_MS_BASE.rstrip("/")
+    region = "tc" if server == "tw" else server
+    try:
+        if "manifest" not in run_cache:
+            run_cache["manifest"], _ = mysekai_moly.decode(fetcher(base + "/moly/manifest.json"), 1024 * 1024)
+        snapshot = mysekai_moly.select_snapshot(run_cache["manifest"], region)
+        if snapshot is None:
+            return remaining
+        catalog, catalog_hash = mysekai_moly.decode(fetcher(base + snapshot["catalog"]), 32 * 1024 * 1024)
+        def metadata(table: str, expected: type, max_bytes: int) -> Any:
+            for metadata_base in _EP().ALTSOURCE_MS_METADATA_BASES:
+                for suffix in ("", ".json"):
+                    try:
+                        value, _ = mysekai_moly.decode(
+                            fetcher(f"{metadata_base}/{server}/master/{table}{suffix}"), max_bytes)
+                    except fetcher_transport.BudgetExceededError:
+                        raise
+                    except _NETWORK_ERRORS:
+                        continue
+                    if isinstance(value, expected):
+                        return value
+            return expected()
+
+        def master(table: str) -> list[dict[str, Any]]:
+            return [row for row in metadata(table, list, 32 * 1024 * 1024) if isinstance(row, dict)]
+
+        talks = master("mysekaiCharacterTalks")
+        tweets = master("mysekaiCharacterTalkTweets")
+        preactions = master("mysekaiCharacterTalkPreActions")
+        raw_version = metadata("versions", dict, 1024 * 1024)
+        candidates = mysekai_moly.prepare(snapshot, catalog, catalog_hash, talks, tweets, preactions, raw_version)
+    except _NETWORK_ERRORS:
+        return remaining
+    bundle_futures: dict[str, Future] = run_cache.setdefault("bundle_futures", {})
+    bundle_lock = run_cache.setdefault("bundle_lock", threading.Lock())
+    provenance = run_cache.setdefault("provenance", {})
+
+    def bundle_for(candidate: dict[str, Any]) -> dict[str, Any]:
+        path = candidate["path"]
+        with bundle_lock:
+            owner = path not in bundle_futures
+            if owner:
+                bundle_futures[path] = Future()
+            future = bundle_futures[path]
+        if owner:
+            try:
+                entries = mysekai_moly.decode_bundle(fetcher(base + path), candidate["bundle_hash"])
+            except BaseException as exc:
+                # A fatal owner must wake peers before the executor waits for
+                # them on shutdown; propagate it unchanged rather than skip it.
+                future.set_exception(exc)
+                raise
+            else:
+                future.set_result(entries)
+        return future.result()
+
+    def worker(candidate: dict[str, Any]) -> Optional[WebPage]:
+        try:
+            text, lines = mysekai_moly.transcript(candidate, bundle_for(candidate))
+        except _NETWORK_ERRORS:
+            return None
+        language = altsource_ms_language_for_locale(locale)
+        if not text_matches_language(language, text):
+            return None
+        page_id = altsource_ms_page_id(locale, "mysekai_talk", candidate["id"])
+        with bundle_lock:
+            provenance[page_id] = dict(candidate["provenance"], source_hash=candidate["binding_hash"],
+                                       actual_source_url=base + candidate["path"], original_lines=lines,
+                                       script_fallback_excluded=True, text_sha256=sha256_hex(text))
+        return WebPage(id=page_id, source=_current_ms_instance(), source_type=BACKEND_MOESEKAI,
+                       url=base + candidate["path"], title=str(candidate["id"]), language=language,
+                       kind="mysekai_talk", text=text, crawled_at=datetime.now(timezone.utc).isoformat(),
+                       hash=_sha1(text, 16), source_hash=candidate["binding_hash"],
+                       source_etag=candidate["bundle_hash"], tos_accepted=True, trust="B")
+
+    def skip(candidate: dict[str, Any]) -> bool:
+        page_id = altsource_ms_page_id(locale, "mysekai_talk", candidate["id"])
+        old = existing_pages.get(page_id, {})
+        proof = run_cache.get("persisted_provenance", {}).get(page_id, {})
+        text = old.get("text")
+        return bool(known_ids is not None and page_id in known_ids and isinstance(text, str) and text.strip()
+                    and old.get("source_hash") == proof.get("source_hash") == candidate["binding_hash"]
+                    and old.get("source_etag") == candidate["bundle_hash"]
+                    and old.get("url") == base + candidate["path"]
+                    and old.get("language") == altsource_ms_language_for_locale(locale)
+                    and sha256_hex(text) == proof.get("text_sha256")
+                    and text_matches_language(altsource_ms_language_for_locale(locale), text))
+
+    return _fetch_pages_parallel(candidates, worker, pages, remaining, workers, delay,
+                                 checkpoint=checkpoint, skip=skip)
+
+
+def _save_altsource_ms_moly_provenance(
+    path: Path, run_cache: dict[str, Any], existing_pages: dict[str, dict[str, Any]],
+) -> None:
+    records = dict(run_cache.get("persisted_provenance", {}))
+    records.update(run_cache.get("provenance", {}))
+    retained = {
+        page_id: proof for page_id, proof in records.items()
+        if isinstance(proof, dict) and page_id in existing_pages
+        and existing_pages[page_id].get("source_hash") == proof.get("source_hash")
+        and sha256_hex(str(existing_pages[page_id].get("text") or "")) == proof.get("text_sha256")
+    }
+    if not retained and not path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=".moly-provenance-", suffix=".tmp", delete=False) as handle:
+        handle.write(json.dumps(retained, ensure_ascii=False, indent=2) + "\n")
+        temporary_path = Path(handle.name)
+    os.replace(temporary_path, path)
+    run_cache["persisted_provenance"] = retained
+
+
 def _crawl_altsource_ms_all_raw(
     server: str,
     locale: str,
@@ -2635,6 +2809,15 @@ def _crawl_altsource_ms_impl(
     write_consent(store_root, _current_ms_instance())
     pages: list[WebPage] = []
     overlay_pages: list[WebPage] = []
+    moly_run_cache: dict[str, Any] = {}
+    moly_provenance_path = Path(store_root) / "cache" / _current_ms_instance() / "mysekai_moly_provenance.json"
+    if moly_provenance_path.exists():
+        try:
+            cached_proof = json.loads(moly_provenance_path.read_text(encoding="utf-8"))
+            if isinstance(cached_proof, dict):
+                moly_run_cache["persisted_provenance"] = cached_proof
+        except (OSError, ValueError):
+            pass
     remaining: Optional[int] = None if limit <= 0 else limit
     existing_pages: dict[str, dict[str, Any]] = {}
     existing_overlay_pages: dict[str, dict[str, Any]] = {}
@@ -2658,6 +2841,7 @@ def _crawl_altsource_ms_impl(
                 or item.get("content_language_mismatch")
             )
         }
+        known_ids |= _known_inline_text_versions(existing_pages, known_ids)
     else:
         known_ids = None
 
@@ -2670,6 +2854,7 @@ def _crawl_altsource_ms_impl(
             rewrite_index=False,
             write_categories=False,
         )
+        _save_altsource_ms_moly_provenance(moly_provenance_path, moly_run_cache, existing_pages)
         if overlay_pages:
             save_web_pages(
                 store_root,
@@ -2779,6 +2964,13 @@ def _crawl_altsource_ms_impl(
             if remaining is not None and remaining <= 0:
                 break
             checkpoint()
+            remaining = _crawl_altsource_ms_moly(
+                server, locale, fetcher, pages, remaining, delay, known_ids,
+                existing_pages, workers, checkpoint, moly_run_cache,
+            )
+            if remaining is not None and remaining <= 0:
+                break
+            checkpoint()
             remaining = _crawl_altsource_ms_all_raw(
                 server, locale, fetcher, pages, remaining, delay, known_ids
             )
@@ -2791,6 +2983,7 @@ def _crawl_altsource_ms_impl(
         pages,
         existing=existing_pages,
     )
+    _save_altsource_ms_moly_provenance(moly_provenance_path, moly_run_cache, existing_pages)
     overlay_index_path = None
     if overlay_pages:
         overlay_index_path = save_web_pages(
@@ -2884,9 +3077,7 @@ def _crawl_altsource_sv_unit_stories(
     known_ids: Optional[set[str]] = None,
 ) -> Optional[int]:
     stories = fetch_altsource_sv_master(region, "unitStories.json", fetcher)
-    per_unit_count: dict[str, int] = {}
     for story in stories:
-        unit_key = story.get("unit")
         for chapter in story.get("chapters") or []:
             if not isinstance(chapter, dict):
                 continue
@@ -2898,11 +3089,6 @@ def _crawl_altsource_sv_unit_stories(
                 if not scenario_id:
                     continue
                 episode_label = str(episode.get("episodeNoLabel") or "")
-                if episode.get("episodeNo") == 1 or episode_label in {"序章", "オープニング"}:
-                    continue
-                per_unit_count[unit_key] = per_unit_count.get(unit_key, 0) + 1
-                if per_unit_count[unit_key] > 20:
-                    continue
                 assetbundle_name = chapter_asset or episode.get("assetbundleName")
                 if not assetbundle_name:
                     continue
@@ -3230,13 +3416,14 @@ def _crawl_altsource_sv_home_lines(
         ("systemLive2ds.json", "serif"),
     ):
         for record in fetch_altsource_sv_master(region, table, fetcher):
-            text = str(record.get(text_key) or "").strip()
+            text = _home_line_text(record, text_key)
             if not text:
                 continue
             record_id = record.get("id", _sha1(text))
             kind = "home_line" if table == "characterArchiveVoices.json" else table.split(".")[0]
             page_id = f"web:{_current_sv_instance()}:{region}:{kind}:{record_id}"
-            if _page_known(page_id, known_ids):
+            if _page_known(page_id, known_ids) and (
+                    kind != "home_line" or _home_line_version_key(page_id, text) in known_ids):
                 continue
             page = WebPage(
                 id=page_id,
@@ -3269,44 +3456,26 @@ def _crawl_altsource_sv_mysekai(
     checkpoint: Optional[Callable[[], None]] = None,
 ) -> Optional[int]:
     talks = fetch_altsource_sv_master(region, "mysekaiCharacterTalks.json", fetcher)
-    talks_available = False
-    probe_tasks: list[tuple[Any, ...]] = []
-    for talk in talks[:3]:
+    tasks: list[tuple[Any, ...]] = []
+    seen: set[str] = set()
+    for talk in talks:
+        if not isinstance(talk, dict):
+            continue
         assetbundle_name = talk.get("assetbundleName")
         lua_name = talk.get("lua")
-        if not assetbundle_name or not lua_name:
+        record_id = talk.get("id")
+        if type(record_id) is not int or record_id <= 0:
             continue
-        record_id = talk.get("id", _sha1(lua_name))
+        if any(not isinstance(value, str) or not _SCENARIO_ID_PATTERN.fullmatch(value)
+               or any(part in {"", ".", ".."} for part in value.split("/"))
+               for value in (assetbundle_name, lua_name)):
+            continue
         page_id = f"web:{_current_sv_instance()}:{region}:mysekai_talk:{record_id}"
-        probe_tasks.append((page_id, f"{assetbundle_name}/{lua_name}.lua.txt", record_id))
-        # The availability probe must use the caller's fetcher: falling back
-        # to the module default here would make a real network call even when
-        # the caller injected a fake transport.
-        _url, content = fetch_altsource_sv_asset(
-            region,
-            (f"{assetbundle_name}/{lua_name}.lua.txt",),
-            fetcher,
-            as_json=False,
-        )
-        if content is not None:
-            talks_available = True
-            break
-    tasks: list[tuple[Any, ...]] = []
-    if talks_available:
-        tasks = list(probe_tasks)
-        seen = {task[0] for task in tasks}
-        for talk in talks:
-            assetbundle_name = talk.get("assetbundleName")
-            lua_name = talk.get("lua")
-            if not assetbundle_name or not lua_name:
-                continue
-            record_id = talk.get("id", _sha1(lua_name))
-            page_id = f"web:{_current_sv_instance()}:{region}:mysekai_talk:{record_id}"
-            if page_id in seen:
-                continue
-            tasks.append((page_id, f"{assetbundle_name}/{lua_name}.lua.txt", record_id))
-            seen.add(page_id)
-    if talks_available:
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        tasks.append((page_id, f"{assetbundle_name}/{lua_name}.lua.txt", record_id))
+    if tasks:
 
         def worker(task: tuple[Any, ...]) -> Optional[WebPage]:
             page_id, path, record_id = task
@@ -3352,7 +3521,7 @@ def _crawl_altsource_sv_mysekai(
             continue
         record_id = tweet.get("id", _sha1(text))
         page_id = f"web:{_current_sv_instance()}:{region}:mysekai_tweet:{record_id}"
-        if _page_known(page_id, known_ids):
+        if _page_known(page_id, known_ids) and _inline_text_version_key(page_id, text) in known_ids:
             continue
         page = WebPage(
             id=page_id,
@@ -3416,7 +3585,8 @@ def _crawl_altsource_sv_other_text(
     for table in ALTSOURCE_SV_OTHER_TEXT_TABLES:
         for record in fetch_altsource_sv_master(region, table, fetcher):
             raw_page = altsource_sv_record_page(record, table, region)
-            if _page_known(raw_page.id, known_ids):
+            if _page_known(raw_page.id, known_ids) and (table != "wordings"
+                    or wording_identity._version_key(vars(raw_page)) in known_ids):
                 continue
             remaining = _take_page(pages, remaining, raw_page)
             if remaining is not None and remaining <= 0:
@@ -3447,10 +3617,14 @@ def _crawl_altsource_sv_text(
             for pid, item in existing_pages.items()
             if not (
                 item.get("asset_mismatch")
-                or item.get("untranslated")
+                or (item.get("untranslated") and not (
+                    item.get("kind") == "wordings"
+                    and (wording := wording_identity._metadata(item)) is not None
+                    and wording["no_expression"]))
                 or item.get("content_language_mismatch")
             )
         }
+        known_ids |= _known_inline_text_versions(existing_pages, known_ids)
     else:
         known_ids = None
 
@@ -3561,9 +3735,13 @@ def _crawl_altsource_sv_text(
             if remaining is not None and remaining <= 0:
                 break
             checkpoint()
-            remaining = _crawl_altsource_sv_other_text(
-                region, fetcher, pages, remaining, delay, known_ids
-            )
+            wording_token = _wording_resume_ids.set(wording_identity._resume_index(existing_pages, _current_sv_instance()))
+            try:
+                remaining = _crawl_altsource_sv_other_text(
+                    region, fetcher, pages, remaining, delay, known_ids
+                )
+            finally:
+                _wording_resume_ids.reset(wording_token)
             if remaining is not None and remaining <= 0:
                 break
             checkpoint()

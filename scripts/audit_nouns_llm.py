@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Audit 500 released nouns for cross-language alignment using pure language ability.
+"""Legacy heuristic audit of released nouns; this script makes no LLM calls.
 
-LLM mode is injected via stdin batch: we audit with our own language competence
-by checking each entry's ja/zh_hans/en/zh_tw/ko correspondence.
-For automation, this script does heuristic + language-aware checks that mirror
-what a careful bilingual would flag. It is the stand-in for a full LLM batch
-when no external key is configured — but the output is still human-readable
-for LLM double-reading.
+Its historical filename is preserved. Rules and dictionary checks are not a
+substitute for an agent reading aligned context or independent bilingual gold.
+For host-agent packet evaluation use scripts/evaluate_agent_review.py.
 """
 
 import json, re

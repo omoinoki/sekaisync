@@ -80,6 +80,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -205,7 +206,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
     tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    for attempt in range(6):
+        try:
+            os.replace(tmp, path)
+            break
+        except PermissionError as exc:
+            # Windows indexers/antivirus may briefly hold the destination.
+            # Preserve atomic replacement; never fall back to an in-place write.
+            if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 5:
+                raise
+            time.sleep(.02 * 2 ** attempt)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -276,6 +286,8 @@ def _queue_evidence_revision(item: ReviewItem) -> str:
     """
     identity = [item.term, item.language, item.kind, item.candidates,
                 item.evidence, item.story_keys, item.reason]
+    if item._context:
+        identity.append(item._context)
     raw = json.dumps(identity, ensure_ascii=False, sort_keys=True,
                      separators=(",", ":"), allow_nan=False)
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -284,6 +296,8 @@ def _queue_evidence_revision(item: ReviewItem) -> str:
 def _queue_scope_json(item: ReviewItem) -> str:
     scope = {key: getattr(item, key) for key in _QUEUE_SCOPE_KEYS}
     scope["story_keys"] = list(item.story_keys)
+    if item._context:
+        scope["review_context"] = item._context
     return json.dumps(scope, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False)
 
@@ -313,7 +327,7 @@ def _queue_row_to_item(row: tuple) -> ReviewItem:
         story_keys = json.loads(refs_json or "[]")
     except json.JSONDecodeError:
         candidates, evidence, story_keys = [], [], []
-    return ReviewItem(
+    item = ReviewItem(
         id=str(item_id),
         kind=str(scope.get("kind") or "pending"),
         term=str(term_id or ""),
@@ -326,6 +340,10 @@ def _queue_row_to_item(row: tuple) -> ReviewItem:
         reason=str(scope.get("reason") or ""),
         created_at=str(scope.get("created_at") or ""),
     )
+    item._context = scope.get("review_context") or {}
+    if _is_raw_subject_term(term_id, item._context):
+        item.term = term_id
+    return item
 
 
 _QUEUE_READ_COLUMNS = (
@@ -564,6 +582,10 @@ def _sqlite_lookup_decision(
 
 def _item_is_settled(store_root: Path, item: ReviewItem) -> bool:
     """enqueue 的只读结算判定：方法论或已持久化裁决已覆盖此项。"""
+    if item._context:
+        # Context-bound work is settled by its exact content ID, not a global
+        # word rule that may describe a different sense or obsolete evidence.
+        return False
     _read_methodology(store_root)
     cached = _METHOD_CACHE.get(str(methodology_path(store_root)))
     pair_index = cached[2] if cached else {}
@@ -618,6 +640,7 @@ def _sqlite_submit_judgments_locked(store_root: Path, judgments: list[dict]) -> 
 
 
 def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tuple[dict, bool]:
+    from sekaisync import cohesion_work
     accepted = rejected = replaced = 0
     methodology_added = methodology_updated = decisions_added = 0
     unknown = 0
@@ -637,6 +660,7 @@ def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tupl
     superseded_queue_rows = 0
     rules_written = 0
     methodology_dirty = False
+    packet_applied = packet_discovered = packet_followups = 0
 
     for judgment in judgments:
         if not isinstance(judgment, dict):
@@ -650,6 +674,11 @@ def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tupl
             (jid,),
         ).fetchone()
         queued_item = _queue_row_to_item(row) if row else None
+        if queued_item is None and jid.startswith("arp:") and conn.execute(
+                "SELECT 1 FROM review_queue WHERE item_id=? AND status='resolved'", (jid,)).fetchone():
+            continue
+        if queued_item is None and jid.startswith("arp:") and cohesion_work._is_superseded(conn, store_root, jid):
+            continue
         # 队列里没有：要么重复提交，要么别的进程已处理，要么是带 term/language
         # 的离线 judgment（兼容旧 JSON 时代的手工提交）。
         item = None
@@ -674,6 +703,42 @@ def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tupl
             continue
         runtime = item
         runtime.id = jid or runtime.id or item_id(runtime.term, runtime.language, runtime.candidates)
+        if runtime.id.startswith("arp:") and not isinstance(runtime._context, dict):
+            errors.append(f"{runtime.id}: invalid review context")
+            continue
+        if runtime.id.startswith("arp:") and not runtime._context:
+            errors.append(f"{runtime.id}: missing grounded review context")
+            continue
+
+        if runtime._context:
+            from sekaisync import agent_packets as packets
+            conn.execute("SAVEPOINT agent_packet")
+            try:
+                answer = packets._submit_packet(conn, store_root, runtime, dict(judgment, decision=decision))
+                added_children = 0
+                for child in answer["items"]:
+                    added_children += packets._insert_packet(conn, child)
+                provenance = _new_agent_provenance(judgment, runtime, now_iso())
+                provenance["review_scope"] = runtime._context["scope_id"]
+                decisions_added += _sqlite_record_decisions(
+                    conn, runtime, decision, answer["value"],
+                    _sanitize_text(judgment.get("rationale")), provenance)
+                conn.execute("UPDATE review_queue SET status='resolved' WHERE item_id=?", (runtime.id,))
+                conn.execute("RELEASE agent_packet")
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                conn.execute("ROLLBACK TO agent_packet")
+                conn.execute("RELEASE agent_packet")
+                errors.append(f"{runtime.id}: {exc}")
+                continue
+            resolved_queue_rows += 1
+            packet_applied += answer.get("commit", {}).get("applied_slots", 0)
+            packet_discovered += len(answer.get("terms", []))
+            packet_followups += added_children
+            accepted += decision == "accept"
+            replaced += decision == "replace"
+            rejected += decision == "reject"
+            # Do not supersede other languages/senses or learn a global rule.
+            continue
 
         ts = now_iso()
         provenance = _new_agent_provenance(judgment, runtime, ts)
@@ -733,6 +798,7 @@ def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tupl
         superseded_queue_rows += cur.rowcount
         facts_changed = facts_changed or bool(decisions_added) or bool(cur.rowcount)
 
+    superseded_queue_rows += cohesion_work._converge_sqlite(conn, store_root)
     if methodology_dirty:
         rules_written = _sqlite_sync_review_rules(conn, entries)
     result = {
@@ -753,6 +819,9 @@ def _sqlite_submit_in_txn(conn, store_root: Path, judgments: list[dict]) -> tupl
         "facts_changed": bool(
             decisions_added or resolved_queue_rows or superseded_queue_rows or rules_written
         ),
+        "applied_slots": packet_applied,
+        "discovered_terms": packet_discovered,
+        "followup_packets": packet_followups,
     }
     return result, methodology_dirty
 
@@ -777,6 +846,11 @@ def _sqlite_record_decisions(
         if not target_value and kind != "reject":
             continue
         did = _decision_id(item.term, item.language, kind, target_value)
+        if item.id.startswith("arp:") and item._context:
+            # Equal answers in distinct immutable packets are separate receipts.
+            material = json.dumps([item.id, item.term, item.language, kind, target_value],
+                                  ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            did = "rd:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
         payload = {
             "term": item.term,
             "language": item.language,
@@ -903,6 +977,18 @@ def decisions_path(store_root: Path) -> Path:
 # ── 数据结构 ───────────────────────────────────────────────────────────
 
 
+def _is_raw_subject_term(term, context):
+    """Recognize lossless typed occurrence transport, not grounded validity."""
+    if not isinstance(term, str) or not isinstance(context, dict):
+        return False
+    subject = context.get("subject")
+    return (context.get("schema") == "sekaisync/agent-packet@1"
+            and context.get("task") == "occurrence" and isinstance(subject, dict)
+            and subject.get("schema") == "sekaisync/span-subject@1"
+            and subject.get("kind") in {"literal", "segmented"}
+            and subject.get("canonical") == term)
+
+
 @dataclass
 class ReviewItem:
     """一条待裁决项。必须自包含——智能体只读这一条就能判断，无需回读语料（token 效率是硬要求）。"""
@@ -918,6 +1004,8 @@ class ReviewItem:
     channels: list[str] = field(default_factory=list)  # 哪些通道产出了它
     reason: str = ""  # 为何需要裁决（人类可读一行）
     created_at: str = ""
+    # An internal additive payload; the public constructor remains unchanged.
+    _context: dict = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # 截断发生在**构造时**，保证落盘与导出给智能体的都是已经瘦身过的内容。
@@ -940,7 +1028,7 @@ class ReviewItem:
             self.created_at = now_iso()
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "kind": self.kind,
             "term": self.term,
@@ -953,10 +1041,13 @@ class ReviewItem:
             "reason": self.reason,
             "created_at": self.created_at,
         }
+        if self._context:
+            data["review_context"] = self._context
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ReviewItem":
-        return cls(
+        item = cls(
             id=str(data.get("id", "")),
             kind=str(data.get("kind", "pending")),
             term=str(data.get("term", "")),
@@ -969,6 +1060,10 @@ class ReviewItem:
             reason=str(data.get("reason", "")),
             created_at=str(data.get("created_at", "")),
         )
+        item._context = data.get("review_context") or {}
+        if _is_raw_subject_term(data.get("term"), item._context):
+            item.term = data["term"]
+        return item
 
 
 @dataclass
@@ -1323,12 +1418,20 @@ def enqueue(store_root: Path, items: list[ReviewItem]) -> dict:
     """
     if _uses_sqlite(store_root):
         return _sqlite_enqueue(store_root, items)
+    from sekaisync.fetcher import store_writer_lock
+    with store_writer_lock(store_root):
+        return _enqueue_json_locked(store_root, items)
+
+
+def _enqueue_json_locked(store_root: Path, items: list[ReviewItem]) -> dict:
     added = 0
     skipped_dup = 0
     skipped_settled = 0
 
     queue_items = _read_queue(store_root)
     seen_ids = {item.id for item in queue_items}
+    from sekaisync.agent_packets import _receipts
+    receipts = _receipts(store_root) if any(i._context for i in items) else {}
     # 走缓存读（同时拿到已建好的索引），避免每次入队都重新编译 pattern 正则。
     _read_methodology(store_root)
     cached = _METHOD_CACHE.get(str(methodology_path(store_root)))
@@ -1340,6 +1443,14 @@ def enqueue(store_root: Path, items: list[ReviewItem]) -> dict:
             item.id = item_id(item.term, item.language, item.candidates)
         if item.id in seen_ids:
             skipped_dup += 1
+            continue
+        if item._context:
+            if item.id in receipts:
+                skipped_settled += 1
+            else:
+                seen_ids.add(item.id)
+                queue_items.append(item)
+                added += 1
             continue
         settled = _lookup(pair_index, pattern_index, item.term, item.language, item.candidates)
         if settled is None and not methodology_path(store_root).exists():
@@ -1839,6 +1950,11 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
     }
 
     resolved_ids: set[str] = set()
+    packet_applied = packet_discovered = packet_followups = 0
+    packet_children = []
+    from sekaisync import agent_packets as packets, cohesion_work, dbstore
+    receipts = packets._receipts(store_root)
+    database_exists = (Path(store_root) / "kb" / "sekaisync.db").exists()
     for judgment in judgments:
         if not isinstance(judgment, dict):
             errors.append("judgment 不是对象，已跳过")
@@ -1851,8 +1967,12 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
             continue
         if item is None:
             # 队列里没有：要么是重复提交，要么是别的进程已处理、要么是脏 id。
-            if jid and jid in settled_item_ids:
+            if jid and (jid in settled_item_ids or jid in receipts):
                 continue  # 已经在方法论里留痕 → 幂等跳过
+            if jid.startswith("arp:") and database_exists:
+                with dbstore.connect(store_root) as conn:
+                    if cohesion_work._is_superseded(conn, store_root, jid):
+                        continue
             if not (judgment.get("term") and judgment.get("language")):
                 unknown += 1
                 continue
@@ -1863,6 +1983,39 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
             kind="pending",
         )
         runtime.id = jid or runtime.id
+        if runtime.id.startswith("arp:") and (not isinstance(runtime._context, dict) or not runtime._context):
+            errors.append(f"{runtime.id}: missing or invalid grounded review context")
+            continue
+
+        if runtime._context:
+            from sekaisync import dbstore
+            try:
+                with dbstore.connect(store_root) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    answer = packets._submit_packet(conn, store_root, runtime, dict(judgment, decision=decision))
+                    conn.commit()
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                errors.append(f"{runtime.id}: {exc}")
+                continue
+            # Persist the receipt before draining the queue. A crash can only
+            # replay this idempotent narrow commit, never invent completion.
+            receipts[runtime.id] = dict(decision=decision, value=answer["value"],
+                                        scope_id=runtime._context["scope_id"],
+                                        rationale=_sanitize_text(judgment.get("rationale")),
+                                        created_at=now_iso())
+            from sekaisync import source_audits
+            receipt_context = source_audits._receipt_context(runtime)
+            if receipt_context is not None:
+                receipts[runtime.id]["review_context"] = receipt_context
+            _write_json(packets._receipt_path(store_root), {"items": receipts})
+            packet_children.extend(answer["items"])
+            packet_applied += answer.get("commit", {}).get("applied_slots", 0)
+            packet_discovered += len(answer.get("terms", []))
+            accepted += decision == "accept"
+            replaced += decision == "replace"
+            rejected += decision == "reject"
+            resolved_ids.add(runtime.id)
+            continue
 
         ts = now_iso()
         provenance = _new_agent_provenance(judgment, item, ts)
@@ -1911,9 +2064,25 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
 
     if resolved_ids:
         remaining = [item for item in queue_items if item.id not in resolved_ids]
-        _write_queue(store_root, remaining)
+        queued_ids = {item.id for item in remaining}
+        for child in packet_children:
+            if child.id not in queued_ids and child.id not in receipts:
+                remaining.append(child)
+                queued_ids.add(child.id)
+                packet_followups += 1
     else:
         remaining = queue_items
+    if database_exists:
+        with dbstore.connect(store_root) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            remaining, superseded_ids = cohesion_work._converge_items(conn, store_root, remaining, receipts)
+            if superseded_ids:
+                dbstore.bump_revision(conn)
+            conn.commit()
+    else:
+        superseded_ids = []
+    if resolved_ids or superseded_ids:
+        _write_queue(store_root, remaining)
     if methodology_added or methodology_updated:
         _write_methodology(store_root, entries)
 
@@ -1928,6 +2097,9 @@ def _submit_judgments_locked(store_root: Path, judgments: list[dict]) -> dict:
         "unknown": unknown,
         "errors": errors,
         "remaining": len(remaining),
+        "applied_slots": packet_applied,
+        "discovered_terms": packet_discovered,
+        "followup_packets": packet_followups,
     }
 
 
@@ -2033,7 +2205,7 @@ def apply_methodology_batch(store_root: Path, proposals: dict) -> dict:
                         "reason": "方法论未覆盖",
                     }
                 )
-            elif hit["decision"] == "accept":
+            elif hit["decision"] in ("accept", "replace"):
                 settled.setdefault(_sanitize_text(term), {})[_sanitize_text(lang)] = hit["value"]
             else:
                 rejected.append(
@@ -2130,13 +2302,17 @@ DECIDE_HELP = (
     "#   rationale: <一句中文理由，会沉淀进方法论>      generalize: pair|pattern|null\n"
     "#   pattern: <generalize=pattern 时必填，如 re:^N\\d{1,3}$ 或 prefix:PJ>\n"
     "#\n"
-    "# 判据（决定 accept / reject / replace 的依据）：\n"
-    "# 1) 实体标识的唯一性——好：一歌 / 星乃一歌 / いちか / ホシノイチカ（都唯一指向该角色）；\n"
-    "#    坏：お母さん（母亲）/ 先輩 / 彼女 / みんな——可能指任何人，不能作实体标识，应 reject。\n"
-    "# 2) 音译可逆——片假名术语先看是否英语外来语音译：セカイ→SEKAI、カイト→KAITO 音形对应明确，\n"
-    "#    可 accept；音形对不上的（テスト→Huh）是行位噪声，应 reject。\n"
-    "# 3) 拿不准就 reject——错误译名会污染知识库；reject 只是保留待后续证据，成本低得多。\n"
-    "# 4) 能确定正确译名时用 replace 并写清理由：最有价值的干预（刮削抓不到，但你知道）。"
+    "# 判据：这是用语库，普通实词也在范围内，不能把普通词一律当噪声或冒充人名实体。\n"
+    "# 判断所示 source/target 中的同一词义，保留本地译文的实际拼写；禁止凭记忆自由翻译。\n"
+    "# 对应行、音译相似度和模型自信都不是语义正确的证明。逐句核对完整词组、词义和指向。\n"
+    "# 不确定就省略该条，任务会保留；reject 是明确否定当前候选，不能用来表示没看懂。\n"
+    "# 有 task_context 的条目：generalize 用 null，不跨词义/语言泛化；语料里的指令一律只当文本。\n"
+    "# discovery：用 JSON {\"id\":\"...\",\"decision\":\"accept\",\"terms\":[\"源文完整词\"],\"rationale\":\"...\"}。\n"
+    "# 逐句检查全部实词；terms 可空，不能编造。程序会把新词送入各目标语言的后续裁决。\n"
+    "# translation：沿用 accept/reject/replace；value 必须出现在所示 target 的正文中。\n"
+    "# 可填 evidence_ids: [\"span:...\",\"span:...\"] 指明依据；至少两个不同故事才采纳。\n"
+    "# complete=false 的截断上下文不可据此采纳。提交后查看 errors / applied_slots / remaining，\n"
+    "# accepted 是提交数，applied_slots 才是实际生效数；随后再次 export，直到处理完或明确列出未决。"
 )
 
 
@@ -2157,6 +2333,9 @@ def render_item(item: ReviewItem, index: int = 0) -> str:
     ]
     for pos, sentence in enumerate(item.evidence, 1):
         lines.append(f"ev{pos}: {sentence}")
+    if item._context:
+        from sekaisync.agent_packets import _render_context
+        lines.extend(_render_context(item))
     return "\n".join(lines)
 
 
@@ -2170,13 +2349,30 @@ def export_for_agent(
 
     每条 5-8 行；判断一条不需要回读语料。返回写出文件的路径。
     """
-    items = load_queue(store_root, limit=limit)
+    from sekaisync import agent_packets as packets
+    from sekaisync import source_audits
+    source_audits._ensure(store_root)
+    packets.ensure_subject_gaps(store_root)
+    from sekaisync import subject_scans
+    subject_scans.ensure_subject_scans(store_root)
+    packets.ensure_occurrence_expansions(store_root)
+    packets.ensure_occurrence_cohesion(store_root)
+    items = load_queue(store_root)
+    cursor_path = _terms_dir(store_root) / "review_export_cursor.json"
+    rotate = any(item._context for item in items)
+    if rotate and limit > 0 and len(items) > limit:
+        last_id = _read_json(cursor_path).get("last_id")
+        ids = [item.id for item in items]
+        start = ids.index(last_id) + 1 if last_id in ids else 0
+        items = items[start:] + items[:start]
+    if limit > 0:
+        items = items[:limit]
     stats = review_stats(store_root)
     header = [
         "# sekaisync 术语裁决队列",
         f"# 导出 {len(items)} / 共 {stats['queue_size']} 条；"
         f"方法论 {stats['methodology_entries']} 条（复用 {stats['interventions']['reuse_total']} 次）",
-        "# 判断靠你自己：读 term/candidates/evidence 就能决定，不需要回读语料。",
+        "# 使用证据完成语义判断；旧条目若没有双语上下文，请重新运行原刮削命令补建任务。",
         DECIDE_HELP.rstrip("\n"),
         "",
     ]
@@ -2186,6 +2382,8 @@ def export_for_agent(
         text += "\n"
     path = Path(out_path)
     _atomic_write_text(path, text)
+    if rotate and items:
+        _write_json(cursor_path, {"last_id": items[-1].id})
     return path
 
 
@@ -2204,6 +2402,8 @@ _SCALAR_KEYS = {
     "scope",
     "candidates",
     "reject_others",
+    "terms",
+    "evidence_ids",
 }
 
 

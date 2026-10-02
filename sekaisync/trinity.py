@@ -1,72 +1,21 @@
-"""三位一体用语刮削编排器（隔离实验：`experiment/trinity/`）。
+"""Evidence-preserving orchestration for multilingual terminology extraction.
 
-三组对照实验（``experiment/zh-en-tw/COMPARISON.md``）已经定性：三组不是互斥替代，
-而是**互补的三个信号源**，但都栽在同一个缺陷上——用行位预测取候选，通用词就被
-对齐到感叹词/人名。本模块把三条路按"主干 + 2 辅助"编成一条**协同**管线，与既有
-``penetrate_channels.penetrate_layered``（三通道**并列**、按固定优先级覆盖）的区别
-在于三点协同机制：
+Trunk, hub and transliteration share the same monotone line alignment and
+candidate-boundary engine. They are complementary candidate generators, not
+independent witnesses merely because they have different channel labels.
+Official glossary names take precedence; differing nonofficial translations
+remain conflicts. Corpus evidence retains the observed source/target lines.
 
-1. **互补取值**：三路各自独立产出后**合并去重**。
-   - 主干 ``trunk``：ja 主位分布对齐（``termindex.align_term_by_frequency``，
-     现算法，精度背书）→ 抓义译名（アップルパイ→苹果派）。
-   - 辅助 1 ``hub``：ja 行位 → zh_hans/英语拉丁形态直取 → zh_hant/ko 同点位译名
-     验证 → 回填 zh_hans（组 2 的机制，补了组 2 的三处缺陷）→ 抓人名/品牌
-     （朝比奈→Asahina）。
-   - 辅助 2 ``translit``：ja 片假名 → 罗马音 → 英语（``romaji.similarity`` 硬门控）
-     → 抓缩写/音译（ニーゴ→N25、セカイ→SEKAI）。
-   三路的**作用域互补**：主干吃非拉丁词，hub 吃无形态特征的简中侧专名，
-   translit 吃片假名串；合并后总采纳数应大于任一单路（协同的最低判据，
-   verify.py 对此断言）。
-
-2. **交叉验证增益**：同一 term 被 ≥2 路独立命中**且译名一致**（归一化后同值）
-   → ``agreement`` 计数 +1，置信度上台阶（``agreement_boosted`` 计数）。
-   一致性按**语言槽**判定：trunk 给 zh_hans 的 `世界` 与 translit 给 en 的 `SEKAI`
-   不是同一语言槽，不算 agreement；trunk 的 `摄影大赛` 与 hub 的 `摄影大赛` 才算。
-   **不一致**（同语言槽不同值）→ 进 ``conflicts``，交人工/智能体裁决，
-   绝不静默择一。
-
-3. **相互补位**：
-   - 主干因严格门控未穿透、但 translit 以 ``sim >= 0.99`` 命中的 → 采纳
-     （记 ``rescued_by``）；
-   - 辅助产出的低置信结果，若有主干同点证据（主干在任一语言给出同一值）支持
-     → 置信度加分、升为采纳（记 ``promoted_by_trunk``）；
-   - 三角闭环（``verify_triangle``）在 glossary 未收录该术语时降级为**只做
-     目标语言锚定**（``max_aux_required=0``）；未通过锚定的 en 对进 ``pending``，
-     **不丢弃**。
-
-硬约束：零第三方依赖；只读 ``sekaisync/`` 既有模块（不修改任何既有文件）；
-Python 3.10+。
-
-性能：行位索引走 ``penetrate_channels._build_term_line_index`` 的两字符分桶
-（一次语料扫描，同时拿到行号）；主干所需的 ``src_stories`` 由同一索引与
-``build_pair_story_index`` 的语言倒排取交集得出，避免逐 (term, story) 全文扫描；
-正文/行/配对故事/拉丁候选/行位索引本模块自带一次调用内缓存。
-
-性能修复记录（2026-09，200 个 event_story 故事，1109s → ~25s）：本模块一度在
-200 故事上退化到 1109 秒（复现实测 1700 秒）。根因不在本模块的业务逻辑，而是
-**上游 ``zhfirst.strip_speaker`` 的正则灾难性回溯**被
-``penetrate_channels._latin_candidates_for_line → extract_latin_candidates``
-反复触发：``SPEAKER_RE_MULTI``（``^(?:[^：:]{1,12}[・&、,， ])+[^：:]{1,12}[：:]``）
-在**无冒号**的长行上必须枚举全部切分才能确认失败，单行最高 26 秒。该函数被
-hub/translit 的每个行位窗口调用一次，于是在 200 故事上累计 1600 秒（占总耗时
-95%）。修法见 :func:`_latin_candidates_fast`（无冒号 ⇒ ``strip_speaker`` 恒等，
-跳过回溯）与 :class:`_FastAligner`（主干的行/候选/门控缓存 + 预编译中文切分
-正则）。所有快速路径都与上游**逐值等价**（A/B 在真实语料上 0 mismatch），
-修复前后 accepted/pending/conflicts 完全一致（119 / 341 / 0）。
-
-公开 API（主线集成依赖，签名固定）::
-
-    scrub_trinity(groups, stories, candidates, *, ...) -> dict
-    arbitrate(term, proposals, *, glossary_names=None) -> dict
-    apply_scrub_result(store_root, result, corpus, *, expected_revision, ...) -> dict
-    write_scrub_report(result, out_dir) -> dict
-    compare_with_baseline(result, baseline) -> dict
+The historical public API and result shapes remain unchanged:
+``scrub_trinity``, ``arbitrate``, ``apply_scrub_result``,
+``write_scrub_report``, ``compare_with_baseline`` and ``build_candidate_pool``.
+Only standard-library dependencies are required. Scrubbing itself is read-only;
+publication remains the caller's separate, revision-checked operation.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import re
 import sys
 import unicodedata
@@ -97,14 +46,18 @@ from sekaisync.candidate_tiers import (  # noqa: E402
     tier_summary,
 )
 from sekaisync.normalize import normalize_name  # noqa: E402
+from sekaisync.line_alignment import (  # noqa: E402
+    align_lines, alignment_session, contains_term, find_term_span, select_translation,
+    source_term_occurrences, strip_speaker_label,
+)
 from sekaisync.penetrate_channels import (  # noqa: E402
-    _EN_PROPER,
-    _EN_SENTENCE_INITIAL_AMBIGUOUS,
-    _EN_STOPWORDS,
     _build_term_line_index,
+    _aligned_target_spans,
     _glossary_name_table,
     _page_for,
     _paired_stories,
+    _transliteration_candidates_for_line,
+    clear_known_names,
     extract_latin_candidates,
     register_alignment_context,
     register_glossary_names,
@@ -112,7 +65,6 @@ from sekaisync.penetrate_channels import (  # noqa: E402
 )
 from sekaisync.romaji import (  # noqa: E402
     is_abbrev_form_only,
-    is_generic_katakana,
     is_plausible_translation,
     similarity,
 )
@@ -159,10 +111,6 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 # 译名比较键：NFKC + casefold + 去装饰/空白/中点。比 normalize_name 稍松
 # （normalize_name 不吃中点与装饰符），专门用于"跨通道同值"判定。
 _NAME_STRIP_RE = re.compile(r"[\u3000\s\u30fb\u2026\u2014♡♪☆★\"'`~～]+")
-
-# termindex 候选抽取里的发言人剥离模式（逐字复制上游内联写法，保证同口径）。
-_SEMICOLON_SPEAKER_RE = re.compile(r"^[^：:]{1,30}[：:]\s*")
-
 
 def _name_key(value: str) -> str:
     """译名比较键：NFKC + casefold + 去装饰/空白/中点。"""
@@ -221,55 +169,13 @@ def _strip_speaker_fast(line: str) -> str:
 
 
 def _latin_candidates_from_text(text: str) -> list[str]:
-    """``extract_latin_candidates`` 的抽取循环（作用于已剥发言人的正文）。
-
-    ``strip_speaker`` 被硬编码在上游函数体内、无法注入，所以这里忠实复制它的
-    抽取段：形态规则用到的常量（``_EN_PROPER`` / ``_EN_STOPWORDS`` /
-    ``_EN_SENTENCE_INITIAL_AMBIGUOUS``）全部**直接引用上游对象**，只复制控制流，
-    避免口径漂移。仅在"行内无冒号 ⇒ strip_speaker 恒等"时走这条路。
-    """
-    if not text.strip():
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for m in _EN_PROPER.finditer(text):
-        w = m.group(0).strip()
-        words = w.split()
-        if len(w) < 3 or len(words) > 6:
-            continue
-        # 缩写（I'm / You're / Don't）与所有格：撇号是句法标记，不是名字。
-        if any("'" in x or "\u2019" in x for x in words):
-            continue
-        content = [x for x in words if x.lower() not in _EN_STOPWORDS]
-        if not content:
-            continue
-        if not any(x[0].isupper() and len(x) >= 3 for x in content):
-            continue
-        if len(words) == 1:
-            word = words[0]
-            strong = word.isupper() or any(c.isupper() for c in word[1:])
-            if not strong:
-                if word.lower() in _EN_SENTENCE_INITIAL_AMBIGUOUS:
-                    continue
-                # 句首/句间句首的普通首字母大写词：无第二词佐证 → 丢弃。
-                head = text[: m.start()].rstrip()
-                if not head or head[-1] in ".!?\u2026\u2014":
-                    continue
-        if w not in seen:
-            seen.add(w)
-            out.append(w)
-    return out
+    """Historical helper; Latin candidate boundaries have one implementation."""
+    return extract_latin_candidates(text)
 
 
 def _latin_candidates_fast(line: str) -> list[str]:
-    """``_latin_candidates_for_line`` 的等价快速版（避开上游回溯热点）。
-
-    有冒号 ⇒ 走上游原函数（此时模式很快失败/成功，实测 1-4 微秒）；
-    无冒号 ⇒ ``strip_speaker`` 恒等，直接对原行跑抽取循环，省掉灾难性回溯。
-    """
-    if _has_speaker_colon(line):
-        return extract_latin_candidates(line)
-    return _latin_candidates_from_text(line)
+    """Use the shared, bounded speaker-stripper and Latin extractor."""
+    return extract_latin_candidates(line)
 
 
 # translit 的"边缘档"下界：实验里 sim 0.5-0.6 是噪声与真值交叠区
@@ -315,6 +221,7 @@ class _Corpus:
         self._views: dict[frozenset[str], _StoryScopedView] = {}
         # (term, en 值) → 锚定结果（见 _anchor_check：扫描面已裁剪到命中故事）。
         self._anchors: dict[tuple[str, str], dict] = {}
+        self._alignments: dict[tuple[str, str, str], Any] = {}
 
     def page(self, story_key: str, language: str) -> Any:
         return _page_for(self.groups, story_key, language)
@@ -344,6 +251,17 @@ class _Corpus:
         if cached is None:
             cached = _paired_stories(self.groups, language, source_language)
             self._paired[key] = cached
+        return cached
+
+    def alignment(self, story_key: str, source_language: str, target_language: str) -> Any:
+        """One shared, monotonic line alignment per page pair in this call."""
+        key = (story_key, source_language, target_language)
+        cached = self._alignments.get(key)
+        if cached is None:
+            cached = align_lines(self.lines(story_key, source_language),
+                                 self.lines(story_key, target_language),
+                                 source_language, target_language)
+            self._alignments[key] = cached
         return cached
 
     def latin_candidates(self, line: str) -> list[str]:
@@ -434,8 +352,8 @@ class _StoryScopedView(dict):
     __slots__ = ("_scoped_keys",)
 
     def __init__(self, groups: dict, stories: Iterable[str]) -> None:
-        super().__init__(groups)
-        self._scoped_keys = frozenset(stories)
+        self._scoped_keys = frozenset(key for key in stories if key in groups)
+        super().__init__((key, groups[key]) for key in self._scoped_keys)
 
     # ── 下面全部按裁剪后的故事集答复 ────────────────────────────────
     def __iter__(self):
@@ -510,58 +428,16 @@ def build_candidate_pool(
 
 # ── 通道 1 / 主干：trunk（ja 主位分布对齐）──────────────────────────
 
-# 主干所需的 ``_split_zh_run`` 快速版：上游每次调用都用 ``re.escape`` 重建
-# 两条正则（42.6M 次 escape、51 条函数词 + 65 个功能字），在本工作负载上
-# 70 µs/行 → 3.5 µs/行（20 倍）。两条模式只依赖 ``_ZH_FUNCTION_WORDS`` /
-# ``_ZH_FUNCTION_CHARS`` 这两个模块常量，缓存编译结果不改变任何输出
-# （A/B 在真实语料 3432 次对上逐值比对，mismatches=0）。
-_ZH_WORD_SPLIT_RE = re.compile(
-    "|".join(re.escape(w) for w in sorted(termindex._ZH_FUNCTION_WORDS, key=len, reverse=True))
-)
-_ZH_CHAR_SPLIT_RE = re.compile(
-    "[" + re.escape("".join(sorted(set(termindex._ZH_FUNCTION_CHARS)))) + "]"
-)
-
-
 def _split_zh_run_cached(run: str, *, enumerate_windows: bool = True) -> list[str]:
-    """``termindex._split_zh_run`` 的等价快速版（正则预编译）。"""
-    pieces = _ZH_WORD_SPLIT_RE.split(run)
-    out: list[str] = []
-    for piece in pieces:
-        for sub in _ZH_CHAR_SPLIT_RE.split(piece):
-            if len(sub) < 2 or len(sub) > 8:
-                continue
-            out.append(sub)
-            if not enumerate_windows:
-                continue
-            n = len(sub)
-            for wlen in range(2, n):
-                for start in range(0, n - wlen + 1):
-                    out.append(sub[start:start + wlen])
-    return list(dict.fromkeys(out))
+    """Historical private entry point; segmentation now has one authority."""
+    return termindex._split_zh_run(run, enumerate_windows=enumerate_windows)
 
 
 class _FastAligner:
-    """``termindex.align_term_by_frequency`` 的**带缓存等价实现**（主干专用）。
+    """Call-local compatibility view used by profiling and trunk callers.
 
-    上游实现对本模块的调用形态（一次刮削里 3432 次 (term, 目标语言) 调用、
-    313k 次 (调用 × 故事) 访问）反复做三件可缓存的事：
-
-    1. 每个 (故事, 语言) 页的 ``splitlines`` + ``strip``（578,974 次 ≈ 24s）；
-    2. 每个源故事的 ``[i for i, ln in enumerate(src_lines) if term in ln]``
-       —— 而 :class:`_Corpus` 侧的行位索引**已经**给出这些行号（312k 次全行
-       扫描 ≈ 12s）；
-    3. 逐行的 ``_local_translation_candidates``（672k 个不同 (行, 语言)，
-       同一行在多个术语间反复出现）。
-
-    缓存键全部落在"页正文"与"行文本"上——都是输入数据的纯函数，因此
-    **结果与上游逐字节一致**（A/B 在 200 故事真实负载上 3432 次调用全部相等，
-    见 perf_probe 的等价性说明）。``align_term_by_frequency`` 的采样、门控、
-    并列判定（含"75% 内取最长"）原样保留，只有取数据的方式改变。
-
-    ``src_stories`` 与 ``hit_lines`` 必须同时给（``hit_lines`` 是
-    ``_build_term_line_index`` 的 ``hits[term]``，即同一批故事里的命中行号），
-    否则退回逐行 ``in`` 扫描，语义不变。
+    Ranking delegates to termindex; no copied alignment or segmentation rules
+    live here. Cached page/candidate helpers retain their existing signatures.
     """
 
     def __init__(self, corpus: "_Corpus") -> None:
@@ -593,57 +469,17 @@ class _FastAligner:
         return hit
 
     def candidates(self, line: str, language: str, allowed: set[str] | None) -> list[str]:
-        """一行里可接受的译名候选（上游的抽取 + allowed 过滤 + 形态门控）。
-
-        缓存键 = (行, 语言, 是否带 allowed)。``allowed`` 只影响"是否枚举中文
-        子窗口"与"词表过滤"，两者都由 ``allowed is None`` 决定；同一目标语言在
-        一次调用里拿到的是同一个词表集合，所以这个键是完备的。
-        """
-        key = (line, language, "" if allowed is None else "1")
-        cached = self._cands.get(key)
-        if cached is not None:
-            return cached
-        raw = _local_translation_candidates_cached(
-            line, language, enumerate_zh_windows=not allowed,
-        )
-        if allowed:
-            raw = [c for c in raw if normalize_name(c) in allowed]
-        out = [c for c in raw if self._acceptable(c, language)]
-        self._cands[key] = out
-        return out
+        """Use authoritative span extraction, including an explicit empty vocabulary."""
+        return list(termindex._aligned_span_candidates(line, language, allowed))
 
 
 def _local_translation_candidates_cached(
     segment: str, target_language: str, *, enumerate_zh_windows: bool = True,
 ) -> list[str]:
-    """``termindex._local_translation_candidates`` 的等价版（走预编译正则）。
-
-    只有中文分支受影响（它调用 ``_split_zh_run``）；其余分支直接委托上游。
-    """
-    lang = termindex._term_language(target_language)
-    if lang not in ("zh_hans", "zh_tw", "zh_hant"):
-        return termindex._local_translation_candidates(
-            segment, target_language, enumerate_zh_windows=enumerate_zh_windows,
-        )
-    out: list[str] = []
-
-    def add(candidate: str) -> None:
-        candidate = candidate.strip()
-        if 2 <= len(candidate) <= 40 and candidate not in out:
-            out.append(candidate)
-
-    # 与上游同样的发言人剥离（模式与 termindex 内联的那条完全一致）。
-    seg = _SEMICOLON_SPEAKER_RE.sub("", segment)
-    if not seg:
-        seg = segment
-    for match in termindex._LOCAL_QUOTE_RE.finditer(seg):
-        add(match.group(1))
-    for term in termindex._local_latin_candidates(seg):
-        add(term)
-    for run in termindex._CJK_RUN_RE.findall(seg):
-        for piece in _split_zh_run_cached(run, enumerate_windows=enumerate_zh_windows):
-            add(piece)
-    return out
+    """Compatibility wrapper: candidate boundaries have one implementation."""
+    return termindex._local_translation_candidates(
+        segment, target_language, enumerate_zh_windows=enumerate_zh_windows,
+    )
 
 
 def _align_term_cached(
@@ -656,75 +492,46 @@ def _align_term_cached(
     src_stories: set[str],
     hit_lines: dict[str, Any] | None,
 ) -> str:
-    """``termindex.align_term_by_frequency`` 的等价快速版（缓存 + 行号复用）。
+    """Delegate ranking and abstention to the shared term alignment engine.
 
-    门控与排序逐条照抄上游；差别仅在"故事页的行"与"行内候选"取自缓存，
-    且源侧命中行号优先用 ``hit_lines``（行位索引已算过）。
+    The old copied implementation silently preserved proportional line
+    windows and longest-candidate tie breaking after the main engine changed.
+    Its signature remains available to existing profiling/integration callers.
     """
-    if source_language == "ja" and termindex._is_ja_stopword(source_term):
-        return ""
-    if not termindex._source_candidate_acceptable(source_term, source_language):
-        return ""
-    if len(_LATIN_RE.findall(source_term)) and len(source_term.replace(" ", "")) < 3:
-        return ""
-    if src_stories is None or len(src_stories) < 2:
-        return ""
-    allowed = vocab.get(target_language) if vocab else None
-    co_docs: dict[str, int] = defaultdict(int)
-    for sk in src_stories:
-        src_lines = aligner.lines(sk, source_language)
-        tgt_lines = aligner.lines(sk, target_language)
-        if not src_lines or not tgt_lines:
-            continue
-        if hit_lines is not None:
-            hit_idx = sorted(hit_lines.get(sk) or ())
-        else:
-            hit_idx = [i for i, ln in enumerate(src_lines) if source_term in ln]
-        if not hit_idx:
-            continue
-        src_n = len(src_lines)
-        seen_in_story: set[str] = set()
-        for si in hit_idx:
-            pred = (
-                round(si * (len(tgt_lines) - 1) / max(1, src_n - 1)) if src_n > 1 else 0
-            )
-            for ti in (pred, pred - 1, pred + 1):
-                if ti < 0 or ti >= len(tgt_lines):
-                    continue
-                for cand in aligner.candidates(tgt_lines[ti], target_language, allowed):
-                    seen_in_story.add(cand)
-            if seen_in_story:
-                break
-        for cand in seen_in_story:
-            co_docs[cand] += 1
-    if not co_docs:
-        return ""
-    n_total_stories = max(1, len(aligner.corpus.groups))
-    min_containment = 0.30
-    filtered: dict[str, int] = {}
-    n_src = len(src_stories)
-    for cand, co in co_docs.items():
-        idf_val = idf.get((target_language, cand))
-        if idf_val is None:
-            continue
-        if co < 2:
-            continue
-        if co / n_src < 0.25:
-            continue
-        df_global = max(1, round(n_total_stories / math.exp(idf_val)))
-        if co / df_global >= min_containment or co >= df_global:
-            filtered[cand] = co
-    if not filtered:
-        return ""
-    ranked = sorted(
-        ((cand, co * idf.get((target_language, cand), 0.1)) for cand, co in filtered.items()),
-        key=lambda kv: (kv[1], kv[0]),
-        reverse=True,
+    return termindex.align_term_by_frequency(
+        source_term, source_language, target_language, aligner.corpus.groups,
+        idf, vocab=vocab, src_stories=src_stories,
     )
-    if not ranked or ranked[0][1] <= 0.0:
-        return ""
-    best_score = ranked[0][1]
-    return max((c for c, s in ranked if s >= best_score * 0.75), key=len)
+
+
+def _aligned_occurrences(
+    corpus: _Corpus, story_key: str, term: str, value: str,
+    source_language: str, target_language: str,
+    source_indices: Iterable[int] | None = None,
+) -> list[dict]:
+    """Locate the actual source/target pairs that support one translation."""
+    source_lines = corpus.lines(story_key, source_language)
+    target_lines = corpus.lines(story_key, target_language)
+    occurrences = source_term_occurrences(source_lines, term)
+    alignment = corpus.alignment(story_key, source_language, target_language)
+    indices = source_indices if source_indices is not None else range(len(source_lines))
+    out = []
+    for si in sorted(indices):
+        if si not in occurrences:
+            continue
+        target_indices = alignment.target_indices(si)
+        body = "\n".join(strip_speaker_label(target_lines[ti]) for ti in target_indices)
+        if contains_term(body, value):
+            ti = next((ti for ti in target_indices
+                       if contains_term(strip_speaker_label(target_lines[ti]), value)), target_indices[0])
+            sentence = (target_lines[ti] if contains_term(strip_speaker_label(target_lines[ti]), value)
+                        else "\n".join(target_lines[ti] for ti in target_indices))
+            out.append({"source_line": si, "target_line": ti,
+                        "source_sentence": occurrences[si],
+                        "sentence": sentence,
+                        "alignment_confidence": alignment.confidence(si),
+                        "alignment_reason": alignment.reason(si)})
+    return out
 
 
 def _channel_trunk(
@@ -798,19 +605,29 @@ def _channel_trunk(
             except Exception:
                 aligned = ""
             if aligned:
+                aligned_lines = {
+                    sk: rows for sk in sorted(src_stories)
+                    if (rows := _aligned_occurrences(
+                        corpus, sk, term, aligned, source_language,
+                        target_language, hits.get(sk),
+                    ))
+                }
+                if len(aligned_lines) < 2:
+                    continue
                 lang_map[target_language] = {
                     aligned: {
                         "value": aligned,
                         "sim": 0.0,
                         "evidence": {
                             "channel": "trunk",
-                            "stories": len(src_stories),
+                            "stories": len(aligned_lines),
                             # The slot store's certificate needs the supporting
                             # story identities, not just their count: a slot is
                             # accepted only from evidence that names the stories
                             # behind it, so a payload reporting merely "3"
                             # cannot be turned into a decision after the fact.
-                            "story_keys": sorted(src_stories),
+                            "story_keys": sorted(aligned_lines),
+                            "aligned_lines": aligned_lines,
                             "target": target_language,
                             # reliability：三组对照实验的评测范围只有
                             # zh_hans / zh_hant / en（组 1 = ja→zh，精度背书；
@@ -918,6 +735,8 @@ def _foreign_literal_hits(
     value: str,
     source_lang: str,
     target_languages: tuple[str, ...],
+    *,
+    anchor_language: str = "ja",
 ) -> dict[str, int]:
     """拉丁名在其它语言译文里"原样保留"的命中故事数。
 
@@ -931,14 +750,18 @@ def _foreign_literal_hits(
     for lang in target_languages:
         if termindex._term_language(lang) == termindex._term_language(source_lang):
             continue
-        scope = corpus.paired(lang, source_lang)
+        scope = corpus.paired(lang, anchor_language)
         if not scope:
             continue
         n = 0
-        for sk in hits:
+        for sk, line_nos in hits.items():
             if sk not in scope:
                 continue
-            if value in corpus.text(sk, lang):
+            alignment = corpus.alignment(sk, anchor_language, lang)
+            target_lines = corpus.lines(sk, lang)
+            if any(contains_term("\n".join(strip_speaker_label(target_lines[ti])
+                                           for ti in alignment.target_indices(si)), value)
+                   for si in line_nos):
                 n += 1
         if n:
             out[lang] = n
@@ -953,19 +776,18 @@ def _pick_vote_winner(
     min_ratio: float,
 ) -> tuple[str, int]:
     """从候选投票里挑胜者：(值, 命中故事数)。无胜者返回 ``("", 0)``。"""
-    best: tuple[int, int, str] | None = None
+    ranked: list[tuple[str, float]] = []
     for cand, story_set in votes.items():
         n = len(story_set)
         if n < min_stories:
             continue
         if n_stories and n / n_stories < min_ratio:
             continue
-        key = (n, len(cand), cand)
-        if best is None or key > best:
-            best = key
-    if best is None:
+        ranked.append((cand, float(n)))
+    winner = select_translation(ranked)
+    if not winner:
         return "", 0
-    return best[2], best[0]
+    return winner, len(votes[winner])
 
 
 def _channel_hub(
@@ -1055,17 +877,18 @@ def _channel_hub(
         if n_stories < min_stories:
             continue
         votes: dict[str, set[str]] = defaultdict(set)
+        vote_lines: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
         for sk, line_nos in hits.items():
             en_lines = corpus.lines(sk, en_lang)
             ja_lines = index.lines.get(sk) or []
             if not en_lines or not ja_lines:
                 continue
-            for si in sorted(line_nos)[:3]:
-                pred = _predict_index(si, len(ja_lines), len(en_lines))
-                for ti in (pred, pred - 1, pred + 1):
-                    if 0 <= ti < len(en_lines):
-                        for cand in corpus.latin_candidates(en_lines[ti]):
-                            votes[cand].add(sk)
+            alignment = corpus.alignment(sk, source_language, en_lang)
+            for si in sorted(line_nos):
+                for span in _aligned_target_spans(en_lines, alignment.target_indices(si)):
+                    for cand in corpus.latin_candidates(span):
+                        votes[cand].add(sk)
+                        vote_lines[cand][sk].add(si)
         if not votes:
             continue
         best_en, votes_n = _pick_vote_winner(
@@ -1081,7 +904,7 @@ def _channel_hub(
             if not scope:
                 continue
             hits_n = 0
-            for sk, line_nos in hits.items():
+            for sk, line_nos in vote_lines[best_en].items():
                 if sk not in scope:
                     continue
                 aux_lines = corpus.lines(sk, aux_lang)
@@ -1089,13 +912,13 @@ def _channel_hub(
                 if not aux_lines or not ja_lines:
                     continue
                 found = False
-                for si in sorted(line_nos)[:3]:
-                    pred = _predict_index(si, len(ja_lines), len(aux_lines))
-                    for ti in (pred, pred - 1, pred + 1):
-                        if 0 <= ti < len(aux_lines) and best_en in aux_lines[ti]:
-                            hits_n += 1
-                            found = True
-                            break
+                alignment = corpus.alignment(sk, source_language, aux_lang)
+                for si in sorted(line_nos):
+                    body = "\n".join(strip_speaker_label(aux_lines[ti])
+                                     for ti in alignment.target_indices(si))
+                    if contains_term(body, best_en):
+                        hits_n += 1
+                        found = True
                     if found:
                         break
             if hits_n:
@@ -1108,12 +931,15 @@ def _channel_hub(
                     "sim": 0.0,
                     "evidence": {"channel": "hub", "votes": votes_n, "stories": n_stories,
                                  "story_keys": sorted(votes.get(best_en) or ()),
-                                 "aux_hits": aux_hits, "verified": bool(aux_hits)},
+                                 "aux_hits": aux_hits,
+                                 "verified": any(n >= min_stories for n in aux_hits.values())},
                 }
             }
         }
         # ── 回填：以英语为锚，取简中/繁中同点位候选（跨故事投票）────────
         for pivot_lang in ("zh_hans", "zh_hant", "ko"):
+            if not any(n >= min_stories for n in aux_hits.values()):
+                continue
             if pivot_lang not in pivot_langs:
                 continue
             scope = aux_sets.get(pivot_lang) or set()
@@ -1121,26 +947,31 @@ def _channel_hub(
                 continue
             back_votes: dict[str, set[str]] = defaultdict(set)
             anchor_stories = 0
-            for sk, line_nos in hits.items():
+            for sk, line_nos in vote_lines[best_en].items():
                 if sk not in scope:
                     continue
                 en_lines = corpus.lines(sk, en_lang)
                 pivot_lines = corpus.lines(sk, pivot_lang)
                 if not en_lines or not pivot_lines:
                     continue
-                anchor_lines = [i for i, ln in enumerate(en_lines) if best_en in ln]
+                anchor_lines = sorted({row["target_line"] for row in _aligned_occurrences(
+                    corpus, sk, term, best_en, source_language, en_lang, line_nos,
+                )})
                 if not anchor_lines:
                     continue
                 anchor_stories += 1
-                for ei in anchor_lines[:3]:
-                    pred = _predict_index(ei, len(en_lines), len(pivot_lines))
-                    for pi in (pred, pred - 1, pred + 1):
-                        if not (0 <= pi < len(pivot_lines)):
+                pivot_alignment = corpus.alignment(sk, source_language, pivot_lang)
+                source_targets = {pi for si in line_nos for pi in pivot_alignment.target_indices(si)}
+                en_alignment = corpus.alignment(sk, en_lang, pivot_lang)
+                for ei in anchor_lines:
+                    for pi in en_alignment.target_indices(ei):
+                        if pi not in source_targets:
                             continue
-                        for cand in termindex._local_translation_candidates(
-                            _strip_speaker_fast(pivot_lines[pi]), pivot_lang,
+                        for cand in termindex._aligned_span_candidates(
+                            _strip_speaker_fast(pivot_lines[pi]), pivot_lang, None,
                         ):
-                            if len(cand) < 2 or normalize_name(cand) == normalize_name(term):
+                            if (len(cand) < 2 or normalize_name(cand) == normalize_name(term)
+                                    or not termindex._translation_candidate_acceptable(cand, pivot_lang)):
                                 continue
                             back_votes[cand].add(sk)
             cand_value, cand_n = _pick_vote_winner(
@@ -1154,7 +985,8 @@ def _channel_hub(
                         "sim": 0.0,
                         "evidence": {"channel": "hub", "backfill": True, "votes": cand_n,
                                      "story_keys": sorted(back_votes.get(cand_value) or ()),
-                                     "anchor": best_en, "anchor_stories": anchor_stories},
+                                     "anchor": best_en, "anchor_stories": anchor_stories,
+                                     "verified": True},
                     }
                 }
         out[term] = lang_map
@@ -1192,7 +1024,9 @@ def _channel_translit(
     )
     if en_lang is None:
         return {}
-    terms = [t for t in candidates if _is_pure_katakana(t) and not is_generic_katakana(t)]
+    # Candidate tiers already decide whether this is a content word. Common
+    # nouns may have exact loanword correspondences just like proper names.
+    terms = [t for t in candidates if _is_pure_katakana(t)]
     if not terms:
         return {}
     paired = corpus.paired(en_lang, source_language)
@@ -1213,12 +1047,11 @@ def _channel_translit(
             ja_lines = index.lines.get(sk) or []
             if not en_lines or not ja_lines:
                 continue
-            for si in sorted(line_nos)[:3]:
-                pred = _predict_index(si, len(ja_lines), len(en_lines))
-                for ti in (pred, pred - 1, pred + 1):
-                    if 0 <= ti < len(en_lines):
-                        for cand in corpus.latin_candidates(en_lines[ti]):
-                            votes[cand].add(sk)
+            alignment = corpus.alignment(sk, source_language, en_lang)
+            for si in sorted(line_nos):
+                for span in _aligned_target_spans(en_lines, alignment.target_indices(si)):
+                    for cand in _transliteration_candidates_for_line(span, term):
+                        votes[cand].add(sk)
         accepted: list[tuple[float, int, str]] = []
         for cand, story_set in votes.items():
             n = len(story_set)
@@ -1245,6 +1078,7 @@ def _channel_translit(
                     # 独立信号，用于给边缘档（sim < 0.6）背书。
                     "foreign_literal": _foreign_literal_hits(
                         corpus, hits, cand, en_lang, target_languages,
+                        anchor_language=source_language,
                     ),
                 },
             }
@@ -1388,12 +1222,9 @@ def arbitrate(
     ``channel_names`` 取值 ``{"L0", "trunk", "hub", "translit"}``（内部还允许
     ``"translit_low"`` 表示 sim < 0.6 的边缘档证据）。
 
-    优先级（同一 ``lang`` 槽内比较）：**L0 官方 > translit(sim≥0.6) >
-    trunk(门控通过) > translit(边缘档) > hub**。规则：
-
-    * 同一 lang 多个 candidate（同源冲突）→ 取优先级最高的通道；
-    * 平级（最高优先级并列）→ 取**跨通道一致者**（该值同时被 ≥2 个通道给出）；
-    * 仍平级 → 记 ``conflict``，**不写入 resolved**（不静默择一，交人工/智能体）。
+    官方名字保持权威优先。其余候选先按归一化值合并表记差异；同一槽
+    出现不同非官方译名时保留所有候选并返回现有形状的 conflict。
+    通道标签只表示产生候选的路径，不构成独立投票或自动覆盖依据。
 
     返回::
 
@@ -1416,32 +1247,33 @@ def arbitrate(
             resolved[lang] = official[lang]
             priority_used[lang] = "L0"
             continue
-        ranked: list[tuple[float, str, list[str]]] = []
+        # Surface variants are one value. Channel labels are provenance, not
+        # independent votes and not authority to override another translation.
+        variants: dict[str, list[tuple[str, list[str]]]] = defaultdict(list)
         for value, labels in value_map.items():
+            variants[_name_key(value)].append((value, labels))
+        ranked: list[tuple[float, str, list[str]]] = []
+        for spellings in variants.values():
+            spellings.sort(key=lambda item: (_rank_of(item[1])[0], item[0]))
+            value = spellings[0][0]
+            labels = sorted({label for _value, origins in spellings for label in origins})
             rank, _strongest = _rank_of(labels)
             ranked.append((rank, value, [_canonical_channel(c) for c in labels]))
         ranked.sort(key=lambda item: (item[0], item[1]))
-        top_rank = ranked[0][0]
-        top = [item for item in ranked if item[0] == top_rank]
-        strongest = _channel_rank_label(top[0][2], top_rank)
-        if len(top) == 1:
-            resolved[lang] = top[0][1]
+        authoritative = [item for item in ranked if "L0" in item[2]]
+        pool = authoritative or ranked
+        strongest = _channel_rank_label(pool[0][2], pool[0][0])
+        if len(pool) == 1:
+            resolved[lang] = pool[0][1]
             priority_used[lang] = strongest
             continue
-        # 平级 → 取跨通道一致者（≥2 个通道独立给出同一值）。
-        consistent = [item for item in top if len(set(item[2])) >= 2]
-        if len(consistent) == 1:
-            resolved[lang] = consistent[0][1]
-            priority_used[lang] = "agreement:" + strongest
-            continue
-        pool = consistent if consistent else top
         conflicts.append({
             "lang": lang,
             "candidates": {item[1]: sorted(set(item[2])) for item in pool},
             "priority": strongest,
             "reason": (
-                f"语言槽 {lang} 有 {len(pool)} 个候选并列于最高优先级"
-                f"（{strongest}），且无跨通道一致者 → 交人工/智能体裁决"
+                f"语言槽 {lang} 有 {len(pool)} 个不同译名，"
+                "通道优先级或重复读取同一语料不能裁定实体同一性 → 交人工/智能体裁决"
             ),
         })
     return {
@@ -1474,7 +1306,7 @@ def _confidence(
     但**只有它一路时会被显式降级**（见 :func:`_merge_channels`，边缘档不允许
     单独成立）；hub 已通过 zh_hant/ko 同点位译名验证 0.62，未验证 0.52。
 
-    交叉验证增益：``agreement`` 是"同一 (语言槽, 译名) 被多少路独立命中"的
+    交叉验证增益：``agreement`` 是"同一 (语言槽, 译名) 有多少个独立证据来源"的
     最大值，每多一路 +0.12。
     """
     if "L0" in labels:
@@ -1536,7 +1368,7 @@ def _sentence_containing(
     if not needle:
         return ""
     for line in corpus.lines(story_key, language):
-        if needle in line:
+        if contains_term(strip_speaker_label(line), needle):
             return line
     return ""
 
@@ -1579,6 +1411,10 @@ def _evidence_story_keys(
     raw = payload_evidence.get("story_keys")
     if raw:
         return sorted({str(key) for key in raw if key})[:budget]
+    if not (payload_evidence.get("official")
+            or payload_evidence.get("channel") == "L0"
+            or payload_evidence.get("method") == "glossary_surname"):
+        return []
     known = corpus.stories_with(term)
     if known:
         return sorted(known)[:budget]
@@ -1669,12 +1505,26 @@ def channel_evidence_rows(
         if len(rows) >= max(0, max_rows) or scanned >= max(0, max_scan):
             break
         scanned += 1
-        sentence = _sentence_containing(corpus, story_key, language, value)
-        if not sentence and term != value:
-            # 该故事里既没有含此值的原句，源词也不等于该值 → 这条故事无法
-            # 佐证这个值（证书门两项都过不了），丢弃。
+        official = bool(evidence.get("official") or channel == "L0"
+                        or method == "glossary_surname")
+        occurrence = None
+        if official:
+            sentence = _sentence_containing(corpus, story_key, language, value)
+        else:
+            aligned = _aligned_occurrences(
+                corpus, story_key, term, value, source_language, language,
+            )
+            occurrence = aligned[0] if aligned else None
+            sentence = occurrence["sentence"] if occurrence else ""
+        if not sentence:
+            # A target occurrence elsewhere in the story cannot certify an
+            # aligned translation. Keep the observed source/target pair.
             continue
-        rows.append({
+        observed_body = "\n".join(strip_speaker_label(line) for line in sentence.splitlines())
+        span = find_term_span(observed_body, value)
+        if span is None:
+            continue
+        row = {
             "story_key": story_key,
             "language": language,
             "source": source_key,
@@ -1683,7 +1533,15 @@ def channel_evidence_rows(
             "channel": channel,
             "channel_method": method,
             "channel_value": value,
-        })
+            # The certificate already supports an observed value field. Keep
+            # both the exact original span and the requested spelling when
+            # a subtitle wrap or Unicode width differs from that spelling.
+            "value": value,
+            "observed_surface": observed_body[span[0]:span[1]],
+        }
+        if occurrence:
+            row.update(occurrence)
+        rows.append(row)
     return rows
 
 
@@ -1847,6 +1705,28 @@ def _merge_channels(
     return result
 
 
+def _independent_support_count(
+    channels: dict, term: str, language: str, value: str,
+) -> int:
+    """Count evidence origins, not differently named readers of the same text.
+
+    Trunk, hub and transliteration all propose candidates from the same
+    parallel corpus. Their same-value vote cannot manufacture extra corpus
+    observations. An external glossary is a separate evidence origin.
+    """
+    origins: set[str] = set()
+    for channel, table in channels.items():
+        payload = table.get(term, {}).get(language, {}).get(value)
+        if payload is None:
+            continue
+        evidence = payload.get("evidence") or {}
+        if channel == "L0" or evidence.get("official") or evidence.get("method") == "glossary_surname":
+            origins.add("official_glossary")
+        else:
+            origins.add("parallel_corpus")
+    return len(origins)
+
+
 def _merge_channel_slot(
     channels: dict[str, dict[str, dict[str, dict]]],
     *,
@@ -1862,7 +1742,7 @@ def _merge_channel_slot(
     * **互补取值**：三路产出并集去重。提案按 (语言槽, 译名) 聚合，每个槽内
       用 :func:`arbitrate` 按优先级裁决；不同语言槽之间天然互补（trunk 给
       zh_hans 义译名、translit 给 en 音译名、hub 给 en 人名），互不覆盖。
-    * **交叉验证增益**：``agreement`` = "同一 (语言槽, 译名) 被多少路独立命中"
+    * **交叉验证增益**：``agreement`` = "同一 (语言槽, 译名) 有多少个独立证据来源"
       的最大值。≥2 即 ``agreement_boosted``，置信度 +0.12×(agreement-1)。
       同槽**不同值** → 冲突队列。
     * **相互补位**：trunk 缺席而 translit 高分（sim ≥ 0.99）→ 采纳并记
@@ -1968,39 +1848,17 @@ def _merge_channel_slot(
                 if evidence.get("verified"):
                     verified_hub = True
 
-        # ── 补位 ①：主干缺席 + translit 高分 → 采纳 ────────────────────
+        # A strong transliteration already participates in arbitration. Never
+        # resurrect an unresolved candidate after the conflict decision.
         rescued: list[str] = []
-        translit_map = channels.get("translit", {}).get(term) or {}
-        if "trunk" not in labels_used and "L0" not in labels_used and translit_map:
-            best_sim, best_value = 0.0, ""
-            for value, payload in translit_map.items():
-                sim_value = float(payload.get("sim", 0.0) or 0.0)
-                if sim_value > best_sim:
-                    best_sim, best_value = sim_value, value
-            en_slot = _target_slot("en", ("en",)) or "en"
-            if best_value and best_sim >= 0.99 and en_slot not in merged_names:
-                merged_names[en_slot] = best_value
-                labels_used.add("translit")
-                rescued.append(
-                    f"主干未穿透，translit sim={best_sim:.2f}（{best_value}）补位 {en_slot}"
-                )
-
-        # ── 补位 ②：辅助值有主干同值证据 → 加分 ────────────────────────
         promoted: list[str] = []
-        trunk_map = channels.get("trunk", {}).get(term) or {}
-        trunk_values = {
-            _name_key(payload.get("value", "")) for payload in trunk_map.values()
-        }
-        if trunk_values and "trunk" not in labels_used:
-            hits = sorted(
-                f"{lg}={payload.get('value')}"
-                for lg, payload in trunk_map.items()
-                if _name_key(payload.get("value", "")) in {
-                    _name_key(v) for v in merged_names.values()
-                }
-            )
-            if hits:
-                promoted.append("主干同点证据支持（" + ", ".join(hits) + "）")
+        if "trunk" not in labels_used and "L0" not in labels_used:
+            for lang, value in merged_names.items():
+                payload = (channels.get("translit", {}).get(term, {})
+                           .get(lang, {}).get(value, {}))
+                sim_value = float(payload.get("sim", 0.0) or 0.0)
+                if sim_value >= 0.99:
+                    rescued.append(f"主干未穿透，translit sim={sim_value:.2f}（{value}）补位 {lang}")
 
         if not merged_names and not term_conflicts:
             if edge_notes:
@@ -2051,7 +1909,7 @@ def _merge_channel_slot(
                 and payload.get("value") == value
                 for _lg, _v, payload in term_evidence.get(term, ())
             )
-            if len(support) >= 2 or official_here or glossary_here:
+            if _independent_support_count(channels, term, lang, value) >= 2 or official_here or glossary_here:
                 continue
             blocked.append(lang)
         for lang in blocked:
@@ -2074,14 +1932,7 @@ def _merge_channel_slot(
         # ── 交叉验证增益：同一 (语言槽, 译名) 被几路独立命中 ────────────
         agreement = 0
         for lang, value in merged_names.items():
-            support = set(lang_proposals.get(lang, {}).get(value) or [])
-            agreement = max(agreement, len(support))
-        # 跨语言的"同一值"也算一路佐证：trunk 给 zh_hans=X 且 hub 给 zh_hant=X
-        # 说明两路在"这个译名"上独立一致（语言槽不同，故 +1 而非当作同一路）。
-        same_value_support: dict[str, int] = defaultdict(int)
-        for lang, value in merged_names.items():
-            for support_label in set(lang_proposals.get(lang, {}).get(value) or []):
-                same_value_support[_name_key(value)] += 1
+            agreement = max(agreement, _independent_support_count(channels, term, lang, value))
 
         best_sim = max(
             (float(payload.get("sim", 0.0) or 0.0)
@@ -2248,6 +2099,7 @@ def _prune_value_collisions(
     accepted: dict[str, dict],
     *,
     min_accept_confidence: float = 0.6,
+    authoritative_names: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, dict], list[dict]]:
     """剔除"同一译名被多个互不相关的术语共同声称"的槽（译名唯一性校验）。
 
@@ -2275,13 +2127,18 @@ def _prune_value_collisions(
     for (lang, key), terms in claims.items():
         if len(terms) < 2:
             continue
-        related = any(
+        related = all(
             (a in b or b in a) for a in terms for b in terms if a != b
         )
         if related:
             continue
         for term in terms:
             value = (accepted[term]["names"] or {}).get(lang, "")
+            known = (authoritative_names or {}).get(normalize_name(term), {})
+            if any(termindex._term_language(language) == termindex._term_language(lang)
+                   and _name_key(name) == _name_key(value)
+                   for language, name in known.items()):
+                continue
             drops[term].append((lang, value, sorted(terms)))
 
     if not drops:
@@ -2306,7 +2163,7 @@ def _prune_value_collisions(
                 "channels": record.get("channels") or [],
                 "reason": (
                     "译名唯一性校验失败：译名被互不相关的术语共同声称"
-                    "（不可能是同一个术语的正确译名）→ 交智能体裁决："
+                    "（可能是错误对齐或合法同名，现有证据不能裁定）→ 交智能体裁决："
                     + "；".join(details)
                 ),
             })
@@ -2436,6 +2293,7 @@ def _anchor_check(
 
 # ── 主入口 ──────────────────────────────────────────────────────────
 
+@alignment_session()
 def scrub_trinity(
     groups: dict,
     stories: list[str],
@@ -2472,6 +2330,8 @@ def scrub_trinity(
     glossary_list = list(glossary) if glossary is not None else None
     target_languages = tuple(t for t in (target_languages or ()) if t)
     corpus = _Corpus(groups, stories)
+    clear_known_names()
+    register_alignment_context(corpus.groups, source_language, idf, vocab)
 
     # ── 第 0 层：前置过滤 ───────────────────────────────────────────
     official_keys: set[str] = set()
@@ -2488,7 +2348,6 @@ def scrub_trinity(
         official_keys |= set(surnames)
         # 三角闭环的 aux 名册 + 对齐上下文（verify_triangle 的模块级入口）。
         register_glossary_names(glossary_list)
-        register_alignment_context(corpus.groups, source_language, idf, vocab)
     else:
         warnings["glossary"] = "未提供 glossary：L0 官方层与仲裁名册为空"
 
@@ -2607,9 +2466,28 @@ def scrub_trinity(
     )
 
     # ── 全局自洽性：译名唯一性校验（跨术语）─────────────────────────
-    accepted, demoted = _prune_value_collisions(merged["accepted"])
+    authoritative_names = {key: dict(names) for key, names in glossary_names.items()}
+    for key, names in surnames.items():
+        for language, name in names.items():
+            authoritative_names.setdefault(key, {}).setdefault(language, str(name))
+    accepted, demoted = _prune_value_collisions(
+        merged["accepted"], authoritative_names=authoritative_names,
+    )
     merged["accepted"] = accepted
     merged["pending"].extend(demoted)
+    for decision in merged["slot_decisions"]:
+        if decision["status"] != "accepted":
+            continue
+        retained = accepted.get(decision["term"], {}).get("names", {})
+        if retained.get(decision["language"]) != decision["value"]:
+            decision["status"] = "pending"
+            decision["reason"] = "译名唯一性校验移除了该槽；保留候选，等待独立证据或裁决"
+            if not any(row.get("term") == decision["term"] for row in demoted):
+                merged["pending"].append({
+                    "term": decision["term"], "language": decision["language"],
+                    "names": {decision["language"]: decision["value"]},
+                    "confidence": 0.0, "channels": [], "reason": decision["reason"],
+                })
 
     # 进入对齐但三路皆未产出、也未进冲突/待决队列的：记明"诚实留空"。
     produced = set(merged["accepted"]) | {row["term"] for row in merged["pending"]}
@@ -2871,7 +2749,7 @@ def apply_scrub_result(
             "source": source_key,
             "confidence": confidence,
             "reason": (reason_by_slot.get((term, language))
-                       or reason_by_term.get(term) or f"trinity:{status}"),
+                       or decision.get("reason") or reason_by_term.get(term) or f"trinity:{status}"),
             "candidates": _slot_candidates(decision),
             "scope": {
                 "subject_id": term_id, "language": language,

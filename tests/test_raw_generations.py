@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sekaisync import dbstore
 from sekaisync.config import SekaiSyncConfig
@@ -64,6 +65,12 @@ class _GenerationStore(unittest.TestCase):
 
 
 class GenerationPublishTest(_GenerationStore):
+    def test_prepare_does_not_require_a_directory_rename(self):
+        with patch.object(Path, "rename", side_effect=PermissionError("directory rename unavailable")):
+            result = self._sync()
+        self.assertEqual(dbstore.active_generations(self.store)["jp"], result["generation"])
+        self.assertTrue(data_files_for_region(self.store, "jp"))
+
     def test_publish_creates_generation_and_sets_pointer(self):
         result = self._sync()
         pointers = dbstore.active_generations(self.store)
@@ -152,6 +159,29 @@ class GenerationFailurePointTest(_GenerationStore):
         self.assertEqual(survivors, [first])
         # And readers still see complete data.
         self.assertTrue(data_files_for_region(self.store, "jp"))
+
+    def test_generation_id_collision_never_removes_a_published_generation(self):
+        from sekaisync import fetcher
+
+        first = self._sync()["generation"]
+        published = generation_master_dir(self.store, "jp", first) / "master/gameCharacters.json"
+        original = published.read_bytes()
+        with patch.object(fetcher, "_new_generation_id", return_value=first):
+            with self.assertRaises(FileExistsError):
+                self._sync()
+        self.assertEqual(dbstore.active_generations(self.store)["jp"], first)
+        self.assertEqual(published.read_bytes(), original)
+
+    def test_permission_failure_during_fetch_is_not_retried_or_published(self):
+        from sekaisync import fetcher
+
+        first = self._sync()["generation"]
+        with patch.object(fetcher, "_fetch_region_into", side_effect=PermissionError("fetch denied")) as fetch:
+            with self.assertRaisesRegex(PermissionError, "fetch denied"):
+                self._sync()
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(dbstore.active_generations(self.store)["jp"], first)
+        self.assertEqual(sorted(path.name for path in generations_root(self.store).iterdir()), [first])
 
     def test_failure_before_commit_rolls_back_pointer_and_index(self):
         first = self._sync()["generation"]

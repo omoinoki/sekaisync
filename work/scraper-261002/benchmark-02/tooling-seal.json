@@ -1,0 +1,32 @@
+{
+  "schema": "work/checkpoint261002-trial02-tooling-seal@1",
+  "input_sha256": {
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\runner.py": "5824376050b73b4f4205b640e0ead944fc1f3be3f7627fa92bec89dd77b85073",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\score_contract.py": "3b78254393a2af2598f07d513f28993aa97fa6d09e45a77dc0747b48ef926d8b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\PROTOCOL.md": "e62d1725740455372d88dbede60b1cd6d7ee4d4bcae72a25b168efc6c470fe9f",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\COMMANDS.md": "02cf38bf0102569d10d95e93b01f60c0f7db02137e32425e21de8577987eb448",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\baseline_callable.py": "54bfe6cd1d7c48ba03bd6b2e2d356fbfe572371976d86f18fd6824e62f834994",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\run_validation.py": "d0c3d618889ee7df44f6c509033e1d08cc0c6c1843dddd58f244c1d396cd026f",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\acquire_trial.py": "93e6da29c5637372c2dc77a053d719669e28c1bf7c0391b4c9206ffa90094f72",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\register_trial.py": "4b4cdf3dc96405d712027af3928f7b9f21b535864d1027215a5cf3ceb3b5be91",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\register_trial.py": "cb4446140eef38cef69efae56d88a2ba0878fed923bc48febac5169222d75396",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\register_trial.py": "f8168f3b3d61d9c038a6f7f99c62bd235dc7beb9557f29939eb629e10cc1febd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\source-sense-trial-01\\prepare_trial.py": "0421bf78d491018c14e2cb03a93280a0396607634a0f8b18b60c9841252db850",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-registration.json": "d430b68361626f5634b13ac4e89467b09250143c38a5a3b4504d2cf17aa8a68a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-registration-seal.json": "90917ab4ecadaa0939d576b8a0ce37ac1e6b8747631edf415f4ac64a320d643a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-plan.json": "d2d317f094f8928950b9e0289f0c7cf1eba57044e6ff2c9dd09ae2785337e208",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\runner.py": "1340fbf9b42896872e4f37f07efde36ba16378ae1cb2de7873f4fe912b904429",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\score_contract.py": "ef945d7b2ae1d5ddb8081bbf97b8ef4131c5bf189fd1586cd561db66f205ec8b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\baseline_callable.py": "b79b2c4181e5a48a2b4813973633e57ecb3b5d91370c3d023597caf2d692fb98",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\check_tooling.py": "e2837bb60d0b23a31f70645047f50bd09d4224ba00090a12facb7dbfd12e5881",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\PROTOCOL.md": "0be22fac35a08cfbc9fc3c119a263d8ed16c9e2e80124d26535f718973d0f27b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\COMMANDS.md": "da8423b86d7b467f5f5b1e0e1e8881fee1bde6f02fdb9faa21b9227c5ffa398a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\TARGET_SCORE_CONTRACT_ADDENDUM.md": "ac94ec452d4c691fd6dc5791a76aed3824b9aa12cf3f12afd43dd5238b0d60dd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\dependency-manifest.json": "391c28cf1093efda12ffad610c59c9bb375293244c9d4612d22d206568b9cdab"
+  },
+  "expected_actual_tests": 2090,
+  "existing_tests": 2081,
+  "prospective_synthetic_tests": 9,
+  "registration_or_capture_authorized": false,
+  "source_or_target_bodies_read": false
+}

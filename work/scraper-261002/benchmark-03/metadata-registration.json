@@ -1,0 +1,1026 @@
+{
+  "schema": "work/checkpoint261002-trial03-metadata-registration@1",
+  "families": [
+    {
+      "story_key": "event:158:8",
+      "logical_key": "event_story:158:8",
+      "complete": true,
+      "release_status": "all_five_released_in_verified_masterdata",
+      "pages": {
+        "en": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:en-us:event_story:158:8",
+          "language": "en",
+          "text_sha256": "2b452a01816768ecb80727f1eb40864adbe72ef16058e9e913137e9aa8dcd4d9",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:en-us:event_story:158:8",
+            "kind": "event_story",
+            "language": "en",
+            "char_count": 5300,
+            "canonical_key": "event_story:en:158:8",
+            "hash": "e1d09d995d88e53a",
+            "text_hash": "2b452a01816768ecb80727f1eb40864adbe72ef16058e9e913137e9aa8dcd4d9",
+            "source_hash": "b2cb4338a34929782cf99314d337ec70f216224cc6dca53634649d5efa26e954",
+            "crawled_at": "2026-08-13T18:42:33.553355+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "en",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "ja": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:ja-jp:event_story:158:8",
+          "language": "ja",
+          "text_sha256": "e05ed7e8ff54e5a6a8d63389588f4f3cb6d5750214c6c43873d1299596b9efa6",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:ja-jp:event_story:158:8",
+            "kind": "event_story",
+            "language": "ja",
+            "char_count": 2364,
+            "canonical_key": "event_story:ja:158:8",
+            "hash": "2284d1c9b118ac6f",
+            "text_hash": "e05ed7e8ff54e5a6a8d63389588f4f3cb6d5750214c6c43873d1299596b9efa6",
+            "source_hash": "ecdffa62cd41463b1e49d62822adf072717fa5d780aefb149ef24b24a33331be",
+            "crawled_at": "2026-08-13T17:30:17.948999+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "ja",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "ko": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:ko-kr:event_story:158:8",
+          "language": "ko",
+          "text_sha256": "7fad6ee667ebc5915cff7b6a9317f51e1dd7d5c53754031f292493f14313f483",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:ko-kr:event_story:158:8",
+            "kind": "event_story",
+            "language": "ko",
+            "char_count": 2511,
+            "canonical_key": "event_story:ko:158:8",
+            "hash": "beb855ad3da0794c",
+            "text_hash": "7fad6ee667ebc5915cff7b6a9317f51e1dd7d5c53754031f292493f14313f483",
+            "source_hash": "9782c2ee402e0c3ecdc9ff09562909e77bfb0ef9fcb0b84f4d6c12e6fd073c4a",
+            "crawled_at": "2026-08-13T19:16:06.370229+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "ko",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "zh_hans": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:zh-cn:event_story:158:8",
+          "language": "zh_hans",
+          "text_sha256": "5a8a40520b1f3aac7daca241ae9507db1c3fa5be686112b595a04b5c036e2167",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:zh-cn:event_story:158:8",
+            "kind": "event_story",
+            "language": "zh_hans",
+            "char_count": 2052,
+            "canonical_key": "event_story:zh_hans:158:8",
+            "hash": "71ad9b8ce1fefe84",
+            "text_hash": "5a8a40520b1f3aac7daca241ae9507db1c3fa5be686112b595a04b5c036e2167",
+            "source_hash": "2fdc01adbcc4f1061d675b834717cee45d76480f41993ff6ad4242a125553b71",
+            "crawled_at": "2026-08-13T15:58:42.855894+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "zh_hans",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "zh_tw": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:zh-tw:event_story:158:8",
+          "language": "zh_tw",
+          "text_sha256": "e9617ca4c9b9159244b71b4637afbd57b6943f44dfa2b1c9eacb286a0b23867c",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:zh-tw:event_story:158:8",
+            "kind": "event_story",
+            "language": "zh_hant",
+            "char_count": 2011,
+            "canonical_key": "event_story:zh_hant:158:8",
+            "hash": "c450a3d338d9d153",
+            "text_hash": "e9617ca4c9b9159244b71b4637afbd57b6943f44dfa2b1c9eacb286a0b23867c",
+            "source_hash": "93b31c909e838235026da03fb093690b77e4c26d88f339fd56baa3434483175e",
+            "crawled_at": "2026-08-13T18:10:27.378213+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "zh_hant",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        }
+      },
+      "rank": "01c7b8de8ed52abbf862a1a5c11caa1da0999af8e8a0088a9422876a1d8353db",
+      "usage_audit": {
+        "schema": "work/checkpoint261002-trial03-metadata-identity-proof@1",
+        "root_confirmed_metadata_only_identity_proof": true,
+        "source_or_target_bodies_read": false,
+        "semantic_labels_or_host_answers_read": false,
+        "historical_story_use": false,
+        "scopes": [
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\scripts",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\agents"
+        ],
+        "match_paths": [
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests\\test_registry.py",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-repair-20260929\\baseline\\tests\\test_registry.py"
+        ],
+        "paths_sha256": {
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests\\test_registry.py": "92db9017885810d4c95d5b909c7bbce6c8b42d0f654e9229e6712d6e06c36d59",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-repair-20260929\\baseline\\tests\\test_registry.py": "92db9017885810d4c95d5b909c7bbce6c8b42d0f654e9229e6712d6e06c36d59"
+        },
+        "exception_record": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\release-review\\event158-fixture-review.md",
+        "exception_record_sha256": "9e9726bd1c1cc944be455b1d43fcb7f5b249b592fe13bf98f615176145780532",
+        "original_audit_error": "selected family prior use or unreadable usage scope; do not rerank: C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests\\test_registry.py\nC:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-repair-20260929\\baseline\\tests\\test_registry.py\n",
+        "mode": "rg path matches only; exact reviewed fixture identity proof"
+      },
+      "release": {
+        "en": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 158,
+          "episode_no": 8,
+          "region": "en",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\events.json",
+            "sha256": "2b7c10fdb1fa4d1126fb17efc56ae857221c94626764dc1ff04930bfa8eaa4e5"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\eventStories.json",
+            "sha256": "61fe82b4b08cb0040466fb2591e7b91e78a75dd9fd2e175a0c1623b25c2017c5"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\releaseConditions.json",
+            "sha256": "18f6f1f3ecb6fb792efe0b41480f3a8e9199facede312c837b35277ed90b0860"
+          },
+          "start_at_ms": 1771628400000,
+          "start_at_utc": "2026-02-20T23:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1001290,
+            "eventStoryId": 158,
+            "episodeNo": 8,
+            "assetbundleName": "event_readaloud_2025_08",
+            "scenarioId": "event_158_08",
+            "releaseConditionId": 115707,
+            "episodeRewards": [
+              {
+                "storyType": "event_story",
+                "resourceBoxId": 111
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 158,
+            "startAt": 1771628400000,
+            "closedAt": 1772319599000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 115707,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 158,
+            "releaseConditionTypeQuantity": 150000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "ja": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 158,
+          "episode_no": 8,
+          "region": "jp",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\events.json",
+            "sha256": "98193ff1a7d8b45c597da52f69abaa360002423a4f4dafd542442aeb356fe3c9"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\eventStories.json",
+            "sha256": "b6f2f21cad411b66caf5e89347ef4f34155fa007b1290261ba4710789fa2802a"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\releaseConditions.json",
+            "sha256": "08311f593de7f84ef4cd583c25f8a73f0104f66b1503e12e6d285f04ee0803f5"
+          },
+          "start_at_ms": 1740031200000,
+          "start_at_utc": "2025-02-20T06:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1001290,
+            "eventStoryId": 158,
+            "episodeNo": 8,
+            "assetbundleName": "event_readaloud_2025_08",
+            "scenarioId": "event_158_08",
+            "releaseConditionId": 115707,
+            "episodeRewards": [
+              {
+                "storyType": "event_story",
+                "resourceBoxId": 111
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 158,
+            "startAt": 1740031200000,
+            "closedAt": 1740722399000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 115707,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 158,
+            "releaseConditionTypeQuantity": 150000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "ko": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 158,
+          "episode_no": 8,
+          "region": "kr",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\events.json",
+            "sha256": "279f0da4bba05fdd55b397a643e489893d612506318d9f18658587fb55160331"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\eventStories.json",
+            "sha256": "6502a6197ffbdfa7261a4ca7310b292cd5bcc4b4edcc63b4b5a984306a58c7fa"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\releaseConditions.json",
+            "sha256": "754c45c2c28cdb91fc67f977b2e0e6513e8154da8a770a8f7fe59f22360fd678"
+          },
+          "start_at_ms": 1771567200000,
+          "start_at_utc": "2026-02-20T06:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1001290,
+            "eventStoryId": 158,
+            "episodeNo": 8,
+            "assetbundleName": "event_readaloud_2025_08",
+            "scenarioId": "event_158_08",
+            "releaseConditionId": 115707,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 111
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 158,
+            "startAt": 1771567200000,
+            "closedAt": 1772258399000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 115707,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 158,
+            "releaseConditionTypeQuantity": 150000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "zh_hans": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 158,
+          "episode_no": 8,
+          "region": "cn",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\events.json",
+            "sha256": "9aad0088dc96ae7ea1b8c5ba2f14d53e1c52f2986f0ebcd6ef38d805f72d8f02"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\eventStories.json",
+            "sha256": "8015d31b9efe62a46b5206e5548e913f9d3b388ec8e740fad85e6fc404d6e9dc"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\releaseConditions.json",
+            "sha256": "09eebdb3e088a49025609540006195dfd2d9921e2ebae856b96b6cee3bbf757e"
+          },
+          "start_at_ms": 1771570800000,
+          "start_at_utc": "2026-02-20T07:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1001290,
+            "eventStoryId": 158,
+            "episodeNo": 8,
+            "assetbundleName": "event_readaloud_2025_08",
+            "scenarioId": "event_158_08",
+            "releaseConditionId": 115707,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 111
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 158,
+            "startAt": 1771570800000,
+            "closedAt": 1772261999000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 115707,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 158,
+            "releaseConditionTypeQuantity": 150000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "zh_tw": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 158,
+          "episode_no": 8,
+          "region": "tc",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\events.json",
+            "sha256": "79cae80b7ca2a7b32263a47422592097971ab99522cfc33e791de921dc8bd6fc"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\eventStories.json",
+            "sha256": "bfb68b8cb96fa5a789a9b68ea7d7115e0f738e97aab6ff67629d2f33be127e59"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\releaseConditions.json",
+            "sha256": "a5f4f2bdd5b4aafa41b4980fb55fa8cd2196bc13567bf34a6a10cec5b69631bd"
+          },
+          "start_at_ms": 1771570800000,
+          "start_at_utc": "2026-02-20T07:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1001290,
+            "eventStoryId": 158,
+            "episodeNo": 8,
+            "assetbundleName": "event_readaloud_2025_08",
+            "scenarioId": "event_158_08",
+            "releaseConditionId": 115707,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 111
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 158,
+            "startAt": 1771570800000,
+            "closedAt": 1772261999000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 115707,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 158,
+            "releaseConditionTypeQuantity": 150000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        }
+      }
+    },
+    {
+      "story_key": "event:75:4",
+      "logical_key": "event_story:75:4",
+      "complete": true,
+      "release_status": "all_five_released_in_verified_masterdata",
+      "pages": {
+        "en": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:en-us:event_story:75:4",
+          "language": "en",
+          "text_sha256": "6d228fabb3ed3d9feb71108464cbefa8ddbdca8ca7a81f4de6d2f66709e6d4df",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:en-us:event_story:75:4",
+            "kind": "event_story",
+            "language": "en",
+            "char_count": 7741,
+            "canonical_key": "event_story:en:75:4",
+            "hash": "986fbcf1685da055",
+            "text_hash": "6d228fabb3ed3d9feb71108464cbefa8ddbdca8ca7a81f4de6d2f66709e6d4df",
+            "source_hash": "eba3d36ddca993217cbb62da6b3172995589d0e5a34e9e8ec26218ecba2da799",
+            "crawled_at": "2026-08-13T18:41:02.010436+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "en",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "ja": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:ja-jp:event_story:75:4",
+          "language": "ja",
+          "text_sha256": "306a740ba9e44478ac0e22abe3a70ddc07a3d96e1aad8c0689869fa025a49359",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:ja-jp:event_story:75:4",
+            "kind": "event_story",
+            "language": "ja",
+            "char_count": 3641,
+            "canonical_key": "event_story:ja:75:4",
+            "hash": "83d7fc162ece5cf2",
+            "text_hash": "306a740ba9e44478ac0e22abe3a70ddc07a3d96e1aad8c0689869fa025a49359",
+            "source_hash": "e3e09870031235cc63228ab52d46854ce0da4cbdcc372d78dd648f56605321c9",
+            "crawled_at": "2026-08-13T17:28:39.736683+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "ja",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "ko": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:ko-kr:event_story:75:4",
+          "language": "ko",
+          "text_sha256": "ee50a33ed729678eaf86c52fb3f883bdb899eee4d392fc2a35b69d37ac65587e",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:ko-kr:event_story:75:4",
+            "kind": "event_story",
+            "language": "ko",
+            "char_count": 3687,
+            "canonical_key": "event_story:ko:75:4",
+            "hash": "d7a78f4c12bd29e5",
+            "text_hash": "ee50a33ed729678eaf86c52fb3f883bdb899eee4d392fc2a35b69d37ac65587e",
+            "source_hash": "4a7adf59c2efaeaee4ed69e99857363e5303b3577e7595d38457b507be8dd7b3",
+            "crawled_at": "2026-08-13T19:14:33.326709+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "ko",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "zh_hans": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:zh-cn:event_story:75:4",
+          "language": "zh_hans",
+          "text_sha256": "76e7c9510ca3fe3be1c24373079ce06c282aee5325203a9f793e2098ff4453a2",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:zh-cn:event_story:75:4",
+            "kind": "event_story",
+            "language": "zh_hans",
+            "char_count": 2957,
+            "canonical_key": "event_story:zh_hans:75:4",
+            "hash": "b0de248ed51e7ec0",
+            "text_hash": "76e7c9510ca3fe3be1c24373079ce06c282aee5325203a9f793e2098ff4453a2",
+            "source_hash": "20885399f5fa7415a2d3fde65763046d3be38770af04a060dc9b805f42e40203",
+            "crawled_at": "2026-08-13T15:51:30.112504+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "zh_hans",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        },
+        "zh_tw": {
+          "source": "altsource_ms",
+          "page_id": "web:altsource_ms:zh-tw:event_story:75:4",
+          "language": "zh_tw",
+          "text_sha256": "f6a44e407ae8e2d344880bfe740195d51495268a3f98beb3fa7a4ba9d55cbbe4",
+          "metadata": {
+            "source": "altsource_ms",
+            "id": "web:altsource_ms:zh-tw:event_story:75:4",
+            "kind": "event_story",
+            "language": "zh_hant",
+            "char_count": 2847,
+            "canonical_key": "event_story:zh_hant:75:4",
+            "hash": "f94f46f8f57bae75",
+            "text_hash": "f6a44e407ae8e2d344880bfe740195d51495268a3f98beb3fa7a4ba9d55cbbe4",
+            "source_hash": "476e9152a97786a0e863d7f9b39893e9fd925353cc12135f8426219f7ce1fa6b",
+            "crawled_at": "2026-08-13T18:08:52.992643+00:00",
+            "trust": "B",
+            "untranslated": 0,
+            "untranslated_placeholder": "",
+            "asset_mismatch": "",
+            "scenario_id_mismatch": "",
+            "content_language_mismatch": 0,
+            "auxiliary": 0,
+            "derived": 0,
+            "overlay": 0,
+            "source_type": "",
+            "source_last_modified": "",
+            "source_etag": "",
+            "raw_language": "zh_hant",
+            "bad_reasons": [],
+            "nonprimary_flags": []
+          }
+        }
+      },
+      "rank": "01f4e79734d5db098447a05e7b5889ea6882acac969bc1160f8322684de94091",
+      "usage_audit": {
+        "scopes": [
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\scripts",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests",
+          "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\agents"
+        ],
+        "pattern": "event:75(:|\\b)|event_story:75:|event[_-]75([_:-]|\\b)",
+        "included_globs": [
+          "*.py",
+          "*manifest*.json",
+          "*protocol*.json",
+          "*selection*.json",
+          "*report*.json",
+          "*seal*.json",
+          "*handoff*.json",
+          "*registration*.json",
+          "*CHECKPOINT*.md",
+          "*REPORT*.md",
+          "*PROTOCOL*.md"
+        ],
+        "excluded_globs": [
+          "!**/tmp/**",
+          "!**/store/**",
+          "!**/stores/**",
+          "!**/test-artifacts/**",
+          "!**/synthetic-artifacts/**",
+          "!**/test-tmp/**",
+          "!**/test-temp/**",
+          "!**/*test-tmp*/**",
+          "!**/temp/**",
+          "!**/tmp*/**",
+          "!**/raw/**",
+          "!**/*reference*/**",
+          "!**/*judgments*/**",
+          "!**/internal-tasks/**",
+          "!**/holdout-pages/**",
+          "!**/packets/**",
+          "!**/census/logical-units.jsonl",
+          "!**/census/census-index.sqlite",
+          "!**/census/holdout-manifest.json",
+          "!**/census/*store*/**"
+        ],
+        "match_paths": [],
+        "mode": "rg path matches only; no matched line bodies returned"
+      },
+      "release": {
+        "en": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 75,
+          "episode_no": 4,
+          "region": "en",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\events.json",
+            "sha256": "2b7c10fdb1fa4d1126fb17efc56ae857221c94626764dc1ff04930bfa8eaa4e5"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\eventStories.json",
+            "sha256": "61fe82b4b08cb0040466fb2591e7b91e78a75dd9fd2e175a0c1623b25c2017c5"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\en\\source\\sekai-master-db-en-diff-main\\releaseConditions.json",
+            "sha256": "18f6f1f3ecb6fb792efe0b41480f3a8e9199facede312c837b35277ed90b0860"
+          },
+          "start_at_ms": 1698789600000,
+          "start_at_utc": "2023-10-31T22:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1000604,
+            "eventStoryId": 75,
+            "episodeNo": 4,
+            "assetbundleName": "event_scream_2022_04",
+            "scenarioId": "event_75_04",
+            "releaseConditionId": 107403,
+            "episodeRewards": [
+              {
+                "storyType": "event_story",
+                "resourceBoxId": 2
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 75,
+            "startAt": 1698789600000,
+            "closedAt": 1699657199000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 107403,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 75,
+            "releaseConditionTypeQuantity": 30000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "ja": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 75,
+          "episode_no": 4,
+          "region": "jp",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\events.json",
+            "sha256": "98193ff1a7d8b45c597da52f69abaa360002423a4f4dafd542442aeb356fe3c9"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\eventStories.json",
+            "sha256": "b6f2f21cad411b66caf5e89347ef4f34155fa007b1290261ba4710789fa2802a"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\jp\\source\\sekai-master-db-diff-main\\releaseConditions.json",
+            "sha256": "08311f593de7f84ef4cd583c25f8a73f0104f66b1503e12e6d285f04ee0803f5"
+          },
+          "start_at_ms": 1667196000000,
+          "start_at_utc": "2022-10-31T06:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1000604,
+            "eventStoryId": 75,
+            "episodeNo": 4,
+            "assetbundleName": "event_scream_2022_04",
+            "scenarioId": "event_75_04",
+            "releaseConditionId": 107403,
+            "episodeRewards": [
+              {
+                "storyType": "event_story",
+                "resourceBoxId": 2
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 75,
+            "startAt": 1667196000000,
+            "closedAt": 1668146399000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 107403,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 75,
+            "releaseConditionTypeQuantity": 30000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "ko": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 75,
+          "episode_no": 4,
+          "region": "kr",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\events.json",
+            "sha256": "279f0da4bba05fdd55b397a643e489893d612506318d9f18658587fb55160331"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\eventStories.json",
+            "sha256": "6502a6197ffbdfa7261a4ca7310b292cd5bcc4b4edcc63b4b5a984306a58c7fa"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\kr\\source\\sekai-master-db-kr-diff-main\\releaseConditions.json",
+            "sha256": "754c45c2c28cdb91fc67f977b2e0e6513e8154da8a770a8f7fe59f22360fd678"
+          },
+          "start_at_ms": 1699250400000,
+          "start_at_utc": "2023-11-06T06:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1000604,
+            "eventStoryId": 75,
+            "episodeNo": 4,
+            "assetbundleName": "event_scream_2022_04",
+            "scenarioId": "event_75_04",
+            "releaseConditionId": 107403,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 2
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 75,
+            "startAt": 1699250400000,
+            "closedAt": 1699855199000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 107403,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 75,
+            "releaseConditionTypeQuantity": 30000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "zh_hans": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 75,
+          "episode_no": 4,
+          "region": "cn",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\events.json",
+            "sha256": "9aad0088dc96ae7ea1b8c5ba2f14d53e1c52f2986f0ebcd6ef38d805f72d8f02"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\eventStories.json",
+            "sha256": "8015d31b9efe62a46b5206e5548e913f9d3b388ec8e740fad85e6fc404d6e9dc"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\cn\\source\\sekai-master-db-cn-diff-main\\releaseConditions.json",
+            "sha256": "09eebdb3e088a49025609540006195dfd2d9921e2ebae856b96b6cee3bbf757e"
+          },
+          "start_at_ms": 1698735600000,
+          "start_at_utc": "2023-10-31T07:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1000604,
+            "eventStoryId": 75,
+            "episodeNo": 4,
+            "assetbundleName": "event_scream_2022_04",
+            "scenarioId": "event_75_04",
+            "releaseConditionId": 107403,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 2
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 75,
+            "startAt": 1698735600000,
+            "closedAt": 1699685999000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 107403,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 75,
+            "releaseConditionTypeQuantity": 30000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        },
+        "zh_tw": {
+          "status": "released_in_verified_masterdata",
+          "event_id": 75,
+          "episode_no": 4,
+          "region": "tc",
+          "reasons": [],
+          "proof_scope": "local_masterdata_schedule_and_unlock_definition",
+          "live_server_verified": false,
+          "event_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\events.json",
+            "sha256": "79cae80b7ca2a7b32263a47422592097971ab99522cfc33e791de921dc8bd6fc"
+          },
+          "story_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\eventStories.json",
+            "sha256": "bfb68b8cb96fa5a789a9b68ea7d7115e0f738e97aab6ff67629d2f33be127e59"
+          },
+          "condition_file": {
+            "path": "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\store\\raw\\generations\\20260926T085102Z-9e7b8f0f\\tc\\source\\sekai-master-db-tc-diff-main\\releaseConditions.json",
+            "sha256": "a5f4f2bdd5b4aafa41b4980fb55fa8cd2196bc13567bf34a6a10cec5b69631bd"
+          },
+          "start_at_ms": 1698735600000,
+          "start_at_utc": "2023-10-31T07:00:00+00:00",
+          "generation": "20260926T085102Z-9e7b8f0f",
+          "episode_record": {
+            "id": 1000604,
+            "eventStoryId": 75,
+            "episodeNo": 4,
+            "assetbundleName": "event_scream_2022_04",
+            "scenarioId": "event_75_04",
+            "releaseConditionId": 107403,
+            "episodeRewards": [
+              {
+                "resourceBoxId": 2
+              }
+            ]
+          },
+          "event_record_identity": {
+            "id": 75,
+            "startAt": 1698735600000,
+            "closedAt": 1699685999000,
+            "endAt": null
+          },
+          "unlock_condition": {
+            "id": 107403,
+            "releaseConditionType": "event_point",
+            "releaseConditionTypeId": 75,
+            "releaseConditionTypeQuantity": 30000
+          },
+          "user_unlock_required": true,
+          "reverification": "frozen census identity and raw local release files hash-identical; no live server or user unlock proof"
+        }
+      }
+    }
+  ],
+  "excluded_content_families": [
+    "event:105",
+    "event:132",
+    "event:133",
+    "event:136",
+    "event:143",
+    "event:159",
+    "event:161",
+    "event:164",
+    "event:169",
+    "event:2",
+    "event:35",
+    "event:40",
+    "event:44",
+    "event:46",
+    "event:53",
+    "event:63",
+    "event:70",
+    "event:84",
+    "event:94",
+    "event:97"
+  ],
+  "seed": "p0-source-first-next01|",
+  "candidate_universe_canonical_sha256": "eb0f06e2a3c7961ccd76d637862f995abd23bb47a027d529ce8f98fc6d19f579",
+  "eligible_candidate_count": 1173,
+  "fixed_source_rows": 80,
+  "fixed_target_obligations": 200,
+  "source_or_target_bodies_read": false,
+  "formal_registration_authorized": true,
+  "input_sha256": {
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\runner.py": "5824376050b73b4f4205b640e0ead944fc1f3be3f7627fa92bec89dd77b85073",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\score_contract.py": "3b78254393a2af2598f07d513f28993aa97fa6d09e45a77dc0747b48ef926d8b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\PROTOCOL.md": "e62d1725740455372d88dbede60b1cd6d7ee4d4bcae72a25b168efc6c470fe9f",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\COMMANDS.md": "02cf38bf0102569d10d95e93b01f60c0f7db02137e32425e21de8577987eb448",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\baseline_callable.py": "54bfe6cd1d7c48ba03bd6b2e2d356fbfe572371976d86f18fd6824e62f834994",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\run_validation.py": "d0c3d618889ee7df44f6c509033e1d08cc0c6c1843dddd58f244c1d396cd026f",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\acquire_trial.py": "93e6da29c5637372c2dc77a053d719669e28c1bf7c0391b4c9206ffa90094f72",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\register_trial.py": "4b4cdf3dc96405d712027af3928f7b9f21b535864d1027215a5cf3ceb3b5be91",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\register_trial.py": "cb4446140eef38cef69efae56d88a2ba0878fed923bc48febac5169222d75396",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\register_trial.py": "f8168f3b3d61d9c038a6f7f99c62bd235dc7beb9557f29939eb629e10cc1febd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\source-sense-trial-01\\prepare_trial.py": "0421bf78d491018c14e2cb03a93280a0396607634a0f8b18b60c9841252db850",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-registration.json": "d430b68361626f5634b13ac4e89467b09250143c38a5a3b4504d2cf17aa8a68a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-registration-seal.json": "90917ab4ecadaa0939d576b8a0ce37ac1e6b8747631edf415f4ac64a320d643a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark\\metadata-plan.json": "d2d317f094f8928950b9e0289f0c7cf1eba57044e6ff2c9dd09ae2785337e208",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\runner.py": "1340fbf9b42896872e4f37f07efde36ba16378ae1cb2de7873f4fe912b904429",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\score_contract.py": "ef945d7b2ae1d5ddb8081bbf97b8ef4131c5bf189fd1586cd561db66f205ec8b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\baseline_callable.py": "b79b2c4181e5a48a2b4813973633e57ecb3b5d91370c3d023597caf2d692fb98",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\check_tooling.py": "e2837bb60d0b23a31f70645047f50bd09d4224ba00090a12facb7dbfd12e5881",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\PROTOCOL.md": "0be22fac35a08cfbc9fc3c119a263d8ed16c9e2e80124d26535f718973d0f27b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\COMMANDS.md": "da8423b86d7b467f5f5b1e0e1e8881fee1bde6f02fdb9faa21b9227c5ffa398a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\TARGET_SCORE_CONTRACT_ADDENDUM.md": "ac94ec452d4c691fd6dc5791a76aed3824b9aa12cf3f12afd43dd5238b0d60dd",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\dependency-manifest.json": "391c28cf1093efda12ffad610c59c9bb375293244c9d4612d22d206568b9cdab",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\round10-registration-01\\metadata-registration-01.json": "b3044dc5949cd42ba8dce158eb691b6f7abccf3faa53badb2f31696bcef00ef8",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\source-first-real-01\\metadata-registration.json": "222bcc67bea7193414258349e58a4d196d0cae21d5ce2b21a498bd9dd21a3d25",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-01\\metadata-registration.json": "f9dc35c264552c35d5d201c3506c6c344a1564bf466ea1f37eb667433efbe707",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\metadata-registration.json": "140ca53a123f442f30171a27a147e389562459ec30d62393d1eb92f82973085a",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\metadata-registration.json": "098d0305dcca1424d01b4916011a07fb3a72075990623d142cfb68e45400132b",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-01\\metadata-registration-seal.json": "cbe25687b21b3d802d6efbdf3f40140373d3fcb00f21c1f9cc09ab846c4799f9",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-02\\metadata-registration-seal.json": "807904a8f79f8c1f6f3cc23a56a683302d8492bb83c5836e898bcc7c675cee42",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-03\\metadata-registration-seal.json": "f41cdfaaad10d8e1fc7b0d31b2d87123a45df827387e2b893eab6495979f899f",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\metadata-registration.json": "2bfa739df7868001c39edef952e5dfc582c0d79fd08f447096d541e82cb0f343",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\unseen-acquisition-20261002-04\\metadata-registration-seal.json": "76ed970da856a059c69e035ca064d1ad90825098da6b893eb063caa936f7a684",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\tooling-seal.json": "68850caf607844bd00bf27dc70a64ed05a6fc17921db5c330ffd118a0fb0e376",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\census\\logical-units.jsonl": "1615b0065588c5e453ab3bf560c6f140054d1708acc7578036a8a85179ef56f4",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\p0-exhaustive-20261001\\census\\census-index.sqlite": "9acffbd87dfaa888efc1196dbb300644b9e26b451f2494facf26ee5458eeaad8",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\metadata-plan.json": "607dea0bbeef57df1351779950a4f20e80c8f955f529a7f7372d534525becd17",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-02\\STOP.json": "05aa151cf0656d1b73b493de2ade95ea5d878317b479836d12fcce3f183452b2",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\runner.py": "75ea1fe873c7206e2a8adfd9d216918a410e2c5fa7254f20f3b7a6f6310e66e1",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\baseline_callable.py": "04fa4d1680e8897f2438bbba98ddfa5ccb793de7842e40b5645b6dd90c6adf84",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\check_tooling.py": "682af2a552faf8d61099d936eabba011ba4330712203ebea0f8af511617fd230",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\PROTOCOL.md": "71fe36c61ff884e66dd2567bb572fac122b56e38ccd7066bf4911e94ca37727c",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\COMMANDS.md": "25f0ea01af3ce20de2b3a4c40c8acb789346cba2404645e9f6870b78d7d8ee73",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\dependency-manifest.json": "8f86c5b8dfce7733a8dcebfa242ed58a1920d8b5abc9846a98818434374d62da",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\tooling-seal.json": "6fb87d69521edb4660254728ba8c8a4aea7ea9574dd776ef36cbba480c39ff6d",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\release-review\\event158-fixture-review.md": "9e9726bd1c1cc944be455b1d43fcb7f5b249b592fe13bf98f615176145780532",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\tests\\test_registry.py": "92db9017885810d4c95d5b909c7bbce6c8b42d0f654e9229e6712d6e06c36d59",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-repair-20260929\\baseline\\tests\\test_registry.py": "92db9017885810d4c95d5b909c7bbce6c8b42d0f654e9229e6712d6e06c36d59",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\metadata-plan.json": "8bdbaab3a6e5e605a138d1ca51871f502225d6c1f45944cb8babc26b2b00a3d2",
+    "C:\\dsh_projects\\sekaisync-handoff-2026-08-14\\work\\scraper-261002\\benchmark-03\\product-closure.json": "37e72819332d4d7fe7448a381d76a0480cb26011277609d2d1dd9f10a009fc8f"
+  },
+  "parent_before_body_plan_sha256": "607dea0bbeef57df1351779950a4f20e80c8f955f529a7f7372d534525becd17",
+  "prior_failed_trial_sha256": "05aa151cf0656d1b73b493de2ade95ea5d878317b479836d12fcce3f183452b2",
+  "no_reranking": true,
+  "as_of_utc": "2026-10-02T10:15:19.981187+00:00"
+}

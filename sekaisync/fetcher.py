@@ -24,6 +24,7 @@ from sekaisync.layout import (
     freshness_path,
     generation_dir,
     generation_master_dir,
+    generations_root,
     glossary_path,
     region_master_dir,
     registry_path,
@@ -1161,33 +1162,31 @@ def prepare_raw_generation(
     target_root = generation_dir(config.store_root, generation)
     local_mirrors = local_mirrors or {}
     prepared: list[str] = []
+    resolved_root = target_root.resolve()
+    if (resolved_root.parent != generations_root(config.store_root).resolve()
+            or not resolved_root.is_relative_to(config.store_root.resolve())):
+        raise ValueError("generation directory must stay inside this store's generations root")
+    # The SQL pointer, not a directory rename, publishes this generation.
+    # Exclusive creation also prevents cleanup from deleting an older generation.
+    target_root.mkdir(parents=True, exist_ok=False)
 
     try:
         for region_key in regions:
             if region_key == "demo":
                 continue
-            # Same filesystem as the generation root, so the final rename is a
-            # directory move and not a cross-device copy.
-            staging = target_root.parent / f".{generation}.{region_key}.staging"
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-            staging.mkdir(parents=True, exist_ok=True)
             region_target = generation_master_dir(
                 config.store_root, region_key, generation
             )
-            try:
-                _fetch_region_into(
-                    region_key,
-                    config,
-                    staging,
-                    local_mirror=local_mirrors.get(region_key),
-                )
-                region_target.parent.mkdir(parents=True, exist_ok=True)
-                staging.rename(region_target)
-                prepared.append(region_key)
-            except Exception:
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
+            if not region_target.resolve().is_relative_to(resolved_root):
+                raise ValueError("region directory must stay inside the new generation")
+            region_target.mkdir(parents=True, exist_ok=False)
+            _fetch_region_into(
+                region_key,
+                config,
+                region_target,
+                local_mirror=local_mirrors.get(region_key),
+            )
+            prepared.append(region_key)
         return {
             "generation": generation,
             "regions": tuple(prepared),

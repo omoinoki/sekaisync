@@ -285,7 +285,7 @@ class ChannelEvidenceRowsTest(unittest.TestCase):
         same index in every target language, which is what the hub's predicted
         line window (`_predict_index`) and the trunk aligner both rely on.
         """
-        return {
+        groups = {
             "s1": _story(
                 "セカイに行こう\n朝比奈\nカイトと歌う\n",
                 "Let's go to SEKAI\nI saw Asahina\nSing with KAITO\n",
@@ -306,6 +306,15 @@ class ChannelEvidenceRowsTest(unittest.TestCase):
             ),
         }
 
+        # A real hub backfill needs a verified English pivot. The earlier
+        # fixture passed only because unverified Asahina could backfill any
+        # neighbouring Chinese phrase; keep all six sites with valid evidence.
+        for story in groups.values():
+            for language, text in (("ja", "星屑庭園"), ("en", "at STAR GARDEN"),
+                                   ("zh_hans", "STAR GARDEN"), ("zh_hant", "STAR GARDEN")):
+                story[language]["text"] += text + "\n"
+        return groups
+
     def _glossary(self) -> list:
         """One official unit (L0 direct) and one character (surname backing).
 
@@ -316,6 +325,11 @@ class ChannelEvidenceRowsTest(unittest.TestCase):
         from sekaisync.termindex import TermRecord
 
         return [
+            TermRecord(
+                id="area:star-garden", canonical="星屑庭園", source_language="ja",
+                kind="area", official=True, source="master_db",
+                names={"ja": "星屑庭園", "en": "STAR GARDEN"},
+            ),
             TermRecord(
                 id="unit:sekai", canonical="セカイ", source_language="ja",
                 kind="unit", official=True, source="master_db",
@@ -340,7 +354,7 @@ class ChannelEvidenceRowsTest(unittest.TestCase):
         vocab = termindex.build_alignment_vocab(groups, targets, glossary)
         idf = termindex.compute_lang_idf(groups, targets, vocab=vocab)
         return trinity.scrub_trinity(
-            groups, sorted(groups), ["セカイ", "朝比奈", "カイト"],
+            groups, sorted(groups), ["セカイ", "朝比奈", "カイト", "星屑庭園"],
             target_languages=targets, glossary=glossary, vocab=vocab, idf=idf,
         )
 

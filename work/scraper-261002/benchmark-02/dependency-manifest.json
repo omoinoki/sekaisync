@@ -1,0 +1,21 @@
+{
+  "schema": "work/checkpoint261002-trial02-tooling-dependencies@1",
+  "code_sha256": {
+    "work/scraper-261002/benchmark/runner.py": "5824376050b73b4f4205b640e0ead944fc1f3be3f7627fa92bec89dd77b85073",
+    "work/scraper-261002/benchmark/score_contract.py": "3b78254393a2af2598f07d513f28993aa97fa6d09e45a77dc0747b48ef926d8b",
+    "work/scraper-261002/benchmark/PROTOCOL.md": "e62d1725740455372d88dbede60b1cd6d7ee4d4bcae72a25b168efc6c470fe9f",
+    "work/scraper-261002/benchmark/COMMANDS.md": "02cf38bf0102569d10d95e93b01f60c0f7db02137e32425e21de8577987eb448",
+    "work/scraper-261002/benchmark/baseline_callable.py": "54bfe6cd1d7c48ba03bd6b2e2d356fbfe572371976d86f18fd6824e62f834994",
+    "work/scraper-261002/run_validation.py": "d0c3d618889ee7df44f6c509033e1d08cc0c6c1843dddd58f244c1d396cd026f",
+    "work/p0-exhaustive-20261001/unseen-acquisition-20261002-04/acquire_trial.py": "93e6da29c5637372c2dc77a053d719669e28c1bf7c0391b4c9206ffa90094f72",
+    "work/p0-exhaustive-20261001/unseen-acquisition-20261002-04/register_trial.py": "4b4cdf3dc96405d712027af3928f7b9f21b535864d1027215a5cf3ceb3b5be91",
+    "work/p0-exhaustive-20261001/unseen-acquisition-20261002-03/register_trial.py": "cb4446140eef38cef69efae56d88a2ba0878fed923bc48febac5169222d75396",
+    "work/p0-exhaustive-20261001/unseen-acquisition-20261002-02/register_trial.py": "f8168f3b3d61d9c038a6f7f99c62bd235dc7beb9557f29939eb629e10cc1febd",
+    "work/p0-exhaustive-20261001/source-sense-trial-01/prepare_trial.py": "0421bf78d491018c14e2cb03a93280a0396607634a0f8b18b60c9841252db850"
+  },
+  "first_trial_metadata_sha256": {
+    "work/scraper-261002/benchmark/metadata-registration.json": "d430b68361626f5634b13ac4e89467b09250143c38a5a3b4504d2cf17aa8a68a",
+    "work/scraper-261002/benchmark/metadata-registration-seal.json": "90917ab4ecadaa0939d576b8a0ce37ac1e6b8747631edf415f4ac64a320d643a",
+    "work/scraper-261002/benchmark/metadata-plan.json": "d2d317f094f8928950b9e0289f0c7cf1eba57044e6ff2c9dd09ae2785337e208"
+  }
+}

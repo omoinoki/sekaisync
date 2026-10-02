@@ -30,9 +30,9 @@ def _story(ja: str, en: str = "", zh: str = "", ko: str = "", zh_tw: str = "") -
 
 class ExtractLatinCandidatesTests(unittest.TestCase):
     def test_multiword_and_single_upper(self):
-        # 句首普通词 + 后续大写词：保留整串（pilot 同款行为，靠跨故事投票消歧）。
+        # Imperative verbs are sentence syntax, not part of the following name.
         self.assertEqual(
-            extract_latin_candidates("Visit RAD WEEKEND today"), ["Visit RAD WEEKEND"]
+            extract_latin_candidates("Visit RAD WEEKEND today"), ["RAD WEEKEND"]
         )
         self.assertEqual(extract_latin_candidates("SEKAI is here"), ["SEKAI"])
 

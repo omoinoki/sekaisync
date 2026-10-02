@@ -154,10 +154,10 @@ class ProgressTest(unittest.TestCase):
             result = compute_progress(store_root, regions=["jp"], now=5000)
             region = result["regions"]["jp"]
             self.assertEqual(region["fact"]["pct"], 100)
-            self.assertEqual(region["text"]["expected_total"], 6)
+            self.assertEqual(region["text"]["expected_total"], 7)
             self.assertEqual(region["text"]["matched_total"], 2)
-            self.assertEqual(region["text"]["pct"], 33)
-            self.assertEqual(region["overall"]["pct"], 50)
+            self.assertEqual(region["text"]["pct"], 29)
+            self.assertEqual(region["overall"]["pct"], 44)
             self.assertGreaterEqual(region["excluded_units"]["fact_card"], 2)
             self.assertIn("collab", result["caveat"])
 
@@ -165,7 +165,7 @@ class ProgressTest(unittest.TestCase):
             self.assertNotIn("card:99", fact_expected["card"])
             expected = expected_text_units(store_root, "jp", 5000)
             self.assertNotIn("event_story:ja:2:1", expected["event_story"])
-            self.assertNotIn("unit_story:ja:ln_01_00", expected["unit_story"])
+            self.assertIn("unit_story:ja:ln_01_00", expected["unit_story"])
             matched = matched_text_units(store_root, "jp", expected)
             self.assertNotIn("event_story:ja:2:1", matched["event_story"])
 

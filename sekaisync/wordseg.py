@@ -33,6 +33,7 @@ Two calibration details matter more than they look, and both were wrong:
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections import Counter, defaultdict
 from typing import Iterable
 
@@ -63,7 +64,7 @@ def _runs(text: str, stop: set[str]) -> list[str]:
     runs: list[str] = []
     buf: list[str] = []
     for ch in text:
-        if ch in stop or ch.isspace():
+        if ch in stop or ch.isspace() or unicodedata.category(ch).startswith("P"):
             if buf:
                 runs.append("".join(buf))
                 buf = []
@@ -74,7 +75,51 @@ def _runs(text: str, stop: set[str]) -> list[str]:
     return runs
 
 
-def discover_words(
+def _run_spans(text: str, stop: set[str]):
+    """Yield runs with offsets, retaining evidence of real delimiters."""
+    start = None
+    for i, ch in enumerate(text):
+        if ch in stop or ch.isspace() or unicodedata.category(ch).startswith("P"):
+            if start is not None:
+                yield start, i, text[start:i]
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        yield start, len(text), text[start:]
+
+
+def _has_free_boundary(counts: Counter, required_entropy: float) -> bool:
+    """A written delimiter is a boundary even without varying neighbours.
+
+    ``None`` denotes punctuation, whitespace, or a complete document edge.
+    A substring with one fixed *character* neighbour still fails. Treating
+    every run edge as missing data made sentence-final and quoted terms
+    systematically undiscoverable.
+    """
+    if required_entropy <= 0:
+        return True
+    if counts and counts.get(None, 0) == sum(counts.values()):
+        return True
+    return _entropy(counts) >= required_entropy
+
+
+def _association_likelihood(observed: int, prefix: int, suffix: int, total: int) -> float:
+    """Positive 2x2 log-likelihood association score, in natural-log units."""
+    if observed * total <= prefix * suffix:
+        return 0.0
+    cells = (observed, prefix - observed, suffix - observed,
+             total - prefix - suffix + observed)
+    if min(cells) < 0:
+        return 0.0
+    expected = (prefix * suffix / total, prefix * (total - suffix) / total,
+                (total - prefix) * suffix / total,
+                (total - prefix) * (total - suffix) / total)
+    return 2 * sum(value * math.log(value / mean)
+                   for value, mean in zip(cells, expected) if value and mean)
+
+
+def _discover_candidates(
     texts: Iterable[str],
     *,
     min_len: int = 2,
@@ -85,6 +130,7 @@ def discover_words(
     max_chars: int = 4_000_000,
     stop_marks: str = "。！？!?\n…—・、，,；;：:\"'「」『』（）()【】",
     boundary_stop_chars: str = "",
+    _content_words: bool = False,
 ) -> set[str]:
     """Return the set of discovered words for a language corpus.
 
@@ -102,7 +148,7 @@ def discover_words(
     # truncated at the budget; its artificial end has no right-context evidence.
     if max_chars <= 0:
         return set()
-    chunks: list[str] = []
+    chunks: list[tuple[str, bool]] = []
     remaining = max_chars
     for text in texts:
         if not text:
@@ -111,22 +157,18 @@ def discover_words(
             remaining -= 1  # the inter-document newline also consumes budget
         if remaining <= 0:
             break
-        chunks.append(text[:remaining])
-        remaining -= len(chunks[-1])
+        chunk = text[:remaining]
+        chunks.append((chunk, len(chunk) == len(text)))
+        remaining -= len(chunk)
         if remaining <= 0:
             break
-    joined = "\n".join(chunks)
-
     stop = set(stop_marks)
     boundary = set(boundary_stop_chars)
     freq: Counter[str] = Counter()
-    left: dict[str, Counter] = defaultdict(Counter)
-    right: dict[str, Counter] = defaultdict(Counter)
-
-    for line in joined.split("\n"):
-        if not line:
-            continue
-        for run in _runs(line, stop):
+    runs: list[tuple[str, bool]] = []
+    for text, complete in chunks:
+        for _start, end, run in _run_spans(text, stop | {"\n"}):
+            runs.append((run, end < len(text) or complete))
             rlen = len(run)
             if rlen < 1:
                 continue
@@ -137,10 +179,6 @@ def discover_words(
                 for i in range(0, rlen - ln_val + 1):
                     seg = run[i:i + ln_val]
                     freq[seg] += 1
-                    if i > 0:
-                        left[seg][run[i - 1]] += 1
-                    if i + ln_val < rlen:
-                        right[seg][run[i + ln_val]] += 1
 
     words: set[str] = set()
     # Probability base is the character count (unigram total). Using
@@ -150,6 +188,15 @@ def discover_words(
     n_total = sum(count for seg, count in freq.items() if len(seg) == 1)
     if n_total <= 0:
         return words
+    eligible: set[str] = set()
+    # A content-word pass must not confuse high PMI with high reliability:
+    # common constituents depress PMI even when their association has ample
+    # evidence. The likelihood heuristic grows with the number of hypotheses,
+    # instead of being tuned against a list of annotated game terms. Adjacent
+    # windows are not independent: this is not a false-positive guarantee.
+    tests = sum(1 for seg, count in freq.items()
+                if count >= min_freq and len(seg) >= min_len)
+    likelihood_floor = 2 * math.log(max(tests, 1) / 0.05)
     for seg, f in freq.items():
         if f < min_freq or len(seg) < min_len:
             continue
@@ -164,15 +211,77 @@ def discover_words(
             if pf == 0 or tf == 0:
                 solid = False
                 break
-            if math.log2(f * n_total / (pf * tf)) < min_cohesion:
+            score = (_association_likelihood(f, pf, tf, n_total) if _content_words
+                     else math.log2(f * n_total / (pf * tf)))
+            floor = likelihood_floor if _content_words else min_cohesion
+            if score < floor:
                 solid = False
                 break
         if not solid:
             continue
-        # Boundary freedom: both sides must vary across contexts.
-        h_left = _entropy(left.get(seg))
-        h_right = _entropy(right.get(seg))
-        if min(h_left, h_right) < min_entropy:
-            continue
-        words.add(seg)
+        eligible.add(seg)
+
+    # Neighbour histograms dominate memory on dialogue corpora. Count them
+    # only after frequency/cohesion filtering, never for every rare n-gram.
+    left: dict[str, Counter] = defaultdict(Counter)
+    right: dict[str, Counter] = defaultdict(Counter)
+    lengths = sorted({len(seg) for seg in eligible})
+    for run, complete_right in runs:
+        rlen = len(run)
+        for length in lengths:
+            for i in range(rlen - length + 1):
+                seg = run[i:i + length]
+                if seg not in eligible:
+                    continue
+                left[seg][run[i - 1] if i else None] += 1
+                if i + length < rlen:
+                    right[seg][run[i + length]] += 1
+                elif complete_right:
+                    right[seg][None] += 1
+    for seg in eligible:
+        if _content_words:
+            # Accessor variety avoids the entropy paradox where two distinct
+            # neighbours pass at counts 1:1 but fail at counts 2:1.
+            free_left = len(left[seg]) >= 2 or _has_free_boundary(left[seg], math.inf)
+            free_right = len(right[seg]) >= 2 or _has_free_boundary(right[seg], math.inf)
+        else:
+            free_left = _has_free_boundary(left[seg], min_entropy)
+            free_right = _has_free_boundary(right[seg], min_entropy)
+        if free_left and free_right:
+            words.add(seg)
     return words
+
+
+def discover_words(
+    texts: Iterable[str],
+    *,
+    min_len: int = 2,
+    max_len: int = 8,
+    min_freq: int = 3,
+    min_cohesion: float = 10.0,
+    min_entropy: float = 1.0,
+    max_chars: int = 4_000_000,
+    stop_marks: str = "。！？!?\n…—・、，,；;：:\"'「」『』（）()【】",
+    boundary_stop_chars: str = "",
+) -> set[str]:
+    """Discover words using the existing frequency/PMI/entropy contract.
+
+    ``min_cohesion`` remains measured in bits. Written delimiters provide
+    boundary evidence; truncating the input budget does not create one.
+    """
+    return _discover_candidates(
+        texts, min_len=min_len, max_len=max_len, min_freq=min_freq,
+        min_cohesion=min_cohesion, min_entropy=min_entropy, max_chars=max_chars,
+        stop_marks=stop_marks, boundary_stop_chars=boundary_stop_chars)
+
+
+def _discover_content_words(texts: Iterable[str], *, min_freq: int = 2,
+                            max_chars: int = 4_000_000) -> set[str]:
+    """Recall repeated content words independently of named-entity shape.
+
+    A corpus-sized log-likelihood hurdle and accessor variety supply discovery
+    evidence. This is not a part-of-speech classifier, a translation decision,
+    or a promise to segment unknown words seen in just one context.
+    """
+    return _discover_candidates(texts, min_freq=min_freq, max_chars=max_chars,
+                                boundary_stop_chars="", _content_words=True)

@@ -1,17 +1,17 @@
 """术语候选三级分层判定 —— 术语穿透管线的"第 0 层"。
 
-三组刮削策略对照实验（experiment/zh-en-tw/COMPARISON.md）得出的结论是：
-三组的噪声同源，都出自"通用词进入对齐"。像「大家」「咖啡」「テスト」「クラス」
-这类词根本没有专属译名，行位预测只能把它们落到任意感叹词/人名上，于是产出
-`大家→Thank`、`テスト→Huh` 这类垃圾。修复的办法不是改对齐算法，而是在对齐
-**之前**先把候选分层，只放行真正的专名候选。
+候选分层只回答「有没有词汇证据」，不回答「哪个目标串是正确译名」。
+「大家」等指代/语气片段与「咖啡」「テスト」「クラス」等普通内容词必须区分：
+后者不是专名，但在词典、明确标记或统计证据支持时同样值得穿透。旧管线把
+错误译名归因于所有通用词，导致正确内容词在到达对齐器之前就被永久丢弃。
+分层之后仍须由独立的原文位置和译名证据验证结果。
 
 分层模型（先命中先返回，顺序即优先级）::
 
     L0 OFFICIAL     官方词表命中 —— 直接采纳，无需门控
     L1 PROPER       形态专名（引号词 / Latin 混形 / 片假名串 / 汉字专名后缀）
-    L2 STATISTICAL  统计发现词 —— 放行但仍需后续门控
-    L3 REJECT       通用词 / 功能片段 / 噪声 —— 绝不进入对齐
+    L2 STATISTICAL  有统计词汇证据的词（含普通内容词）—— 仍需后续门控
+    L3 REJECT       功能片段 / 噪声 / 缺少词汇证据 —— 不进入对齐
 
 设计约束：
 
@@ -61,8 +61,8 @@ class Tier(str, Enum):
 
     OFFICIAL = "L0"      # 官方词表命中 —— 最高可信，直接采纳
     PROPER = "L1"        # 形态专名 —— 引号词 / Latin 混形 / 片假名串（非通用词）
-    STATISTICAL = "L2"   # 统计发现词 —— 需后续门控
-    REJECT = "L3"        # 明确拒绝 —— 通用词/功能片段/噪声，不得进入对齐
+    STATISTICAL = "L2"   # 有统计词汇证据，仍需验证译名
+    REJECT = "L3"        # 功能片段、噪声或缺少词汇证据
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ _BUILTIN_GENERIC_KATAKANA = {
 }
 
 # 汉语通用词（功能词 / 高频日常词）：2 字纯汉字且在此表内直接拒绝。
-_BUILTIN_GENERIC_ZH = {
+_BUILTIN_FUNCTION_ZH = {
     # 代词 / 指代
     "大家", "我们", "你们", "他们", "她们", "它们", "自己", "别人",
     "这个", "那个", "哪个", "什么", "怎么", "这里", "那里", "哪里",
@@ -161,6 +161,8 @@ _BUILTIN_GENERIC_ZH = {
     "一起", "还是", "一定", "真的", "就是", "只是", "不是", "没有",
     "非常", "特别", "十分", "有点", "很多", "一些", "这些", "那些",
     "现在", "刚才", "马上", "立刻", "突然", "终于", "果然", "当然",
+}
+_BUILTIN_GENERIC_ZH = _BUILTIN_FUNCTION_ZH | {
     # 动词 / 动宾
     "进行", "直播", "参加", "准备", "练习", "休息", "商量", "决定",
     "知道", "觉得", "认为", "希望", "想要", "需要", "喜欢", "讨厌",
@@ -289,6 +291,18 @@ def _key_set(values: object) -> set[str]:
 # 之前放在 classify 内部每次重建（150+ 项的集合推导），在万级候选上
 # 是实打实的浪费。
 _GENERIC_ZH_KEYS = {_normalize_key(word) for word in _BUILTIN_GENERIC_ZH}
+_FUNCTION_ZH_KEYS = {_normalize_key(word) for word in _BUILTIN_FUNCTION_ZH}
+
+# Grammatical tokens are different from common content words. These closed
+# classes may be rejected despite repetition; 咖啡/学校/ギター are not in them.
+_FUNCTION_JA = {
+    "の", "を", "は", "が", "に", "で", "と", "へ", "も", "から", "まで",
+    "より", "して", "そうだ", "そうだった", "それ", "これ", "あれ", "どれ",
+    "ここ", "そこ", "あそこ", "どこ", "わたし", "あなた", "だれ", "なに",
+    "はい", "ハイ", "いいえ", "ええ", "うん", "ううん",
+}
+_FUNCTION_KO = {"그거", "이거", "저거", "그것", "이것", "저것", "우리", "너희",
+                "여기", "거기", "저기", "누구", "뭐", "네", "응", "아니"}
 
 
 # ---------------------------------------------------------------------------
@@ -356,11 +370,14 @@ def _latin_forms(text: str) -> bool:
             return True
         return False
 
-    # 多 token：所有含字母的 token 首字母大写，且无停用功能词夹杂。
+    # 多 token：实词首字母大写，可保留名称内部的连接词。
     tokens = [t for t in re.split(f"[{re.escape(_MIXED_GLUE)}\\s]+", stripped) if t]
     word_tokens = [t for t in tokens if re.search(f"[{_LATIN}]", t)]
+    connectors = {"of", "the", "and", "for", "in", "on", "at", "to", "a", "an"}
     if len(word_tokens) >= 2 and all(
-        t[0].isupper() and t.lower() not in _LATIN_FUNCTION_WORDS for t in word_tokens
+        (t[0].isupper() and t.lower() not in _LATIN_FUNCTION_WORDS)
+        or (0 < i < len(word_tokens) - 1 and t.lower() in connectors)
+        for i, t in enumerate(word_tokens)
     ):
         return True
 
@@ -371,7 +388,7 @@ def _latin_forms(text: str) -> bool:
     return False
 
 
-# Latin 功能词：多词专名里只要出现就必须拦（"Thank you" 不是专名）
+# Latin 功能词；内部名称连接词由 _latin_forms 单独处理。
 _LATIN_FUNCTION_WORDS = {
     "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at",
     "for", "with", "from", "by", "as", "is", "are", "was", "were", "be",
@@ -411,7 +428,7 @@ def _zh_proper_suffix(text: str) -> bool:
         return False
     if not _has_kanji(stripped):
         return False
-    return any(suffix in stripped for suffix in _ZH_PROPER_SUFFIXES)
+    return stripped.endswith(_ZH_PROPER_SUFFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -442,13 +459,8 @@ def classify(
     5. ``discovered`` 命中（统计发现词）→ STATISTICAL
     6. 其余 → REJECT
 
-    语言适配（在 4/6 之间生效）：
-
-    - 中文（``zh_*``）：纯汉字 2 字词若无官方/种子背书且形态无专名特征 → REJECT
-      （避免「大家」「商量」这类通用词进入对齐）；汉字 ≥3 且含专名后缀
-      （公司/学园/乐团/公园/庆典/十字路口 等）→ PROPER
-    - 韩文（``ko``）：纯谚文且长度 ≤2 → REJECT
-    - 日文（``ja``）：纯平假名且长度 ≤5 → REJECT（语法片段）
+    明确语法词先于形态与统计信号拒绝。普通内容词有统计证据时属于 L2；
+    没有证据的短汉字/韩文/平假名或通用片假名不会仅凭字形成为专名。
     """
     raw = (term or "").strip()
     if not raw:
@@ -470,6 +482,16 @@ def classify(
     if key in _key_set(seed_keys):
         return Tier.PROPER
 
+    # Repetition is not a reason to treat a pronoun or a particle as a term.
+    # But being a common noun is not a reason to discard explicit lexical
+    # evidence: the caller requests terminology, not just named entities.
+    if key in _FUNCTION_ZH_KEYS or key in _LATIN_FUNCTION_WORDS:
+        return Tier.REJECT
+    if _is_language(language, "ja") and raw in _FUNCTION_JA:
+        return Tier.REJECT
+    if _is_language(language, "ko") and raw in _FUNCTION_KO:
+        return Tier.REJECT
+
     # 4. 形态专名。
     if _latin_forms(raw):
         return Tier.PROPER
@@ -480,13 +502,18 @@ def classify(
     if _zh_proper_suffix(raw):
         return Tier.PROPER
 
-    # 4b. 语言适配的拒绝规则 —— 必须早于 discovered 命中，
-    #     否则通用词/语法片段会被 L2 统计层再捞回来。
+    # 4b. Reject nonlexical content, then admit independent corpus evidence.
     counts = _script_counts(raw)
     total = sum(counts.values())
     if total == 0:
         # 无字母/数字/汉字的内容（纯符号、表情）不是术语。
         return Tier.REJECT
+
+    # Short Chinese/Korean nouns and common katakana words still have real
+    # translations. Discovery supplies the missing lexical evidence without
+    # claiming that a proposed translation has been validated.
+    if key in _key_set(discovered):
+        return Tier.STATISTICAL
 
     if _is_language(language, "zh"):
         pure_kanji = counts["kanji"] == total
@@ -507,10 +534,6 @@ def classify(
         return Tier.REJECT
     if _is_generic_katakana(raw):
         return Tier.REJECT
-
-    # 5. 统计发现词：放行，但交由后续门控复核。
-    if key in _key_set(discovered):
-        return Tier.STATISTICAL
 
     # 6. 其余：无形态特征、无背书、无统计支持 → 不进入对齐。
     return Tier.REJECT

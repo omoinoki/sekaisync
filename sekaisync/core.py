@@ -941,6 +941,25 @@ class SekaiSyncCore:
             tag=tag,
             sort=sort,
         )
+        from sekaisync.occurrence_store import _query_relations, _query_pages
+        from sekaisync.termindex import _occurrence_lookup, _term_language
+
+        with dbstore.connect(self.store_root) as conn:
+            known, relations = _query_relations(conn, query, source_language=source_language)
+            if known:
+                # A known scoped subject must not revive stale flattened names.
+                results = [result for result in results if not (
+                    result.get("canonical") == query.strip()
+                    and (not source_language or _term_language(result.get("source_language", ""))
+                         == _term_language(source_language))
+                    or any(value == query.strip() and (
+                        not source_language or _term_language(language) == _term_language(source_language))
+                        for language, value in result.get("names", {}).items()))]
+                results.extend(_occurrence_lookup(relations, query, source_language, languages, tag,
+                                                  _query_pages(conn, relations)))
+                results.sort(key=lambda result: (result.get("weight", 0), result.get("score", 0))
+                             if sort == "weight" else (result.get("score", 0),), reverse=True)
+                results = results[:limit]
         # Server terms are loaded light (no sentence bodies); enrich just the
         # returned hits so evidence sentences stay in the query output.
         evidence = dbstore.evidence_for_ids(self.store_root, [r.get("id", "") for r in results])
@@ -956,8 +975,15 @@ class SekaiSyncCore:
         story_key: Optional[str] = None,
         languages: Optional[list[str]] = None,
     ) -> Optional[dict]:
-        from sekaisync.termindex import load_pages, term_penetrate
+        from sekaisync.termindex import load_pages, term_penetrate, _occurrence_penetrate
+        from sekaisync.occurrence_store import _query_relations, _query_pages
 
+        with dbstore.connect(self.store_root) as conn:
+            known, relations = _query_relations(conn, query, story_key=story_key)
+            if known:
+                pages = _query_pages(conn, relations)
+                _, result = _occurrence_penetrate(relations, query, story_key, languages, pages)
+                return result
         pages = load_pages(self.store_root)
         return term_penetrate(
             self.terms,
