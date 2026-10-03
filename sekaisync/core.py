@@ -17,7 +17,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
 
 from sekaisync.config import REGIONS
 from sekaisync import dbstore
-from sekaisync.factpacks import build_fact_pack, build_fact_pack_at, load_fact_packs
+from sekaisync.factpacks import build_fact_pack_at, build_fact_pack_with_context, load_fact_packs
 from sekaisync.glossary import find_terms, load_glossary, resolve_name
 from sekaisync.layout import (
     db_path,
@@ -34,6 +34,7 @@ from sekaisync.layout import (
 )
 from sekaisync.normalize import normalize_name
 from sekaisync.registry import entity_by_id, load_registry, lookup_entity
+from sekaisync.regions import entity_for_region
 from sekaisync.termindex import load_terms, lookup_terms, term_status
 from sekaisync.webindex import (
     is_auxiliary_page,
@@ -518,17 +519,21 @@ class SekaiSyncCore:
             language=language,
             limit=limit,
         ):
+            selected = entity_for_region(entity, region)
             results.append(
                 {
                     "id": entity.id,
                     "type": entity.type,
                     "regions": entity.regions,
                     "names": entity.names,
-                    "facts": entity.facts,
-                    "source": entity.source,
+                    "facts": (selected["facts"] if entity.region_facts or region
+                              else entity.facts),
+                    "source": selected["source"] if region else entity.source,
                     "demo": entity.demo,
                     "trust": entity.trust,
                     "score": score,
+                    **{key: value for key, value in selected.items()
+                       if key not in {"id", "facts", "source"}},
                 }
             )
         return results
@@ -555,8 +560,10 @@ class SekaiSyncCore:
                   as_of: Optional[int] = None) -> Optional[dict]:
         """Compact fact pack; the plain form stays the current snapshot.
 
-        Without ``as_of`` this is the existing "current snapshot" contract the
-        consumers already depend on.  Passing ``as_of`` switches to the
+        Without ``as_of`` this returns a current snapshot with its actual
+        region and body language disclosed. An explicit region selects only
+        that region's facts; otherwise body types prefer the requested
+        language's regional snapshot. Passing ``as_of`` switches to the
         region-aware public-time filter, and then ``region`` is required —
         public times differ per server, so the caller must say which one it is
         asking about rather than letting this pick a default (Astra P05).
@@ -571,7 +578,7 @@ class SekaiSyncCore:
                     "times are per-server, so there is no default to assume"
                 )
             return build_fact_pack_at(entity, language=language, region=region, as_of=as_of)
-        pack = build_fact_pack(entity, language=language)
+        pack, context = build_fact_pack_with_context(entity, language=language, region=region)
         return {
             "entity_id": pack.entity_id,
             "entity_type": pack.entity_type,
@@ -581,6 +588,7 @@ class SekaiSyncCore:
             "raw_json_tokens": pack.raw_json_tokens,
             "fact_pack_tokens": pack.fact_pack_tokens,
             "token_ratio": round(pack.token_ratio, 3),
+            **context,
         }
 
     @request_scoped

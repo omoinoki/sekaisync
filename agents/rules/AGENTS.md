@@ -14,6 +14,7 @@ When answering Project Sekai questions, use the SekaiSync MCP tools as the fact 
 
 - Never translate official proper nouns from memory.
 - Never invent region launch dates, event windows, card rarities, song composers, or difficulty values.
+- Treat official role labels in character profiles as snapshots of team responsibilities, not exhaustive capability or ownership lists. A label such as lyricist does not imply inability to compose or play an instrument, or lack of ownership of one. Require explicit supporting evidence for negative claims; missing evidence is unknown, not false.
 - Never assume the JP event schedule applies to Global, TW/HK/MAC, KR, or CN.
 - If the local store has no match, say the fact is outside SekaiSync coverage.
 - If region records conflict, show both records with region tags.

@@ -12,3 +12,5 @@ Before answering Project Sekai questions, use the SekaiSync MCP tools.
 5. Verify drafts with `sekaisync_verify_claims`.
 
 Never translate official localized names from memory. Never assume the JP schedule applies to Global, TW/HK/MAC, KR, or CN. If the local store has no match, say the fact is outside SekaiSync coverage.
+
+Treat official role labels in character profiles as snapshots of team responsibilities, not exhaustive capability or ownership lists. A label such as lyricist does not imply inability to compose or play an instrument, or lack of ownership of one. Require explicit supporting evidence for negative claims; missing evidence is unknown, not false.

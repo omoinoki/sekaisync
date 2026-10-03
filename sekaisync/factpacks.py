@@ -5,7 +5,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
+from sekaisync.config import REGIONS
 from sekaisync.models import Entity, FactPack
+from sekaisync.regions import project_common_facts
 from sekaisync.trust import trust_for_entity
 
 
@@ -17,14 +19,74 @@ def estimate_tokens(text: str) -> int:
 #: ones, then the unsuffixed field.  The previous fixed order always put ja in
 #: front, so an English request silently received Japanese text.
 _BODY_LANGUAGE_ORDER = ("ja", "zh_hans", "zh_hant", "en", "ko")
+_BODY_LANGUAGE_ALIASES = {"zh_tw": "zh_hant", "zh_cn": "zh_hans"}
+_FLAVOR_TYPES = ("area_item", "mysekai_fixture", "event_item")
+_MISSION_TYPES = (
+    "live_mission", "normal_mission", "character_mission", "event_mission",
+    "story_mission", "honor_mission", "mysekai_normal_mission",
+    "beginner_mission", "beginner_mission_v2",
+)
+_BODY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "event": ("outline",),
+    "event_story": ("outline",),
+    "unit": ("profileSentence", "profile"),
+    "character_profile": ("introduction", "profileSentence", "profile"),
+    "card": ("prefix", "cardSkillName", "skillName", "skill"),
+    **dict.fromkeys(_FLAVOR_TYPES, ("flavorText", "description")),
+    **dict.fromkeys(_MISSION_TYPES, ("sentence", "description")),
+}
+
+
+def _body_language(language: str) -> str:
+    value = str(language or "").strip()
+    return _BODY_LANGUAGE_ALIASES.get(value, value)
+
+
+def _body_language_order(language: str) -> list[str]:
+    wanted = _body_language(language)
+    return ([wanted] if wanted else []) + [lang for lang in _BODY_LANGUAGE_ORDER if lang != wanted]
+
+
+def _language_spellings(language: str, requested: str) -> list[str]:
+    aliases = [alias for alias, canonical in _BODY_LANGUAGE_ALIASES.items() if canonical == language]
+    spellings = [language] + aliases
+    if requested in spellings:
+        spellings.remove(requested)
+        spellings.insert(0, requested)
+    return spellings
+
+
+def _localized_keys(prefixes: tuple[str, ...], language: str) -> list[str]:
+    # Language wins over field-name preference: profile_en must beat an
+    # introduction_ja when the request is English.
+    keys = []
+    for lang in _body_language_order(language):
+        for prefix in prefixes:
+            keys.extend(f"{prefix}_{spelling}" for spelling in _language_spellings(lang, language))
+    return keys + list(prefixes)
 
 
 def _body_keys(prefix: str, language: str) -> list[str]:
     """``("outline", "en")`` -> ``["outline_en", "outline_ja", ...]``."""
-    wanted = str(language or "").strip()
-    order = [wanted] if wanted in _BODY_LANGUAGE_ORDER else []
-    order += [lang for lang in _BODY_LANGUAGE_ORDER if lang != wanted]
-    return [f"{prefix}_{lang}" for lang in order] + [prefix]
+    return _localized_keys((prefix,), language)
+
+
+def _text_choice(facts: dict, prefixes: tuple[str, ...], language: str) -> tuple[str, str, str] | None:
+    for key in _localized_keys(prefixes, language):
+        value = facts.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        effective = ""
+        for prefix in prefixes:
+            if key.startswith(prefix + "_"):
+                effective = _body_language(key[len(prefix) + 1:])
+                break
+        return key, value, effective
+    return None
+
+
+def _body_choice(facts: dict, entity_type: str, language: str) -> tuple[str, str, str] | None:
+    return _text_choice(facts, _BODY_PREFIXES.get(entity_type, ()), language)
 
 
 def _pick(facts: dict, keys: list[str]) -> str | None:
@@ -35,9 +97,12 @@ def _pick(facts: dict, keys: list[str]) -> str | None:
     return None
 
 
-def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
-    name = entity.name_for(language)
+def _render_fact_pack(entity: Entity, language: str = "en") -> FactPack:
+    name = entity.names.get(language) or entity.name_for(_body_language(language))
     facts = entity.facts
+    if entity.type == "card":
+        title = _text_choice(facts, ("prefix",), language)
+        name = title[1] if title else name
     lines = [f"{entity.type.capitalize()}: {name}"]
     lines.append(f"ID: {entity.id}")
 
@@ -46,13 +111,20 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
     if entity.version:
         lines.append(f"Version: {entity.version}")
     lines.append(f"Trust: {entity.trust or trust_for_entity(entity)}")
+    rendered_body = _body_choice(facts, entity.type, language)
+    if rendered_body:
+        actual_language = rendered_body[2] or "unknown"
+        if rendered_body[2] != _body_language(language):
+            actual_language += f" (requested: {language})"
+        # Persisted packs keep text but not the richer selection context.
+        lines.append(f"Body Language: {actual_language}")
 
     if entity.type == "character":
-        unit = _pick(facts, ["unit", "unitName"])
-        birthday = _pick(facts, ["birthday", "birthDate"])
+        unit = _pick(facts, _localized_keys(("unit", "unitName"), language))
+        birthday = _pick(facts, _localized_keys(("birthday", "birthDate"), language))
         height = _pick(facts, ["height"])
-        school = _pick(facts, ["school"])
-        grade = _pick(facts, ["grade"])
+        school = _pick(facts, _localized_keys(("school",), language))
+        grade = _pick(facts, _localized_keys(("grade", "schoolYear"), language))
         if unit:
             lines.append(f"Unit: {unit}")
         if birthday:
@@ -64,18 +136,24 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
         if grade:
             lines.append(f"Grade: {grade}")
     elif entity.type == "card":
-        rarity = _pick(facts, ["rarity", "rarityId"])
-        attribute = _pick(facts, ["attribute"])
-        skill = _pick(facts, ["skill", "skillName"])
-        character = _pick(facts, ["character", "characterName"])
+        rarity = _pick(facts, ["rarity", "rarityId", "cardRarityType"])
+        attribute = _pick(facts, ["attribute", "attr"])
+        skill = _pick(facts, _localized_keys(("cardSkillName", "skillName", "skill"), language))
+        trained_skill = _pick(facts, _localized_keys(("specialTrainingSkillName",), language))
+        character = _pick(facts, _localized_keys(("character", "characterName"), language))
+        character_id = _pick(facts, ["characterId"])
         if character:
             lines.append(f"Character: {character}")
+        if character_id:
+            lines.append(f"Character ID: {character_id}")
         if rarity:
             lines.append(f"Rarity: {rarity}")
         if attribute:
             lines.append(f"Attribute: {attribute}")
         if skill:
             lines.append(f"Skill: {skill}")
+        if trained_skill:
+            lines.append(f"Trained Skill: {trained_skill}")
     elif entity.type == "song":
         composer = _pick(facts, ["composer"])
         lyricist = _pick(facts, ["lyricist"])
@@ -101,21 +179,37 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
             lines.append(f"End: {end}")
         # The registry folds each story's outline onto its event, so an event
         # carries a body too; it belongs in the pack the prompt is built from.
-        outline = _pick(facts, _body_keys("outline", language))
-        if outline:
-            lines.append(f"Outline: {outline}")
+        body = _body_choice(facts, entity.type, language)
+        if body:
+            lines.append(f"Outline: {body[1]}")
     elif entity.type == "event_story":
-        outline = _pick(facts, _body_keys("outline", language))
-        if outline:
-            lines.append(f"Outline: {outline}")
+        body = _body_choice(facts, entity.type, language)
+        if body:
+            lines.append(f"Outline: {body[1]}")
     elif entity.type == "unit":
-        profile = _pick(facts, _body_keys("profileSentence", language) + ["profile"])
-        if profile:
-            lines.append(f"Profile: {profile}")
+        body = _body_choice(facts, entity.type, language)
+        if body:
+            lines.append(f"Profile: {body[1]}")
     elif entity.type == "character_profile":
-        profile = _pick(facts, _body_keys("profileSentence", language) + ["profile"])
-        if profile:
-            lines.append(f"Profile: {profile}")
+        for label, prefixes in (
+            ("Character ID", ("characterId",)),
+            ("Voice", ("characterVoice",)),
+            ("Birthday", ("birthday", "birthDate")),
+            ("Height", ("height",)),
+            ("School", ("school",)),
+            ("School Year", ("schoolYear", "grade")),
+            ("Hobby", ("hobby",)),
+            ("Special Skill", ("specialSkill",)),
+            ("Favorite Food", ("favoriteFood",)),
+            ("Disliked Food", ("hatedFood",)),
+            ("Weakness", ("weak",)),
+        ):
+            value = _pick(facts, _localized_keys(prefixes, language))
+            if value:
+                lines.append(f"{label}: {value}")
+        body = _body_choice(facts, entity.type, language)
+        if body:
+            lines.append(f"Profile: {body[1]}")
     elif entity.type == "gacha":
         start = _pick(facts, ["startAt", "startTime"])
         end = _pick(facts, ["endAt", "endTime"])
@@ -123,6 +217,11 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
             lines.append(f"Start: {start}")
         if end:
             lines.append(f"End: {end}")
+    else:
+        body = _body_choice(facts, entity.type, language)
+        if body:
+            label = "Flavor" if entity.type in _FLAVOR_TYPES else "Sentence"
+            lines.append(f"{label}: {body[1]}")
 
     raw_json_tokens = estimate_tokens(json.dumps({"names": entity.names, "facts": facts}, ensure_ascii=False))
     text = "\n".join(lines)
@@ -134,6 +233,97 @@ def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
         raw_json_tokens=raw_json_tokens,
         fact_pack_tokens=estimate_tokens(text),
     )
+
+
+def build_fact_pack_with_context(
+    entity: Entity, language: str = "en", *, region: str | None = None,
+) -> tuple[FactPack, dict]:
+    """Render one current snapshot and disclose the facts' actual scope.
+
+    Multilingual body fields are not common facts: other regions may lack
+    that language entirely. Without an explicit region, a body-carrying
+    entity can select a language-bearing regional snapshot, but never merge
+    scalars from several snapshots or choose among conflicting bodies.
+    """
+    selected = entity
+    scoped = None
+    needs_region = False
+    available_regions = sorted(entity.region_facts)
+    if region is not None:
+        if not region:
+            raise ValueError("region must not be empty")
+        scoped = entity.region_facts.get(region)
+        # An explicit region is authoritative. Legacy facts of unknown
+        # coverage cannot be presented as that region's data.
+        selected = replace(entity, facts=dict(scoped.facts) if scoped else {},
+                           regions=[region] if scoped else [],
+                           source=scoped.source if scoped else "",
+                           version=scoped.version if scoped else None)
+        region_scope = "region" if scoped else "entity"
+        coverage = "available" if scoped else "missing"
+    elif entity.region_facts:
+        common, _ = project_common_facts(entity.region_facts, entity.regions)
+        selected = replace(entity, facts=common)
+        region_scope = "common"
+        coverage = "available"
+        if entity.type in _BODY_PREFIXES:
+            choices = [(key, _body_choice(rf.facts, entity.type, language))
+                       for key, rf in sorted(entity.region_facts.items())]
+            for effective in _body_language_order(language) + [""]:
+                candidates = [(key, choice) for key, choice in choices
+                              if choice is not None and choice[2] == effective]
+                if not candidates:
+                    continue
+                native_candidates = [(key, choice) for key, choice in candidates
+                                     if key in REGIONS and _body_language(REGIONS[key].language) == effective]
+                comparable = candidates
+                if len(native_candidates) == 1:
+                    comparable = native_candidates
+                body_conflict = len({choice[1] for _, choice in candidates}) != 1
+                scalar_conflict = len({json.dumps(entity.region_facts[key].facts,
+                                                 ensure_ascii=False, sort_keys=True)
+                                       for key, _ in comparable}) != 1
+                if body_conflict or scalar_conflict:
+                    needs_region = True
+                    coverage = "needs_region"
+                    # Common alternate fields must not hide a disagreement
+                    # in the preferred field for this language.
+                    body_fields = set(_localized_keys(_BODY_PREFIXES[entity.type], language))
+                    selected = replace(selected, facts={key: value for key, value in common.items()
+                                                        if key not in body_fields})
+                    break
+                region = comparable[0][0]
+                scoped = entity.region_facts[region]
+                selected = replace(entity, facts=dict(scoped.facts), regions=[region],
+                                   source=scoped.source, version=scoped.version)
+                region_scope = "region"
+                break
+    else:
+        region_scope = "entity"
+        coverage = "unknown"
+
+    body = _body_choice(selected.facts, selected.type, language)
+    effective = _effective_body_language(selected.facts, selected.type, language)
+    content_status = ("needs_region" if needs_region else
+                      "missing" if coverage == "missing" or effective is None else "available")
+    context = {
+        "region": region,
+        "region_scope": region_scope,
+        "coverage": coverage,
+        "needs_region": needs_region,
+        "available_regions": available_regions,
+        "content_status": content_status,
+        "effective_language": effective,
+        "body_field": body[0] if body else None,
+        "source": scoped.source if scoped else selected.source or None,
+        "version": scoped.version if scoped else selected.version,
+        "retrieval": dict(scoped.retrieval) if scoped else None,
+    }
+    return _render_fact_pack(selected, language), context
+
+
+def build_fact_pack(entity: Entity, language: str = "en") -> FactPack:
+    return build_fact_pack_with_context(entity, language)[0]
 
 
 # 各实体类型用于时序判定的时间字段（毫秒时间戳）。按优先级取第一个可用的：
@@ -171,16 +361,19 @@ def entity_timestamp(entity: Entity, *, region: str) -> int | None:
 
 
 def _facts_for_region(entity: Entity, region: str) -> dict:
-    """该区服的事实；无逐区服数据时退回实体级 facts。
+    """该区服的事实；仅旧实体完全无逐区服数据时退回实体级 facts。
 
     退回是一种**明确降级**：调用方从 ``entity.region_facts`` 是否为空即可
     知道这些值不具区服归属（见返回的 ``region_scope``）。
+    已有逐区服数据但缺少所请求区服时返回空事实，不借用共同事实。
     """
     if not region:
         raise ValueError("region is required for region-aware fact packs")
     scoped = entity.region_facts.get(region)
     if scoped is not None:
         return dict(scoped.facts or {})
+    if entity.region_facts:
+        return {}
     return dict(entity.facts or {})
 
 
@@ -215,8 +408,9 @@ def build_fact_pack_at(
     "任意剧集进度防剧透"。
 
     ``region`` 必填：公开时间随区服不同，所以调用方必须说明问的是哪个区服，
-    而不是让函数默认挑一个。没有该区服的逐区服数据时退回实体级 facts，并在
-    ``region_scope`` 里标明这是降级（``entity``）而非该区服的确切数据。
+    而不是让函数默认挑一个。旧实体完全没有逐区服数据时退回实体级 facts，
+    并在 ``region_scope`` 里标明这是降级（``entity``）而非确切区服数据。
+    已有逐区服数据但缺少所请求区服时，不借用其他区服或共同发布时间。
 
     ``as_of`` 为毫秒时间戳，``as_of_iso`` 为 ISO 字符串（二者互斥，都不给则
     视为"现在"）。返回::
@@ -273,7 +467,7 @@ def build_fact_pack_at(
 
     if state == "past":
         scoped = _entity_for_region(entity, region)
-        pack = build_fact_pack(scoped, language=language)
+        pack = _render_fact_pack(scoped, language=language)
         effective = _effective_body_language(scoped.facts, scoped.type, language)
         past = {"text": pack.text, "fact_pack_tokens": pack.fact_pack_tokens}
         future = {"text": "", "fact_pack_tokens": 0}
@@ -290,7 +484,7 @@ def build_fact_pack_at(
     else:
         # Withhold everything: no text, no name, no summary.  Count what was
         # held back so callers can report coverage without seeing content.
-        held = build_fact_pack(entity, language=language)
+        held = _render_fact_pack(_entity_for_region(entity, region), language=language)
         past = {"text": "", "fact_pack_tokens": 0}
         future = {"text": "", "fact_pack_tokens": 0}
         withheld = {
@@ -324,21 +518,13 @@ def build_fact_pack_at(
 def _entity_for_region(entity: Entity, region: str) -> Entity:
     """The entity as its region sees it, for the fact-pack body."""
     facts = _facts_for_region(entity, region)
+    scoped = entity.region_facts.get(region)
+    if scoped is not None:
+        return replace(entity, facts=facts, region=region, regions=[region],
+                       source=scoped.source, version=scoped.version)
     if facts == (entity.facts or {}):
         return entity
     return replace(entity, facts=facts)
-
-
-#: Which fact fields carry the multilingual body for each entity type.  An
-#: event carries its story outlines (the registry folds ``outline_<lang>`` from
-#: eventStories onto the event's region facts), so it has a body as well as a
-#: public time.
-_BODY_PREFIXES: dict[str, tuple[str, ...]] = {
-    "event": ("outline",),
-    "event_story": ("outline",),
-    "unit": ("profileSentence", "profile"),
-    "character_profile": ("profileSentence", "profile"),
-}
 
 
 def _effective_body_language(facts: dict, entity_type: str, language: str) -> str | None:
@@ -349,20 +535,10 @@ def _effective_body_language(facts: dict, entity_type: str, language: str) -> st
     from "no body in your language, here is another one" instead of receiving
     a silent substitution.
     """
-    prefixes = _BODY_PREFIXES.get(entity_type, ())
-    if not prefixes:
+    if entity_type not in _BODY_PREFIXES:
         return language  # not a body-carrying type: nothing to substitute
-    for prefix in prefixes:
-        # Same order _pick uses: the first key with a value is the body that
-        # was rendered, so its language is the effective one.
-        for key in _body_keys(prefix, language):
-            if not str(facts.get(key) or "").strip():
-                continue
-            for lang in _BODY_LANGUAGE_ORDER:
-                if key.endswith("_" + lang):
-                    return lang
-            return ""  # unsuffixed field: its language is unknown
-    return None
+    body = _body_choice(facts, entity_type, language)
+    return body[2] if body else None
 
 
 def _parse_iso_ms(value: str) -> int:

@@ -9,7 +9,7 @@
 
 English | [中文](README.zh-CN.md)
 
-[![Release](https://img.shields.io/badge/Release-0.4.1--alpha-006F78?style=flat&labelColor=17263B)](pyproject.toml) [![Runtime](https://img.shields.io/badge/Runtime-Python%203.10%2B-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![Platform](https://img.shields.io/badge/Platform-Cross--platform-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![License](https://img.shields.io/badge/License-MIT-AC246D?style=flat&labelColor=17263B)](LICENSE)
+[![Release](https://img.shields.io/badge/Release-0.4.2--alpha-006F78?style=flat&labelColor=17263B)](pyproject.toml) [![Runtime](https://img.shields.io/badge/Runtime-Python%203.10%2B-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![Platform](https://img.shields.io/badge/Platform-Cross--platform-4F6175?style=flat&labelColor=17263B)](pyproject.toml) [![License](https://img.shields.io/badge/License-MIT-AC246D?style=flat&labelColor=17263B)](LICENSE)
 
 <!-- readme-navigation:start -->
 <p>
@@ -25,13 +25,30 @@ English | [中文](README.zh-CN.md)
 
 **SekaiSync** is built specifically for Large Language Models (LLMs) and coding Agents (such as Claude, Cursor, and ChatGPT). It syncs official Master Data, multi-region localized terminology, and community story texts for *Project SEKAI* (PJ:SEKAI) into a local `store/`. Exposing retrieval capabilities through **MCP (Model Context Protocol)** or CLI commands, it ensures AI Agents rely on **ground-truth local data** when answering game-related questions—eliminating AI hallucinations at the source.
 
-### Current Development Goal
+### Scraper Checkpoint
 
-The [261002 checkpoint goal](docs/PROJECT_GOALS_261002.md) timeboxes the next scraper quality leap to **2026-10-02 20:00, Asia/Singapore**. On new five-language material, the targets are at least 90% exact source-expression recall, at least 90% correct end-to-end coverage across 200 fixed cross-language obligations, and at least a 20-percentage-point improvement over the released baseline. Public interfaces and usage remain unchanged. Results and remaining gaps must be reported before the checkpoint is merged into `main`; these are acceptance targets, not achieved scores.
+The merged scraper engineering checkpoint is named **`sekaisync-scraper-261002`**
+(`main` commit `b6c70aa`, historical Git tag `scraper-261002`). This is a scraper
+checkpoint identifier, not a package version or a separately trained model.
+It is included in the [0.4.2-alpha release notes](CHANGELOG.md). Release
+preparation for **0.4.2-alpha** includes the subsequent
+[issue #1](https://github.com/omoinoki/sekaisync/issues/1) repair: character-profile
+bodies and linked character names survive extraction, regional retrieval, and
+FactPack rendering. Existing stores still need a raw-data rebuild or another
+sync; upgrading code does not restore fields already discarded from the database.
+See the [recovery instructions](docs/ISSUE_1_PROFILE_RECOVERY_261003.md).
+
+The coordinated SekaiSync Connect **0.3.9-alpha.1** update adapts DSH tools to
+regional evidence and explicit error states. Its targeted installed-host UI
+checks do not establish online-model quality or complete GUI coverage; the
+unchanged WinUI3 client still has a multi-region body-view limitation. See the
+[release scope and validation boundaries](CHANGELOG.md).
+
+The [261002 checkpoint goal](docs/PROJECT_GOALS_261002.md) timeboxed the scraper quality work to **2026-10-02 20:00, Asia/Singapore**. On new five-language material, the targets were at least 90% exact source-expression recall, at least 90% correct end-to-end coverage across 200 fixed cross-language obligations, and at least a 20-percentage-point improvement over the released baseline. Public interfaces and usage remain unchanged. These are historical acceptance targets, not achieved scores.
 
 Exhaustive, sense-correct, zero-error correspondence across all jointly released content remains the long-term vision, not a conclusion established by a finite benchmark. See the [scraper evolution roadmap](docs/TERM_SCRAPER_EVOLUTION_ROADMAP_2026-09-29.md).
 
-This sprint is closed and recurring work is paused. Engineering checks passed; full quality acceptance did not. See the [261002 checkpoint](docs/SCRAPER_CHECKPOINT_261002.md) for the separate frozen measurements and unexecuted work.
+This sprint is closed. The subsequent full-library rescrape, comparisons, and recurring runs are also paused at the user's request. Engineering checks passed; full quality acceptance did not. See the [sekaisync-scraper-261002 checkpoint](docs/SCRAPER_CHECKPOINT_261002.md) for the separate frozen measurements and unexecuted work. Partial rescrape results are not whole-library accuracy or speedup claims.
 
 
 

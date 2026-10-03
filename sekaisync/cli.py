@@ -240,7 +240,7 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 def cmd_factpack(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     core = SekaiSyncCore(config.store_root)
-    pack = core.fact_pack(args.id, language=args.language)
+    pack = core.fact_pack(args.id, language=args.language, region=getattr(args, "region", None))
     if pack is None:
         print(json.dumps({"error": f"Entity not found: {args.id}"}, ensure_ascii=False))
         return 1
@@ -1670,6 +1670,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pack = sub.add_parser("factpack", help="Render a compact fact pack")
     p_pack.add_argument("--id", required=True)
     p_pack.add_argument("--language", default="en")
+    p_pack.add_argument("--region", default=None, help="Select one server's current facts")
     p_pack.set_defaults(func=cmd_factpack)
 
     p_stats = sub.add_parser("stats", help="Show fact-pack token savings")

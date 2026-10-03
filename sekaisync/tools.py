@@ -489,11 +489,13 @@ def build_tools_registry() -> tuple[ToolSpec, ...]:
         ToolSpec(
             "fact_pack",
             "sekaisync_fact_pack",
-            "Return a compact fact pack for one entity ID.",
+            "Return a compact fact pack for one entity ID, disclosing its actual "
+            "region and body language. An optional region selects only that server's facts.",
             "fact_pack",
             (
                 Param("entity_id", "str", required=True, max_length=256),
                 Param("language", "str", "en", max_length=32),
+                Param("region", "str", max_length=32),
             ),
             http_path="/api/v1/fact_pack",
             http_not_found="Entity not found: {entity_id}",

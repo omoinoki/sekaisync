@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SekaiSync Local API",
-    "version": "0.2.0"
+    "version": "0.4.2-alpha"
   },
   "servers": [
     {
@@ -30,10 +30,11 @@
     "/api/v1/fact_pack": {
       "get": {
         "operationId": "factPack",
-        "summary": "Return a compact fact pack for an entity",
+        "summary": "Return a compact fact pack with actual region and body language",
         "parameters": [
           {"name": "entity_id", "in": "query", "required": true, "schema": {"type": "string"}},
-          {"name": "language", "in": "query", "required": false, "schema": {"type": "string", "default": "en"}}
+          {"name": "language", "in": "query", "required": false, "schema": {"type": "string", "default": "en"}},
+          {"name": "region", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Select only this server's current facts; missing regional data is not borrowed from another server."}
         ],
         "responses": {
           "200": {

@@ -19,6 +19,7 @@ Use this skill whenever the conversation involves Project Sekai characters, song
 
 - Use only the official localized name returned by SekaiSync.
 - Do not add facts absent from the returned record.
+- Treat official role labels in character profiles as snapshots of team responsibilities, not exhaustive capability or ownership lists. A label such as lyricist does not imply inability to compose or play an instrument, or lack of ownership of one. Require explicit supporting evidence for negative claims; missing evidence is unknown, not false.
 - If there is no match, state that the local knowledge base does not cover the entity.
 - The local store covers master metadata only. Full story text, images, audio, Live2D, charts, news and player data are marked `missing` in freshness; return unverified for those categories.
 - Use `sekaisync_web_lookup` for crawled text from altsource_sv / altsource_ms. Crawling itself stays a CLI action with TOS consent.

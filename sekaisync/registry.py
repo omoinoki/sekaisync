@@ -84,19 +84,30 @@ _FACT_FIELDS = [
     "outline",
     "profileSentence",
     "profile",
+    "introduction",
     "description",
     "summary",
     "catchCopy",
+    "sentence",
+    "flavorText",
 ]
 
 LANGUAGE_TEXT_FIELDS = {
     "outline",
     "profileSentence",
     "profile",
+    "introduction",
     "description",
     "summary",
     "catchCopy",
+    "sentence",
+    "flavorText",
 }
+
+_CHARACTER_PROFILE_TEXT_FIELDS = frozenset({
+    "characterVoice", "birthday", "school", "schoolYear", "hobby",
+    "specialSkill", "favoriteFood", "hatedFood", "weak", "introduction",
+})
 
 _KIND_ALIASES = {
     "gameCharacters": "character",
@@ -326,7 +337,9 @@ def extract_names(record: dict) -> dict[str, str]:
     return names
 
 
-def extract_facts(record: dict, names: dict[str, str], language: str = "ja") -> dict:
+def extract_facts(
+    record: dict, names: dict[str, str], language: str = "ja", *, kind: str = "",
+) -> dict:
     facts = {}
     for field in _FACT_FIELDS:
         value = record.get(field)
@@ -337,6 +350,21 @@ def extract_facts(record: dict, names: dict[str, str], language: str = "ja") -> 
                 facts[field] = value
     if "character" in names:
         facts.setdefault("character", names["character"])
+    if kind == "character_profile":
+        for field in sorted(_CHARACTER_PROFILE_TEXT_FIELDS):
+            value = record.get(field)
+            if value not in (None, "", [], {}):
+                facts[f"{field}_{language}"] = value
+        for field in ("characterId", "scenarioId"):
+            if record.get(field) not in (None, ""):
+                facts[field] = record[field]
+    elif kind == "card":
+        for field in ("prefix", "cardSkillName", "specialTrainingSkillName"):
+            if record.get(field) not in (None, ""):
+                facts[f"{field}_{language}"] = record[field]
+        for field in ("cardRarityType", "attr", "characterId"):
+            if record.get(field) not in (None, ""):
+                facts[field] = record[field]
     return facts
 
 
@@ -378,6 +406,8 @@ def build_registry(
     snapshot = raw_snapshot or capture_raw_snapshot(store_root, regions, generation)
     grouped: dict[str, Entity] = {}
     name_candidates: dict[str, dict[str, set[str]]] = {}
+    regional_names: dict[tuple[str, str], tuple[dict[str, str], dict]] = {}
+    profile_inputs = []
     story_inputs = []
     for region in regions:
         base = snapshot.master_dirs.get(region)
@@ -396,7 +426,10 @@ def build_registry(
                 prefix = 'demo:' if region == 'demo' else ''
                 entity_id = f'{prefix}{kind}:{game_id}'
                 names = extract_names(record)
-                facts = extract_facts(record, names, language=language)
+                if kind == 'card' and isinstance(record.get('prefix'), str) and record['prefix'].strip():
+                    names.setdefault('cardName', record['prefix'])
+                    names.setdefault(language, record['prefix'])
+                facts = extract_facts(record, names, language=language, kind=kind)
                 fallback = next((names[key] for key in (
                     'full', 'name', 'unitName', 'unitProfileName', 'songName',
                     'eventName', 'cardName', 'title') if names.get(key)), '')
@@ -416,10 +449,30 @@ def build_registry(
                 for key, value in names.items():
                     if value:
                         candidates.setdefault(key, set()).add(value)
+                if kind == 'character':
+                    regional_names[entity_id, region] = (names, dict(retrieval))
+                elif kind == 'character_profile' and record.get('characterId') is not None:
+                    profile_inputs.append((entity_id, f"{prefix}character:{record['characterId']}", region))
                 if path.stem == 'eventStories':
                     event_id = record.get('eventId') or record.get('id')
                     story_inputs.append((f'{prefix}event:{event_id}', entity_id,
                                          region, language, record, retrieval))
+
+    # Profiles have a foreign key, not their own display names. Join only the
+    # same region and pinned generation, never a coincidentally equal row ID.
+    for profile_id, character_id, region in profile_inputs:
+        related = regional_names.get((character_id, region))
+        if related is None:
+            continue
+        names, retrieval = related
+        candidates = name_candidates[profile_id]
+        for key, value in names.items():
+            if key not in candidates:
+                candidates[key] = {value}
+            else:
+                candidates[key].add(value)
+        rf = grouped[profile_id].region_facts[region]
+        rf.retrieval.setdefault('name_sources', {})[character_id] = dict(retrieval)
 
     for event_id, story_id, region, language, record, retrieval in story_inputs:
         event = grouped.get(event_id)
@@ -531,16 +584,22 @@ def lookup_entity(
             names.append(entity.canonical_name)
         selected_facts = (entity_for_region(entity, region)['facts']
                           if entity.region_facts or region else entity.facts)
+        searchable_facts = [selected_facts]
+        if region is None and entity.region_facts:
+            # Searching localized text is not a claim that it is common to all
+            # servers. Core returns the regional evidence alongside the match.
+            searchable_facts.extend(rf.facts for rf in entity.region_facts.values())
         fact_values = [
             str(value)
-            for value in selected_facts.values()
+            for facts in searchable_facts
+            for value in facts.values()
             if isinstance(value, (str, int, float))
             and not str(value).isdigit()
         ]
         all_texts = names + fact_values
         matched = best_match(query, all_texts)
         id_suffix = normalize_name(str(entity.id).rsplit(":", 1)[-1])
-        id_score = 100 if query_key and id_suffix == query_key else 0
+        id_score = 100 if query_key and query_key in {id_suffix, normalize_name(entity.id)} else 0
         name, score = (entity.id, id_score) if matched is None else matched
         if matched is not None and id_score >= score:
             name, score = entity.id, id_score

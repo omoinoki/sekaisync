@@ -44,9 +44,12 @@ settings.json.legacy
 # extra copies a workspace may keep.
 settings.local.json
 settings.*.local.json
-docs/
+!docs/
+docs/*
+!docs/ISSUE_1_PROFILE_RECOVERY_261003.md
 HANDOFF.md
 .tmp-test/
+/.tmp-pipeline-tests/
 
 # Generated analysis artifacts under data/.
 #
@@ -98,3 +101,6 @@ htmlcov/
 /.workbuddy/
 /experiment/
 /ux-handbook/
+
+# Local motion design film, source assets and renders.
+/sekai-motion-film/
