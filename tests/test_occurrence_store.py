@@ -1,4 +1,5 @@
 import copy
+from contextlib import ExitStack
 import hashlib
 from pathlib import Path
 import tempfile
@@ -20,7 +21,9 @@ class OccurrenceStoreTests(unittest.TestCase):
                 self.pages.append(dict(id=f"web:fixture:{lang}:event_story:1:{story}", source="fixture", language=lang,
                                        trust="B", kind="event_story", text=text, story_key=f"event:1:{story}"))
         dbstore.upsert_web_pages(self.root, "fixture", self.pages)
-        self.conn = self.enterContext(dbstore.connect(self.root))
+        contexts = ExitStack()
+        self.addCleanup(contexts.close)
+        self.conn = contexts.enter_context(dbstore.connect(self.root))
 
     def anchor(self, lang, story, surface, last=False):
         page = next(page for page in self.pages if page["id"] == f"web:fixture:{lang}:event_story:1:{story}")

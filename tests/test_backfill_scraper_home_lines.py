@@ -9,6 +9,7 @@ from unittest.mock import patch
 from scripts import backfill_scraper_home_lines as backfill
 from scripts import census_scraper_home_lines as census
 from sekaisync.layout import web_consent_path
+from tests.test_backfill_scraper_unit_openings import offline_site_profile
 
 
 class OfflineHomeBackfillTests(unittest.TestCase):
@@ -16,6 +17,9 @@ class OfflineHomeBackfillTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        profile = patch("sekaisync.config.load_site_profile", return_value=offline_site_profile())
+        profile.start()
+        self.addCleanup(profile.stop)
         self.generation, self.production = self.root / "generation", self.root / "production"
         self.inventory, self.out = self.root / "inventory", self.root / "isolated"
         for language, region in census.REGIONS.items():
@@ -76,7 +80,7 @@ class OfflineHomeBackfillTests(unittest.TestCase):
                     backfill.prepare_requests(self.inventory)
 
     def test_public_path_exact_25_two_fields_zero_network_resume_idempotent(self):
-        with self.assert_no_network() as network:
+        with self.assert_no_network() as network, patch("sekaisync.config.settings_path", side_effect=AssertionError("Private settings must not be read")):
             report = backfill.run(self.inventory, self.out, self.production)
         network.assert_not_called()
         self.assertEqual("complete", report["status"])

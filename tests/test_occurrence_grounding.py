@@ -1,5 +1,6 @@
 """Adversarial occurrence anchors must not borrow packet/same-story authority."""
 import copy
+from contextlib import ExitStack
 import hashlib
 from pathlib import Path
 import tempfile
@@ -27,7 +28,9 @@ class OccurrenceGroundingTests(unittest.TestCase):
         translation = next(item for item in items if item.kind != "discovery")
         self.item = ap._occurrence_item(translation)
         self.row = self.item._context["rows"][0]
-        self.conn = self.enterContext(dbstore.connect(self.store))
+        contexts = ExitStack()
+        self.addCleanup(contexts.close)
+        self.conn = contexts.enter_context(dbstore.connect(self.store))
 
     def valid_relation(self):
         source = ap._body_term_segments(self.row["source"]["text"], "声音", self.row["source"]["start"])[0]

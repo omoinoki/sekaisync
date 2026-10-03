@@ -9,7 +9,7 @@ import urllib.error
 from unittest.mock import patch
 
 from scripts import backfill_scraper_area_tutorial as bf
-from tests.test_backfill_scraper_unit_openings import Response
+from tests.test_backfill_scraper_unit_openings import Response, offline_site_profile
 from sekaisync.layout import web_consent_path
 
 
@@ -18,6 +18,9 @@ class AreaTutorialBackfillTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        profile = patch("sekaisync.config.load_site_profile", return_value=offline_site_profile())
+        profile.start()
+        self.addCleanup(profile.stop)
         self.production, self.out = self.root / "production", self.root / "isolated"
         consent = web_consent_path(self.production)
         consent.parent.mkdir(parents=True)
@@ -98,12 +101,13 @@ class AreaTutorialBackfillTests(unittest.TestCase):
         return [url for url in self.urls if "/scenario/actionset/" in url]
 
     def test_public_crawler_exact_four_uses_local_ids_and_preserves_production(self):
-        with self.network():
+        with self.network(), patch("sekaisync.config.settings_path", side_effect=AssertionError("Private settings must not be read")):
             report = bf.run(self.request_path, self.out, self.production, delay=0)
         self.assertEqual("complete", report["status"])
         self.assertEqual(4, report["accepted_locale_assets"])
         self.assertEqual(4, report["actual_body_requests"])
         self.assertEqual(4, len(self.scenario_urls()))
+        self.assertTrue(all(bf.urlsplit(url).hostname.endswith(".fixture.invalid") for url in self.urls))
         self.assertEqual(4, report["persisted_pages"])
         self.assertTrue(all(row["identity_audit"]["identity_status"] == "expected" for row in report["details"]))
         for language in bf.LANGUAGES:

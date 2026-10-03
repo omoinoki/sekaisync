@@ -16,6 +16,9 @@ release history is not reconstructed here.
   changes below; the earlier scraper checkpoint alone did not fix it. The frozen
   functional snapshot passed 2,140 tests, and release preparation is now
   authorized. This release does not rebuild existing user stores automatically.
+- Make isolated backfill tests use explicit offline source profiles instead of
+  depending on the maintainer's local endpoints. Keep occurrence-test cleanup
+  compatible with Python 3.10; production endpoint validation is unchanged.
 
 ### Master Description Recovery
 

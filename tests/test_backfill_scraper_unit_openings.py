@@ -8,7 +8,37 @@ import unittest
 from unittest.mock import patch
 
 from scripts import backfill_scraper_unit_openings as bf
+from sekaisync.config import MoesekaiSettings, SiteSettings, ViewerSettings
 from sekaisync.layout import web_consent_path
+
+
+def offline_site_profile():
+    """Explicit endpoints for mocked backfills, independent of private settings."""
+    return (
+        SiteSettings(id="altsource_sv", backend="sekai_viewer", viewer=ViewerSettings(
+            site_base="https://sv.fixture.invalid",
+            master_base="https://master.fixture.invalid",
+            asset_base="https://sv-assets.fixture.invalid",
+            asset_buckets=(("jp", "sekai-jp-assets"), ("en", "sekai-en-assets"),
+                           ("tc", "sekai-tc-assets"), ("kr", "sekai-kr-assets"),
+                           ("cn", "sekai-cn-assets")),
+            i18n_base="https://i18n.fixture.invalid",
+        )),
+        SiteSettings(id="altsource_ms", backend="moesekai", moesekai=MoesekaiSettings(
+            site_base="https://ms.fixture.invalid",
+            sitemap_url="https://ms.fixture.invalid/sitemap.xml",
+            story_detail_base="https://ms.fixture.invalid/story/detail",
+            metadata_bases=("https://metadata.fixture.invalid",),
+            asset_bases=("https://ms-assets.fixture.invalid",),
+            translation_base="https://translations.fixture.invalid",
+            news_base="https://news.fixture.invalid",
+            locale_servers=(("zh-cn", "cn"), ("zh-tw", "tw"), ("ja-jp", "jp"),
+                            ("en-us", "en"), ("ko-kr", "kr")),
+            locale_languages=(("zh-cn", "zh_hans"), ("zh-tw", "zh_hant"),
+                              ("ja-jp", "ja"), ("en-us", "en"), ("ko-kr", "ko")),
+            fallback_to_viewer_cdn=False,
+        )),
+    )
 
 
 class Response(BytesIO):
@@ -29,6 +59,9 @@ class OpeningBackfillTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        profile = patch("sekaisync.config.load_site_profile", return_value=offline_site_profile())
+        profile.start()
+        self.addCleanup(profile.stop)
         self.production = self.root / "production"
         self.out = self.root / "isolated"
         consent = web_consent_path(self.production)
@@ -98,12 +131,13 @@ class OpeningBackfillTests(unittest.TestCase):
             yield
 
     def test_public_crawler_recovers_exact_25_and_production_unchanged(self):
-        with self.network():
+        with self.network(), patch("sekaisync.config.settings_path", side_effect=AssertionError("Private settings must not be read")):
             report = bf.run(self.request_path, self.out, self.production, delay=0)
         self.assertEqual("complete", report["status"])
         self.assertEqual(25, report["accepted_locale_units"])
         self.assertEqual(25, report["persisted_pages"])
         self.assertEqual(25, sum("scenario/unitstory/" in url for url in self.urls))
+        self.assertTrue(all(bf.urlsplit(url).hostname.endswith(".fixture.invalid") for url in self.urls))
         self.assertTrue(all(row["identity_audit"]["status"] == "verified" for row in report["details"]))
         self.assertEqual(self.consent_raw, web_consent_path(self.production).read_bytes())
         self.assertFalse((self.production / "kb/sekaisync.db").exists())
@@ -122,10 +156,11 @@ class OpeningBackfillTests(unittest.TestCase):
         self.assertTrue(all(not row["nonempty_text"] for row in validations))
 
     def test_ms_public_crawler_uses_exact_nested_profile_identity(self):
-        with self.network():
+        with self.network(), patch("sekaisync.config.settings_path", side_effect=AssertionError("Private settings must not be read")):
             report = bf.run(self.request_path, self.out, self.production, source="altsource_ms", delay=0)
         self.assertEqual("complete", report["status"])
         self.assertEqual(25, report["accepted_locale_units"])
+        self.assertTrue(all(bf.urlsplit(url).hostname.endswith(".fixture.invalid") for url in self.urls))
         self.assertTrue(all(row["identity_audit"]["status"] == "verified" for row in report["details"]))
         self.assertFalse(report["auxiliary_local_profiles"]["retrieval_sealed"])
         self.assertEqual(5, len(report["auxiliary_local_profiles"]["files"]))
