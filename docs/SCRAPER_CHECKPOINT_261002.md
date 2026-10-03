@@ -1,26 +1,14 @@
 # 刮削检查点 sekaisync-scraper-261002
 
-## 命名与发布准备（2026-10-03）
+## 检查点信息
 
-正式名称：`sekaisync-scraper-261002`。对应已合并产品提交 `b6c70aa`；既有
-注解 Git 标签 `scraper-261002` 保留，不改名或重建。该名称是刮削器工程
-检查点标识，不是软件版本或独立训练模型。历史产物目录、摘要和评分不改写。
+正式名称：`sekaisync-scraper-261002`。对应已合并产品提交 `b6c70aa`，历史注解 Git 标签为 `scraper-261002`。
 
-本检查点计入 [0.4.2-alpha 候选发布说明](../CHANGELOG.zh-CN.md)，现已授权
-准备 SekaiSync `0.4.2-alpha` 与配套 Connect `0.3.9-alpha.1`。
-[Issue #1](https://github.com/omoinoki/sekaisync/issues/1) 的角色档案正文与按角色名
-检索问题在后续实现中修复，2140 项冻结功能回归通过，见
-[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。该后续验证与本检查点的历史
-工程/语义成绩分开记录；发布准备不表示最终包、GitHub 发布或用户旧库恢复
-已经完成，也不能把历史检查点测试冒充这些交付证据。
-后续全库重刮、对比和每小时续跑已按用户要求暂停；局部生产库增长不构成
-全库精度、完整度或吞吐提升证明。以下封存试验继续按各自快照单列。
+后续 [Issue #1](https://github.com/omoinoki/sekaisync/issues/1) 的角色档案正文与名称检索修复另见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。以下记录本检查点的历史工程与质量结果。
 
 状态：261002已封存，工程通过，完整质量未验收，停止持续改进。
 本文件不是发布说明或已经达标的证明。首轮已封存成绩与修复后工程/源诊断
-证据分列；历史检查点提交 `b6c70aa` 与注解标签 `scraper-261002` 的关系保留，
-后续 `main` 发布提交不重写该标签。未执行或未完成阶段不会被写成成功；
-本文件不授权自动重启新刮削任务。
+证据分列；历史检查点由提交 `b6c70aa` 与注解标签 `scraper-261002` 定位。
 
 ## 目标与时间
 
@@ -43,15 +31,6 @@ Asia/Singapore：2026-10-02 19:15 冻结功能/新试验，20:00 结束持续改
 原两故事支持门槛不降低；省译和未决不会被重命名为成功。
 
 ## 当前工程证据
-
-2026-10-03 运行健康复检：相同产品清单再次全量 2090/2090 PASS，
-unittest 553.266秒，封存 runner 556.138秒；测试前后产品未变。
-本地报告为 `work/scraper-261002/validation-health-20261003/report.json`，
-SHA256：`6531ccbb64b9a1ba17fa66d365899bbcedf8b0a516e61581b9088a7ed294497e`。
-隔离 wheel 的 CLI/MCP/HTTP 基础烟测通过；生产 SQLite 只读 quick_check=ok，
-revision338 未变。Connect mock 7/7通过，WinUI3已提交gitlink隔离Debug/x64
-编译通过（未启动GUI）。汇总见本地 `work/scraper-261002/HEALTH_CHECK_20261003.md`。
-该复检不包含 issue #1 修复、在线全量同步或新语义质量测量，不替换下方封存证据。
 
 候选产品正式 CI 命令：`python -B -X utf8 -m unittest discover -s tests -t . -v`。
 当前修复后快照 `work/scraper-261002/validation-03/report.json`：2090/2090 PASS，

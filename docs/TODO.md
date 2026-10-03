@@ -1,19 +1,15 @@
 # SekaiSync TODO 状态
 
-## 当前发布准备（2026-10-03）
+## 当前状态与后续工作（2026-10-03）
 
-- [x] [Issue #1：character_profile 丢失档案正文，且按角色名不可达](https://github.com/omoinoki/sekaisync/issues/1) 的本地实现：档案正文、关联名称、区服证据及行为边界已修复，并扩展同类描述遗漏回归。见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。
-- [x] 本轮冻结功能验证：2140/2140 PASS，486.321 秒，Python 文件运行前后 SHA256 一致；隔离 wheel 烟测通过。版本元数据更新后的最终发布产物仍按发布流程核对，不把旧快照哈希冒充最终包哈希。
-- [x] 已明确授权准备 SekaiSync `0.4.2-alpha`，并协调发布 SekaiSync Connect `0.3.9-alpha.1`。
-- [x] DSH 配套修复：canonical 89/89 单测、实际安装 ASAR ToolRuntime、隔离 profile 的真实 Web mode 面板保存/reload/连接/停用启用及 9 次工具调用通过。无在线模型质量或全部 GUI 验收声明。范围见[更新日志](../CHANGELOG.zh-CN.md)。
-- [ ] 完成提交、最终包核对、版本标记与 GitHub 发布，并依据实际交付结果更新 issue 状态；准备说明不等于发布动作已经完成。
-- [ ] 用户旧库恢复：升级后从 raw 重建或重新 sync，并重启旧 MCP/HTTP 进程。已验证恢复流程，不表示本机或用户生产库已经恢复。
-- [ ] WinUI3 多区服实体详情/正文搜索适配仍为独立客户端后续工作，不纳入本轮源码发布。
+- [x] [Issue #1：character_profile 丢失档案正文，且按角色名不可达](https://github.com/omoinoki/sekaisync/issues/1)：已修复档案正文、关联名称和区服证据，并扩展同类描述遗漏回归。见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。
+- [x] 已发布 [SekaiSync Connect 0.3.9-alpha.1](https://github.com/omoinoki/dsh-sekaisync-connect/releases/tag/v0.3.9-alpha.1)。
+- [ ] 发布 SekaiSync `0.4.2-alpha`。
+- [ ] WinUI3 多区服实体详情与正文搜索适配。
 
-已合并刮削检查点正式名称为 `sekaisync-scraper-261002`，产品提交 `b6c70aa`，
-历史 Git 标签 `scraper-261002` 不变。见 [0.4.2-alpha 发布说明](../CHANGELOG.zh-CN.md)
-与[检查点说明](SCRAPER_CHECKPOINT_261002.md)。全库重刮、对比及每小时续跑
-已按用户要求暂停，不把局部成果当成全库质量验收。
+升级已有知识库时，从 raw 重建或重新 sync，并重启 MCP/HTTP 进程。操作见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。
+
+刮削工程检查点 `sekaisync-scraper-261002` 已合并，提交为 `b6c70aa`，历史 Git 标签为 `scraper-261002`。见[检查点说明](SCRAPER_CHECKPOINT_261002.md)。
 
 ## 已封存检查点目标（2026-10-02）
 

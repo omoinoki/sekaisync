@@ -2,13 +2,7 @@
 
 日期：2026-09-29。状态：后续工程方案；本文件不表示下述能力已经实现。
 
-2026-10-03 命名与发布状态：已合并的工程检查点正式称为
-`sekaisync-scraper-261002`（`b6c70aa`，历史 Git 标签 `scraper-261002` 保留），
-计入 [0.4.2-alpha 候选发布说明](../CHANGELOG.zh-CN.md)。现已授权准备
-SekaiSync `0.4.2-alpha` 与配套 Connect `0.3.9-alpha.1`；
-[issue #1](https://github.com/omoinoki/sekaisync/issues/1) 的后续描述恢复与回归验证
-见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。全库重刮、对比和定时续跑
-仍暂停；发布准备不改变语义质量未完整验收的结论，以下路线图不授权重新启动任务。
+已合并的工程检查点为 `sekaisync-scraper-261002`（提交 `b6c70aa`，历史 Git 标签 `scraper-261002`）。结果见[检查点说明](SCRAPER_CHECKPOINT_261002.md)，后续角色档案修复见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。
 
 2026-10-02 当时执行目标调整为 [261002 限时质量跃迁与合并交付](PROJECT_GOALS_261002.md)，
 在新加坡时间当日20:00收束，19:15停止功能改动。本路线图以下的穷尽/零失误

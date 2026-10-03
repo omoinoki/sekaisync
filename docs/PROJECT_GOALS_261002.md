@@ -1,15 +1,8 @@
 # SekaiSync 检查点目标：sekaisync-scraper-261002
 
-当前状态（2026-10-03）：本轮目标已封存，工程检查点已合并为 `b6c70aa`，
-正式名称为 `sekaisync-scraper-261002`；历史 Git 标签 `scraper-261002` 不变。
-本文件保留原验收目标，不代表所有目标已达成，也不继续授权执行。
-后续全库重刮与对比及每小时续跑均已暂停。
+工程检查点 `sekaisync-scraper-261002` 已封存并合并为 `b6c70aa`，历史 Git 标签为 `scraper-261002`。本文件记录该轮目标与验收标准，实际结果见[检查点说明](SCRAPER_CHECKPOINT_261002.md)。
 
-该检查点计入 [0.4.2-alpha 候选发布说明](../CHANGELOG.zh-CN.md)。2026-10-03
-已授权准备 `0.4.2-alpha` 及配套 Connect `0.3.9-alpha.1`；后续
-[Issue #1](https://github.com/omoinoki/sekaisync/issues/1) 修复与 2140 项冻结回归
-见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)，不归入本检查点的历史成绩。
-发布授权不代表重启全库重刮，也不表示此前未通过的语义质量验收变成通过。
+后续 Issue #1 的角色档案修复见[恢复说明](ISSUE_1_PROFILE_RECOVERY_261003.md)。
 
 生效：2026-10-02。时区：Asia/Singapore（UTC+08:00）。
 本文件是该轮刮削改进任务的历史目标与验收依据，取代此前“直到喊停”的无限执行安排。

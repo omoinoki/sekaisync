@@ -25,26 +25,6 @@
 
 **SekaiSync** 为大语言模型及编码智能体（如 Claude、Cursor、ChatGPT）提供游戏领域上下文。项目将《世界计划》的官方 Master Data、多区服本地化译名与社区剧情正文同步至本地 `store/` 目录，通过 **MCP（模型上下文协议）** 或命令行提供检索能力，使智能体直接基于**本地数据**回答问题，减少依赖参数记忆导致的事实性错误。
 
-### 刮削器检查点
-
-已合并的刮削工程检查点正式命名为 **`sekaisync-scraper-261002`**
-（`main` 提交 `b6c70aa`，历史 Git 标签 `scraper-261002`）。这是刮削器检查点
-标识，不是软件版本号或独立训练模型，计入 [0.4.2-alpha 发布说明](CHANGELOG.zh-CN.md)。
-**0.4.2-alpha** 的发布准备包含后续 [issue #1](https://github.com/omoinoki/sekaisync/issues/1)
-修复：角色档案正文及关联角色名称保留到提取、区服检索和 FactPack 渲染链路。
-已有库仍需从 raw 重建或重新 sync，单独升级代码不能恢复此前被数据库丢弃的字段。
-操作见[恢复说明](docs/ISSUE_1_PROFILE_RECOVERY_261003.md)。
-
-协调发布的 SekaiSync Connect **0.3.9-alpha.1** 适配 DSH 的区服证据和显式
-错误状态。其实际宿主 UI 定向检查不等于在线模型质量或全部 GUI 验收；未修改的
-WinUI3 客户端仍存在多区服正文视图限制。范围见[发布验证与边界](CHANGELOG.zh-CN.md)。
-
-[261002 检查点目标](docs/PROJECT_GOALS_261002.md)将该轮刮削质量工作限时至 **2026-10-02 20:00，Asia/Singapore**。在全新五语语料上，验收目标为精确源表达召回至少90%、固定200项跨语义务的端到端正确覆盖至少90%，并较发布版提升至少20个百分点；对外接口和使用方式不变。这些数字是历史验收门槛，不是已取得的成绩。
-
-共同已发布内容的所有用语与词义在五语任意方向正确对应且零失误，仍是长期愿景，不是有限评测可以证明的结论。后续阶段见[刮削系统演进路线图](docs/TERM_SCRAPER_EVOLUTION_ROADMAP_2026-09-29.md)。
-
-本轮已封存，随后全库重刮、对比及定时续跑也已按用户要求暂停。工程检查通过，但完整质量未验收。分轮真实成绩和未执行债务见[sekaisync-scraper-261002 检查点](docs/SCRAPER_CHECKPOINT_261002.md)，不以合并、测试数或局部重刮结果冒充全库精度、速度提升或零失误。
-
 <p align="center">
   <img src="sekaisync.png" alt="SekaiSync 总览" width="720"/>
 </p>
