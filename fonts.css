@@ -1,0 +1,19 @@
+@font-face {
+  font-family: 'SekaiSync Sans Web';
+  src: url('assets/fonts/sekaisync-sans-sc.woff') format('woff');
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'SekaiSync Serif Web';
+  src: url('assets/fonts/sekaisync-serif-sc.woff') format('woff');
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+:root {
+  --sk-font-ui: 'Source Han Sans SC VF', 'Source Han Sans SC', '思源黑体 CN', '思源黑体', 'SekaiSync Sans Web', 'Microsoft YaHei', sans-serif;
+  --sk-font-serif: 'Source Han Serif SC VF', 'Source Han Serif SC', '思源宋体 CN', '思源宋体', 'SekaiSync Serif Web', 'Songti SC', SimSun, serif;
+  --sk-font-mono: ui-monospace, 'Cascadia Code', Consolas, var(--sk-font-ui);
+}

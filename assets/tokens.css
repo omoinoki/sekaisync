@@ -1,0 +1,161 @@
+:root {
+  color-scheme: light;
+  --sk-canvas: #F4F7FA;
+  --sk-surface: #FFFFFF;
+  --sk-surface-muted: #EAF0F5;
+  --sk-ink: #17263B;
+  --sk-ink-muted: #4F6175;
+  --sk-border: #7A8B9B;
+  --sk-hairline: #D5E1E8;
+  --sk-action: #006F78;
+  --sk-action-hover: #005963;
+  --sk-on-action: #FFFFFF;
+  --sk-selection: #DDF7F7;
+  --sk-on-selection: #005963;
+  --sk-accent: #AC246D;
+  --sk-accent-soft: #FFEAF4;
+  --sk-focus: #004EC2;
+  --sk-success: #21633F;
+  --sk-success-soft: #E8F5EC;
+  --sk-warning: #805100;
+  --sk-warning-soft: #FFF2D5;
+  --sk-danger: #B4233A;
+  --sk-danger-soft: #FFEAEF;
+  --sk-unknown: #536074;
+  --sk-unknown-soft: #EDF0F5;
+  --sk-fragment-base: #FFFFFF;
+  --sk-fragment-halo-cyan: #C7FAF8;
+  --sk-fragment-halo-pink: #FBE8FB;
+  --sk-fragment-far-opacity: 0.32;
+  --sk-fragment-mid-opacity: 0.58;
+  --sk-fragment-near-opacity: 0.72;
+  --sk-fragment-cyan: #7FF3ED;
+  --sk-fragment-pink: #F4A5E7;
+  --sk-fragment-lemon: #FBF78B;
+  --sk-signal-cyan: #21D8D0;
+  --sk-signal-pink: #F26DB0;
+  --sk-space-1: 4px;
+  --sk-space-2: 8px;
+  --sk-space-3: 12px;
+  --sk-space-4: 16px;
+  --sk-space-6: 24px;
+  --sk-space-8: 32px;
+  --sk-space-12: 48px;
+  --sk-radius-control: 6px;
+  --sk-radius-panel: 12px;
+  --sk-stroke: 1px;
+  --sk-focus-width: 3px;
+  --sk-focus-offset: 3px;
+  --sk-target-web: 44px;
+  --sk-font-ui: system-ui, 'Microsoft YaHei UI', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+  --sk-font-mono: ui-monospace, monospace;
+  --sk-text-body: 1rem;
+  --sk-text-small: 0.875rem;
+  --sk-text-title: 2rem;
+  --sk-line-body: 1.6;
+  --sk-motion-fast: 100ms;
+  --sk-motion-feedback: 160ms;
+  --sk-motion-panel: 220ms;
+  --sk-motion-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --sk-canvas: #101824;
+  --sk-surface: #182335;
+  --sk-surface-muted: #223148;
+  --sk-ink: #EDF4FF;
+  --sk-ink-muted: #A8BAD0;
+  --sk-border: #71849C;
+  --sk-hairline: #3C4B60;
+  --sk-action: #68E2DD;
+  --sk-action-hover: #93EEE9;
+  --sk-on-action: #0D252C;
+  --sk-selection: #143C43;
+  --sk-on-selection: #93EEE9;
+  --sk-accent: #FFA5D3;
+  --sk-accent-soft: #3F2339;
+  --sk-focus: #FFD166;
+  --sk-success: #9BE6B5;
+  --sk-success-soft: #173A2A;
+  --sk-warning: #FFD489;
+  --sk-warning-soft: #3D3017;
+  --sk-danger: #FFB0BD;
+  --sk-danger-soft: #48232F;
+  --sk-unknown: #BCCAE0;
+  --sk-unknown-soft: #293347;
+  --sk-fragment-base: #101824;
+  --sk-fragment-halo-cyan: #17353D;
+  --sk-fragment-halo-pink: #34283E;
+  --sk-fragment-far-opacity: 0.18;
+  --sk-fragment-mid-opacity: 0.32;
+  --sk-fragment-near-opacity: 0.44;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+    --sk-canvas: #101824;
+    --sk-surface: #182335;
+    --sk-surface-muted: #223148;
+    --sk-ink: #EDF4FF;
+    --sk-ink-muted: #A8BAD0;
+    --sk-border: #71849C;
+    --sk-hairline: #3C4B60;
+    --sk-action: #68E2DD;
+    --sk-action-hover: #93EEE9;
+    --sk-on-action: #0D252C;
+    --sk-selection: #143C43;
+    --sk-on-selection: #93EEE9;
+    --sk-accent: #FFA5D3;
+    --sk-accent-soft: #3F2339;
+    --sk-focus: #FFD166;
+    --sk-success: #9BE6B5;
+    --sk-success-soft: #173A2A;
+    --sk-warning: #FFD489;
+    --sk-warning-soft: #3D3017;
+    --sk-danger: #FFB0BD;
+    --sk-danger-soft: #48232F;
+    --sk-unknown: #BCCAE0;
+    --sk-unknown-soft: #293347;
+    --sk-fragment-base: #101824;
+    --sk-fragment-halo-cyan: #17353D;
+    --sk-fragment-halo-pink: #34283E;
+    --sk-fragment-far-opacity: 0.18;
+    --sk-fragment-mid-opacity: 0.32;
+    --sk-fragment-near-opacity: 0.44;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --sk-motion-fast: 0ms;
+    --sk-motion-feedback: 0ms;
+    --sk-motion-panel: 0ms;
+  }
+}
+@media (forced-colors: active) {
+  :root, :root[data-theme] {
+    --sk-canvas: Canvas;
+    --sk-surface: Canvas;
+    --sk-surface-muted: Canvas;
+    --sk-ink: CanvasText;
+    --sk-ink-muted: CanvasText;
+    --sk-border: CanvasText;
+    --sk-hairline: CanvasText;
+    --sk-action: Highlight;
+    --sk-action-hover: Highlight;
+    --sk-on-action: HighlightText;
+    --sk-selection: Highlight;
+    --sk-on-selection: HighlightText;
+    --sk-accent: CanvasText;
+    --sk-accent-soft: Canvas;
+    --sk-focus: Highlight;
+    --sk-success: CanvasText;
+    --sk-success-soft: Canvas;
+    --sk-warning: CanvasText;
+    --sk-warning-soft: Canvas;
+    --sk-danger: CanvasText;
+    --sk-danger-soft: Canvas;
+    --sk-unknown: CanvasText;
+    --sk-unknown-soft: Canvas;
+    --sk-fragment-base: Canvas;
+  }
+}

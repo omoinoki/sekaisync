@@ -1,0 +1,50 @@
+[
+  {
+    "name": "repository",
+    "url": "https://github.com/omoinoki/sekaisync",
+    "asset": "assets/qr/repository.svg",
+    "modules": 29,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  },
+  {
+    "name": "client",
+    "url": "https://github.com/omoinoki/sekaisync-winui3",
+    "asset": "assets/qr/client.svg",
+    "modules": 33,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  },
+  {
+    "name": "plugin",
+    "url": "https://github.com/omoinoki/dsh-sekaisync-connect",
+    "asset": "assets/qr/plugin.svg",
+    "modules": 33,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  },
+  {
+    "name": "fork",
+    "url": "https://github.com/omoinoki/sekaisync/fork",
+    "asset": "assets/qr/fork.svg",
+    "modules": 29,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  },
+  {
+    "name": "issues",
+    "url": "https://github.com/omoinoki/sekaisync/issues",
+    "asset": "assets/qr/issues.svg",
+    "modules": 33,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  },
+  {
+    "name": "pulls",
+    "url": "https://github.com/omoinoki/sekaisync/pulls",
+    "asset": "assets/qr/pulls.svg",
+    "modules": 33,
+    "quietZoneModules": 4,
+    "errorCorrection": "M"
+  }
+]
